@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Sungmin-Cho/claude-deep-suite/main/schemas/artifact-envelope.schema.json",
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-review",
+    "producer_version": "1.6.1",
+    "artifact_kind": "recurring-findings",
+    "run_id": "01j_recur_fixture_0001",
+    "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "recurring-findings", "version": "1.0" },
+    "git": { "head": "abc1234", "branch": "main", "dirty": false },
+    "provenance": { "source_artifacts": [], "tool_versions": { "node": "v22.0.0" } }
+  },
+  "payload": {
+    "findings": [
+      {
+        "title": "Codex skill discovery silently fails on invalid frontmatter",
+        "category": "manifest",
+        "first_seen": "2026-05-15T00:00:00Z",
+        "evidence": [
+          "deep-evolve description trimmed at 1024 chars",
+          "deep-wiki YAML parse fix for trailing colon"
+        ],
+        "tags": ["codex", "skill", "manifest"]
+      },
+      {
+        "title": "Empty evidence finding — should be filtered by F1 (claim/evidence both required)",
+        "category": "quality",
+        "first_seen": "2026-05-15T00:00:00Z",
+        "evidence": [],
+        "tags": []
+      }
+    ]
+  }
+}
