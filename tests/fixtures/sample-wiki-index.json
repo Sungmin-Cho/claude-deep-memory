@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Sungmin-Cho/claude-deep-suite/main/schemas/artifact-envelope.schema.json",
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-wiki",
+    "producer_version": "1.4.0",
+    "artifact_kind": "wiki-index",
+    "run_id": "01j_wiki_fixture_0001",
+    "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "wiki-index", "version": "1.0" },
+    "git": { "head": "pqr1234", "branch": "main", "dirty": false },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "pages": [
+      {
+        "title": "ADR-0001 envelope option-b decision",
+        "path": "pages/adr/0001-envelope-option-b.md",
+        "frontmatter": {
+          "adr": true,
+          "decision_summary": "Suite envelope additionalProperties:false; deep-memory specific fields move to payload.deep_memory_provenance"
+        }
+      },
+      {
+        "title": "Non-ADR welcome page",
+        "path": "pages/welcome.md",
+        "frontmatter": { "adr": false }
+      },
+      {
+        "title": "ADR-0002 lock strategy (no decision_summary — falls back to title)",
+        "path": "pages/adr/0002-lock-strategy.md",
+        "frontmatter": { "adr": true }
+      }
+    ]
+  }
+}

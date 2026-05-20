@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt, mapDocsScan } = require('../scripts/harvest');
+const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt, mapDocsScan, mapWikiIndex } = require('../scripts/harvest');
 
 test('harvest of recurring-findings fixture produces failure-case card with claim never-empty', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-harv-'));
@@ -168,6 +168,53 @@ test('mapDocsScan handles missing recommended_fix without breaking F1 claim', ()
   assert.strictEqual(result.length, 1);
   assert.strictEqual(result[0].claim, 'X — no recommendation');
   assert.deepStrictEqual(result[0].recommended_action, []);
+});
+
+test('Step A: mapWikiIndex — ADR-tagged wiki pages → architecture-decision (non-ADR filtered)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-wiki-'));
+  try {
+    const cards = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-wiki-index.json'),
+      sourceKind: 'wiki-index',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    // 3 pages in fixture: 2 ADR + 1 non-ADR → 2 cards
+    assert.strictEqual(cards.length, 2);
+    const c1 = cards[0];
+    assert.strictEqual(c1.payload.memory_type, 'architecture-decision');
+    assert.strictEqual(
+      c1.payload.claim,
+      'Suite envelope additionalProperties:false; deep-memory specific fields move to payload.deep_memory_provenance'
+    );
+    assert.deepStrictEqual(c1.payload.evidence_summary, ['pages/adr/0001-envelope-option-b.md']);
+    assert.deepStrictEqual(c1.payload.tags, ['wiki', 'adr']);
+    assert.strictEqual(c1.payload.confidence, 0.7);
+    // second ADR has no decision_summary → claim falls back to title (F1 never empty)
+    const c2 = cards[1];
+    assert.strictEqual(
+      c2.payload.claim,
+      'ADR-0002 lock strategy (no decision_summary — falls back to title)'
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('mapWikiIndex filters out pages with frontmatter.adr !== true', () => {
+  const result = mapWikiIndex(
+    {
+      payload: {
+        pages: [
+          { title: 'plain', path: 'plain.md', frontmatter: {} },
+          { title: 'truthy not-true', path: 'tt.md', frontmatter: { adr: 'yes' } },
+        ],
+      },
+    },
+    { id: 'src_0' }
+  );
+  assert.deepStrictEqual(result, [], 'only strict `=== true` survives the filter');
 });
 
 test('harvest throws on unknown sourceKind', async () => {

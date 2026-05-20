@@ -145,12 +145,40 @@ function mapDocsScan(artifact, sourceMeta) {
   }));
 }
 
-// Phase 3a will register mapWikiIndex here next.
+/**
+ * spec §7.1 — Step A mapper for `<wiki_root>/.wiki-meta/index.json`.
+ *   Filters pages by frontmatter.adr === true (ADR-tagged pages only).
+ *   claim source: page.frontmatter.decision_summary || page.title || page.path (F1)
+ *   evidence_summary: [page.path] (single deterministic source)
+ *   tags: ['wiki', 'adr']
+ *   confidence: 0.7 (ADR pages are typically validated decisions)
+ */
+function mapWikiIndex(artifact, sourceMeta) {
+  const pages = artifact.payload?.pages || [];
+  return pages
+    .filter((p) => p.frontmatter?.adr === true)
+    .map((p) => ({
+      memory_type: 'architecture-decision',
+      title: p.title || p.path,
+      claim: p.frontmatter?.decision_summary || p.title || p.path,
+      evidence_summary: [p.path].filter(Boolean).slice(0, 5),
+      applicability: [],
+      non_applicability: [],
+      recommended_action: [],
+      search_keywords: [],
+      tags: ['wiki', 'adr'],
+      confidence: 0.7,
+      created_at: new Date().toISOString(),
+    }));
+}
+
+// Phase 3a.5 verifies all 5 mappers wired (review/evolve/work/docs/wiki).
 const STEP_A_MAPPERS = {
   'review-recurring': mapRecurringFindings,
   'evolve-insights': mapEvolveInsights,
   'work-receipt': mapWorkReceipt,
   'docs-scan': mapDocsScan,
+  'wiki-index': mapWikiIndex,
 };
 
 function memoryIdFor(memoryType, dk) {
@@ -340,6 +368,7 @@ module.exports = {
   mapEvolveInsights,
   mapWorkReceipt,
   mapDocsScan,
+  mapWikiIndex,
   STEP_A_MAPPERS,
   buildCardFromDraft,
   buildSourceMeta,
