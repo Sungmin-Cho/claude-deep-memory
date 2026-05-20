@@ -1,0 +1,25 @@
+{
+  "name": "deep-memory",
+  "version": "0.1.0",
+  "description": "Cross-project semantic operational memory",
+  "author": { "name": "sungmin" },
+  "repository": "https://github.com/Sungmin-Cho/claude-deep-memory.git",
+  "license": "MIT",
+  "keywords": ["memory", "cross-project", "deep-suite"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Deep Memory",
+    "shortDescription": "Cross-project operational memory + reasoning",
+    "longDescription": "Harvest deep-suite artifacts, distill reusable memory cards (pattern/failure-case/decision/experiment/style) with hybrid rule+LLM pipeline, and inject task-specific memory briefs.",
+    "developerName": "sungmin",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "$deep-memory:deep-memory-init",
+      "$deep-memory:deep-memory-harvest",
+      "$deep-memory:deep-memory-brief"
+    ],
+    "brandColor": "#7C3AED",
+    "screenshots": []
+  }
+}

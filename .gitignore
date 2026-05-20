@@ -1,8 +1,19 @@
 # macOS metadata
 .DS_Store
 
-# Node dependencies (Phase 0 install probe)
+# Node dependencies
 node_modules/
+package-lock.json
 
-# Project-local runtime state (Phase 1+ — not part of spec)
+# Project-local runtime state (not part of spec)
 .deep-memory/
+
+# Test artifacts
+coverage/
+*.lcov
+.nyc_output/
+
+# Editor
+.vscode/
+.idea/
+*.swp

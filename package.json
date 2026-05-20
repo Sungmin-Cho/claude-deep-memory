@@ -1,0 +1,27 @@
+{
+  "name": "deep-memory",
+  "version": "0.1.0",
+  "description": "Cross-project semantic operational memory — tests + helpers only; plugin manifest at .claude-plugin/plugin.json.",
+  "author": { "name": "Sungmin-Cho" },
+  "license": "MIT",
+  "private": true,
+  "category": "Productivity",
+  "keywords": ["memory", "cross-project", "deep-suite"],
+  "scripts": {
+    "test": "node --test tests/",
+    "test:envelope": "node --test tests/envelope-emit.test.js",
+    "test:redaction": "node --test tests/redaction.test.js",
+    "validate-manifest": "node scripts/validate-manifest.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.0"
+  },
+  "optionalDependencies": {
+    "sql.js": "^1.10.0"
+  }
+}
