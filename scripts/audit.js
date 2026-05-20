@@ -21,8 +21,11 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
-const { isStale: lockIsStale, breakLock } = require('./lib/lock');
+const { acquire, release, isStale: lockIsStale, breakLock } = require('./lib/lock');
 const { hashFile } = require('./lib/source-hash');
+
+let ftsLib = null;
+try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
 
 const PROFILE_MAX_AGE_DAYS_DEFAULT = 30;
 
@@ -393,6 +396,100 @@ function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFA
   };
 }
 
+/**
+ * Task 5.7 — atomic local → global promotion.
+ *
+ * Steps (inside global lock — spec §"Phase 5 Task 5.7 P8 interaction"):
+ *   1. acquire `<memory_root>/.lock` (operation: 'promote'). harvest acquires
+ *      the same lock for its persist window — promote vs harvest serialize.
+ *   2. find the card by walking cards/<type>/<scope>/* (memory_id is unique
+ *      across the store; first match wins).
+ *   3. update payload.privacy_level: 'local' → 'global', append status_history
+ *      entry (by: 'manual:promote'), bump last_seen_at.
+ *   4. writeJsonAtomic to the new path under cards/<type>/global/<id>.json.
+ *   5. unlink the old path (already-global cards are a no-op — return early).
+ *   6. FTS5 upsert with project_id='' so global scope visible to all projects.
+ *   7. release lock.
+ *
+ * Throws on:
+ *   - card not found → Error{code:'NOT_FOUND'}
+ *   - card already global → Error{code:'ALREADY_GLOBAL'} (idempotent caller
+ *     can catch and continue)
+ *   - lock not acquired in time → Error from lib/lock (LOCK_HELD upstream)
+ */
+async function promoteCard(memoryId, { memoryRoot, by = 'manual:promote' } = {}) {
+  if (!memoryId) throw new Error('promoteCard requires memoryId');
+  if (!memoryRoot) throw new Error('promoteCard requires memoryRoot');
+
+  const lockPath = path.join(memoryRoot, '.lock');
+  const handle = await acquire(lockPath, { operation: 'promote' });
+  try {
+    const cardsRoot = path.join(memoryRoot, 'cards');
+    let found = null;
+    for (const entry of allCardFiles(cardsRoot)) {
+      let card;
+      try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
+      catch { continue; }
+      if (card.payload?.memory_id === memoryId) {
+        found = { entry, card };
+        break;
+      }
+    }
+    if (!found) {
+      throw Object.assign(new Error(`Card not found: ${memoryId}`), { code: 'NOT_FOUND' });
+    }
+    if (found.card.payload.privacy_level === 'global') {
+      throw Object.assign(new Error(`Card already global: ${memoryId}`), {
+        code: 'ALREADY_GLOBAL',
+        memory_id: memoryId,
+        path: found.entry.path,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const prevStatus = found.card.payload.status;
+    found.card.payload.privacy_level = 'global';
+    found.card.payload.last_seen_at = now;
+    found.card.payload.status_history = [
+      ...(found.card.payload.status_history || []),
+      { from: prevStatus, to: prevStatus, at: now, by },
+    ];
+    if (found.card.payload.status_history.length > 10) {
+      found.card.payload.status_history = found.card.payload.status_history.slice(-10);
+    }
+
+    const newDir = path.join(memoryRoot, 'cards', found.entry.type, 'global');
+    fs.mkdirSync(newDir, { recursive: true });
+    const newPath = path.join(newDir, memoryId + '.json');
+    writeJsonAtomic(newPath, found.card);
+
+    if (newPath !== found.entry.path) {
+      try { fs.unlinkSync(found.entry.path); } catch { /* best-effort */ }
+    }
+
+    if (ftsLib && ftsLib.openIndex && ftsLib.upsertCard) {
+      const idxPath = path.join(memoryRoot, 'indexes', 'lexical.sqlite');
+      fs.mkdirSync(path.dirname(idxPath), { recursive: true });
+      const idx = ftsLib.openIndex(idxPath);
+      try {
+        ftsLib.upsertCard(idx, found.card, { projectId: '' });
+      } finally {
+        if (idx.db && typeof idx.db.close === 'function') idx.db.close();
+      }
+    }
+
+    return {
+      memory_id: memoryId,
+      from_path: found.entry.path,
+      to_path: newPath,
+      previous_privacy_level: 'local',
+      new_privacy_level: 'global',
+    };
+  } finally {
+    release(handle);
+  }
+}
+
 module.exports = {
   validateAllCards,
   applyAutoTransitions,
@@ -400,6 +497,7 @@ module.exports = {
   detectDedupeCollisions,
   detectSourceRenames,
   detectStaleProfile,
+  promoteCard,
   allCardFiles,
   validateCardSchema,
   PROFILE_MAX_AGE_DAYS_DEFAULT,
