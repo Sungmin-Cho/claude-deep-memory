@@ -490,7 +490,71 @@ async function promoteCard(memoryId, { memoryRoot, by = 'manual:promote' } = {})
   }
 }
 
+/**
+ * Task 5.8 — top-level orchestrator. Runs the 6 read-only sub-checks (schema,
+ * stale-memory state transitions, stale-lock, dedupe collision, source-rename,
+ * profile freshness) and aggregates into .deep-memory/latest-audit.json under
+ * the supplied projectDir.
+ *
+ * Notes:
+ *   - --promote and --unlock are CLI-flag-driven side-effecting actions, NOT
+ *     part of the default run().
+ *   - applyAutoTransitions DOES mutate cards on disk (status_history append).
+ *     That is intentional and idempotent: re-running run() does not re-emit
+ *     transitions once a card lands in deprecated/contradicted/validated.
+ *   - Returns the same object that gets atomic-written to latest-audit.json.
+ */
+async function run({ memoryRoot, projectDir } = {}) {
+  if (!memoryRoot) throw new Error('audit.run requires memoryRoot');
+  const cwd = projectDir || process.cwd();
+  const schema = validateAllCards(memoryRoot);
+  const transitions = applyAutoTransitions(memoryRoot);
+  const stale_locks = detectStaleLocks(memoryRoot);
+  const dedupe = detectDedupeCollisions(memoryRoot);
+  const source_renames = detectSourceRenames(memoryRoot);
+  const profile = detectStaleProfile(cwd);
+
+  const issues =
+    schema.invalid +
+    stale_locks.locks.filter((l) => l.stale).length +
+    dedupe.collisions.length +
+    source_renames.unresolved.length +
+    (profile.stale ? 1 : 0);
+
+  const auto_fixed = transitions.transitioned;
+
+  const result = {
+    generated_at: new Date().toISOString(),
+    memory_root: memoryRoot,
+    project_dir: cwd,
+    summary: {
+      total_cards: schema.total,
+      issues,
+      auto_fixed,
+    },
+    schema,
+    transitions,
+    stale_locks,
+    dedupe,
+    source_renames,
+    profile,
+  };
+
+  const outDir = path.join(cwd, '.deep-memory');
+  fs.mkdirSync(outDir, { recursive: true });
+  writeJsonAtomic(path.join(outDir, 'latest-audit.json'), result);
+  return result;
+}
+
+function resolveMemoryRoot(raw) {
+  const os = require('node:os');
+  const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
+  return root.replace(/^~/, os.homedir());
+}
+
 module.exports = {
+  run,
+  resolveMemoryRoot,
   validateAllCards,
   applyAutoTransitions,
   detectStaleLocks,
@@ -502,3 +566,27 @@ module.exports = {
   validateCardSchema,
   PROFILE_MAX_AGE_DAYS_DEFAULT,
 };
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const unlock = args.includes('--unlock');
+  const promoteIdx = args.indexOf('--promote');
+  const promoteId = promoteIdx >= 0 ? args[promoteIdx + 1] : null;
+  const memoryRoot = resolveMemoryRoot();
+
+  (async () => {
+    if (unlock) {
+      const result = detectStaleLocks(memoryRoot, { unlock: true });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (promoteId) {
+      const result = await promoteCard(promoteId, { memoryRoot });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    const result = await run({ memoryRoot });
+    console.log(`Audit: ${result.summary.issues} issues found (${result.summary.auto_fixed} auto-fixed)`);
+    console.log(`Report: ${path.join(result.project_dir, '.deep-memory/latest-audit.json')}`);
+  })().catch((e) => { console.error(e.message); process.exit(1); });
+}
