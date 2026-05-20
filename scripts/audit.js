@@ -21,6 +21,7 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
+const { isStale: lockIsStale, breakLock } = require('./lib/lock');
 
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
@@ -156,9 +157,45 @@ function applyAutoTransitions(memoryRoot) {
   return out;
 }
 
+/**
+ * Task 5.3 — detect stale global lock + (optionally) break it.
+ *
+ * Returns:
+ *   {
+ *     locks: [{path, meta, stale, age_ms}],   // every lock found
+ *     broken: [<lockPath>],                    // only populated when {unlock: true}
+ *   }
+ *
+ * Considers only the canonical global lock at `<memory_root>/.lock`. Project
+ * leases (`.leases/<project_id>.lease`) are tracked separately by the harvest
+ * pipeline — Phase 5 expands that to a lease audit only if Phase 5.x demands
+ * it (current MVP: harvest's own finally guard removes stale lease at next run).
+ */
+function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
+  const lockPath = path.join(memoryRoot, '.lock');
+  const out = { locks: [], broken: [] };
+  if (!fs.existsSync(lockPath)) return out;
+  let meta = null;
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
+  } catch {
+    // malformed lock dir — surface as stale (no recoverable metadata)
+    meta = { created_at: new Date(0).toISOString(), pid: null, host: null, operation: 'unknown' };
+  }
+  const age_ms = Date.now() - new Date(meta.created_at).getTime();
+  const stale = lockIsStale(meta);
+  out.locks.push({ path: lockPath, meta, stale, age_ms });
+  if (stale && unlock) {
+    breakLock(lockPath);
+    out.broken.push(lockPath);
+  }
+  return out;
+}
+
 module.exports = {
   validateAllCards,
   applyAutoTransitions,
+  detectStaleLocks,
   allCardFiles,
   validateCardSchema,
 };
