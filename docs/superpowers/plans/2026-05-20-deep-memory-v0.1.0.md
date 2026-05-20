@@ -537,18 +537,42 @@ console.log('allowed keys:', Object.keys(sa?.properties || {}));
   - If `additionalProperties: false` → either (a) add a PR to suite repo extending the schema (requires sibling repo coordination), OR (b) move extra fields into `payload.deep_memory_provenance` (deep-memory-specific, not validated by suite sibling). For MVP, **option (b) is safer** — keeps suite schema compat 100%. Plan Task 1.1 / 1.3 / 6.x adjusts.
   - **Document decision in spec §6 + commit message.**
 
-- [ ] **Step 3: Commit decision** (in deep-memory repo)
+- [ ] **Step 3: Write decision document + commit** (R3 ℹ️ fix — git history readable in future)
 
 ```bash
-git commit --allow-empty -m "decision(phase-1): suite envelope compat — chose option (a)/(b) per Task 1.0a probe"
+mkdir -p /Users/sungmin/Dev/claude-plugins/deep-memory/.deep-review/decisions
 ```
 
-### Task 1.1: `schemas/memory-card.schema.json` (normative)
+Create `/Users/sungmin/Dev/claude-plugins/deep-memory/.deep-review/decisions/2026-05-20-envelope-compat.md`:
+
+```markdown
+# Decision — suite M3 envelope compat (Task 1.0a)
+
+Probe result: <option (a) suite accepts extra props | option (b) suite has additionalProperties:false>
+Decision: <chosen option>
+Affects: Task 1.1 (schema) + 2.4 (source_artifacts shape) + 3a.* (mapper output) + 4.6 (cross-ref test)
+Date: 2026-05-20
+```
+
+Then commit:
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-memory
+git add .deep-review/decisions/2026-05-20-envelope-compat.md
+git commit -m "decision(phase-1): suite envelope compat — option <a|b> per Task 1.0a probe"
+```
+
+### Task 1.1: `schemas/memory-card.schema.json` (normative — branches on Task 1.0a result, R3 P11 fix)
 
 **Files:**
 - Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/schemas/memory-card.schema.json`
 
-- [ ] **Step 1: Write schema** (use Task 1.0a decision result — if option (b), `source_artifacts[]` is suite-shape minimal; extra fields go in `payload.deep_memory_provenance`)
+- [ ] **Step 1: Write schema — explicit branching by Task 1.0a outcome**:
+
+  - **Option (a)** — suite envelope schema accepts additional properties: include `id / content_hash / captured_at / artifact_kind / schema_version` in `envelope.provenance.source_artifacts[].properties` as REQUIRED. (the schema shown below uses this option as the default — only swap if Task 1.0a probe returned option (b))
+  - **Option (b)** — suite envelope schema has `additionalProperties: false`: keep `envelope.provenance.source_artifacts[]` minimal (`path`, `run_id` only); move deep-memory specific fields into a new `payload.deep_memory_provenance: [{id, content_hash, captured_at, artifact_kind, schema_version, source_index}]` array, where `source_index` maps to the envelope's `source_artifacts[index]`. Adjust all subsequent task references (Task 2.4 / 3a.x / 4.6) to use `payload.deep_memory_provenance` instead of `envelope.provenance.source_artifacts[].id`.
+
+  Task 1.0a Step 3 의 commit message 가 어느 option 인지 기록.
 
 ```json
 {
@@ -1453,10 +1477,11 @@ test('bm25MinMax single result returns 1.0', () => {
   assert.strictEqual(r[0].task_sim_norm, 1.0);
 });
 
-test('bm25MinMax multi-result scales to [0,1]', () => {
+test('bm25MinMax multi-result inverts (P13 — smaller raw bm25 = better match)', () => {
+  // R3 fix: SQLite FTS5 bm25() smaller=better. Assertions match the INVERTED normalization.
   const r = bm25MinMax([{ bm25: 1 }, { bm25: 5 }, { bm25: 9 }]);
-  assert.strictEqual(r[0].task_sim_norm, 0.0);
-  assert.strictEqual(r[2].task_sim_norm, 1.0);
+  assert.strictEqual(r[0].task_sim_norm, 1.0);  // raw=1 (best) → norm=1.0
+  assert.strictEqual(r[2].task_sim_norm, 0.0);  // raw=9 (worst) → norm=0.0
 });
 
 test('sigmoid clamps to (0,1)', () => {
@@ -2548,10 +2573,11 @@ const STEP_A_MAPPERS = {
 node --test tests/harvest-golden.test.js
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit** (R3 fix — STEP_A_MAPPERS dict assembly 가 실제 file 변경이므로 `--allow-empty` 제거)
 
 ```bash
-git commit --allow-empty -m "chore(phase-3a): Task 3a.5 — all 5 STEP_A_MAPPERS wired (review/evolve/work/docs/wiki)"
+git add scripts/harvest.js
+git commit -m "chore(phase-3a): Task 3a.5 — all 5 STEP_A_MAPPERS wired (review/evolve/work/docs/wiki)"
 ```
 
 ### Task 3a.6: Quarantine invariant
@@ -2952,62 +2978,53 @@ test('upsert + search returns BM25-ranked rows', () => {
 
 ```javascript
 // scripts/lib/fts-index.js
+// R3 P7 fix — sql.js fallback was import-only (openIndex throws on it); confusing/silent-crash risk.
+// v0.1.0 MVP: better-sqlite3 is a HARD DEPENDENCY. Phase 0 install probe (check-sqlite.js) must pass.
+// sql.js WASM fallback (functional wrapper) is moved to docs/handoff-phase-4-6.md (future Phase 4+).
 'use strict';
 
-// P7: driver registry — try better-sqlite3 native, fall back to sql.js (WASM)
-let driverName = null;
-let DriverImpl = null;
+let Database;
 try {
-  DriverImpl = require('better-sqlite3');
-  driverName = 'better-sqlite3';
+  Database = require('better-sqlite3');
 } catch (e) {
-  try {
-    const initSqlJs = require('sql.js');
-    DriverImpl = initSqlJs;
-    driverName = 'sql.js';
-  } catch (e2) {
-    throw new Error(`No SQLite driver available. Install better-sqlite3 (native) or sql.js (WASM fallback). Original errors: ${e.message} ; ${e2.message}`);
-  }
+  throw new Error(
+    `deep-memory v0.1.0 requires better-sqlite3 (native module). Install build tools or use Node image with prebuilt binaries.\n` +
+    `Future versions (Phase 4+) will add a sql.js WASM wrapper — see docs/handoff-phase-4-6.md.\n` +
+    `Original error: ${e.message}`
+  );
 }
 
 function openIndex(filepath) {
-  if (driverName === 'better-sqlite3') {
-    const db = new DriverImpl(filepath);
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS cards USING fts5(
-        memory_id UNINDEXED,
-        memory_type UNINDEXED,
-        privacy_level UNINDEXED,
-        project_id UNINDEXED,
-        claim, tags, applicability, search_keywords
-      );
-    `);
-    return { driver: 'better-sqlite3', db };
-  }
-  // sql.js path (synchronous load — full sql.js wiring left as a guided expansion in Phase 4; MVP requires better-sqlite3 to be installable)
-  throw new Error('sql.js driver path is reserved; production MVP requires better-sqlite3. Install build tools or use container with prebuilt binaries.');
+  const db = new Database(filepath);
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS cards USING fts5(
+      memory_id UNINDEXED,
+      memory_type UNINDEXED,
+      privacy_level UNINDEXED,
+      project_id UNINDEXED,
+      claim, tags, applicability, search_keywords
+    );
+  `);
+  return { driver: 'better-sqlite3', db };
 }
 
 function upsertCard(idx, card, { projectId = null } = {}) {
   // P12 fix — accept the wrapped card shape (card.payload.*) AND pass project_id explicitly
   const p = card.payload || card;  // tolerate both shapes (legacy tests use flat)
   const pid = projectId || card.project_id || p.project_id || '';
-  if (idx.driver === 'better-sqlite3') {
-    idx.db.prepare('DELETE FROM cards WHERE memory_id = ?').run(p.memory_id);
-    idx.db.prepare(`INSERT INTO cards (memory_id, memory_type, privacy_level, project_id, claim, tags, applicability, search_keywords) VALUES (?,?,?,?,?,?,?,?)`)
-      .run(
-        p.memory_id, p.memory_type, p.privacy_level, pid,
-        p.claim,
-        (p.tags || []).join(' '),
-        (p.applicability || []).map((a) => typeof a === 'string' ? a : a.value).join(' '),
-        (p.search_keywords || []).join(' ')
-      );
-  }
+  idx.db.prepare('DELETE FROM cards WHERE memory_id = ?').run(p.memory_id);
+  idx.db.prepare(`INSERT INTO cards (memory_id, memory_type, privacy_level, project_id, claim, tags, applicability, search_keywords) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(
+      p.memory_id, p.memory_type, p.privacy_level, pid,
+      p.claim,
+      (p.tags || []).join(' '),
+      (p.applicability || []).map((a) => typeof a === 'string' ? a : a.value).join(' '),
+      (p.search_keywords || []).join(' ')
+    );
 }
 
 function search(idx, query, { topN = 8, projectId = null } = {}) {
-  if (idx.driver !== 'better-sqlite3') throw new Error('search not implemented for this driver');
-  // privacy scope: local cards visible only to same project_id; global cards to all (P19/spec §8)
+  // privacy scope: local cards visible only to same project_id; global cards to all (spec §8)
   // P13 fix downstream: caller must pass results through bm25MinMax (which inverts since smaller bm25 = better match)
   const rows = idx.db.prepare(`
     SELECT memory_id, memory_type, privacy_level, project_id, bm25(cards) AS bm25
@@ -3276,6 +3293,25 @@ frontmatter description ≤1024 char + strict YAML. body 는 4개 sub-command (`
 > **P8 fix interaction (lock 보호)**: `--promote` 가 atomic move 를 수행하는 동안 harvest 가 같은 카드의 `dedupe_key` 충돌 검사로 양쪽 디렉토리를 union scan 한다 (Task 2.5 의 §7.3 step 4 fix). 따라서 promote 도 같은 global lock 안에서 수행.
 
 - [ ] **Step 1: Test** — `--promote mem_xxx` 호출 → (a) global lock acquire → (b) card 의 `privacy_level: local → global` → (c) atomic move from `cards/<type>/<project_id>/` to `cards/<type>/global/` → (d) status_history append → (e) FTS5 upsert (project_id 비움) → (f) global lock release.
+- [ ] **Step 1.a (R3 fix): Additional test — concurrent harvest×promote serialization** (`tests/audit-promote-vs-harvest.test.js`)
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const { harvestArtifact } = require('../scripts/harvest');
+const { promoteCard } = require('../scripts/audit');
+
+test('concurrent harvest + promote do not corrupt directories', async () => {
+  const tmp = /* ... setup memory_root with 1 local card */;
+  await Promise.all([
+    harvestArtifact({ /* ... */ }),
+    promoteCard('mem_target', { memoryRoot: tmp }),
+  ]);
+  // Verify: card is in exactly one location (global OR local, not both not neither), FTS5 has 1 row
+  assert.ok(/* ... */);
+});
+```
+
 - [ ] **Step 2-4: Implement** with explicit lock acquire (`lock.acquire(lockPath, {operation: 'promote'})`) — fails with `LOCK_HELD` if harvest 중. + commit.
 
 ```bash
@@ -3397,9 +3433,9 @@ Expected: `git status --short` 결과 empty + `rev-parse` 가 deep-suite 절대�
 
 또한 자동화를 위해 `deep-memory/scripts/sync-suite.js` 도 작성 (P20). 본 Task 는 entry append + sync-suite.js step.
 
-- [ ] **Step 1 (in deep-memory repo): Write `scripts/sync-suite.js`** — read deep-memory의 plugin.json + 사용자 GitHub URL + sha → write entries into all 3 deep-suite files (marketplace.json × 2 + suite-extensions.json). 본 Task 는 entry append 만, full sync-suite.js 는 Task 7.5 (신규).
+> R3 fix — sync-suite.js 작성은 Task 7.5 의 단독 책임. Task 7.1 은 first-release 의 manual entry 만.
 
-- [ ] **Step 2 (cwd = deep-suite): Edit marketplace.json**
+- [ ] **Step 1 (cwd = deep-suite): Edit marketplace.json**
 
 ```bash
 cd /Users/sungmin/Dev/claude-plugins/deep-suite
@@ -3420,7 +3456,7 @@ JSON shape (insert as last array entry):
 }
 ```
 
-- [ ] **Step 3 (cwd = deep-suite): Validate JSON + commit in deep-suite repo**
+- [ ] **Step 2 (cwd = deep-suite): Validate JSON + commit in deep-suite repo**
 
 ```bash
 cd /Users/sungmin/Dev/claude-plugins/deep-suite
@@ -3578,7 +3614,7 @@ cd -
 - `writeJsonAtomic(target, data)`: Task 1.8 정의 → 모든 persist 사용 ✓ (P8 fsync 순서 fix)
 - `refine(eventDraft, sourceExcerpt, opts)` (signature with `...adapterOpts`): Task 1.12 (Phase 1 skeleton 도 같은 sig — P15 fix) + 3b.5 (schema validation 추가) → Task 3b.6 사용 ✓
 - `harvestArtifact({...})`: Task 2.4 정의 → Phase 3a 확장 + Task 2.5 persist 통합 ✓
-- `openIndex(filepath)` / `upsertCard(idx, card, {projectId})` / `search(idx, query, {topN, projectId})`: Task 4.2 정의 (P12 shape + P14 driver registry) → Task 2.5 + 4.3 + 5.7 사용 ✓
+- `openIndex(filepath)` / `upsertCard(idx, card, {projectId})` / `search(idx, query, {topN, projectId})`: Task 4.2 정의 (P12 shape + P7 hard-dep better-sqlite3 — R3 fix: sql.js fallback 은 v0.1.0 out-of-scope, handoff-phase-4-6 이연) → Task 2.5 + 4.3 + 5.7 사용 ✓
 - `bm25MinMax(rows)` (P13 invert): Task 1.10 정의 → Task 4.3 stage 2 사용 ✓
 
 → R2 모든 변경 후 consistent.
