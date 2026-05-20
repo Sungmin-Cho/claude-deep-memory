@@ -1,0 +1,8 @@
+# macOS metadata
+.DS_Store
+
+# Node dependencies (Phase 0 install probe)
+node_modules/
+
+# Project-local runtime state (Phase 1+ — not part of spec)
+.deep-memory/
