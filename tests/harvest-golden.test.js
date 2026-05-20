@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { harvestArtifact, STEP_A_MAPPERS } = require('../scripts/harvest');
+const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights } = require('../scripts/harvest');
 
 test('harvest of recurring-findings fixture produces failure-case card with claim never-empty', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-harv-'));
@@ -47,8 +47,45 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
   }
 });
 
-test('Phase 2 — STEP_A_MAPPERS only registers review-recurring (Phase 3a expands)', () => {
-  assert.deepStrictEqual(Object.keys(STEP_A_MAPPERS), ['review-recurring']);
+test('Phase 3a — STEP_A_MAPPERS registers review-recurring + evolve-insights (3 more in subsequent tasks)', () => {
+  const keys = Object.keys(STEP_A_MAPPERS).sort();
+  assert.deepStrictEqual(keys, ['evolve-insights', 'review-recurring']);
+});
+
+test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to confidence', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-evolve-'));
+  try {
+    const cards = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-evolve-insights.json'),
+      sourceKind: 'evolve-insights',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    assert.strictEqual(cards.length, 2);
+    // first insight: q_delta=0.18 → confidence=0.36
+    const c1 = cards[0];
+    assert.strictEqual(c1.payload.memory_type, 'experiment-outcome');
+    assert.strictEqual(c1.payload.claim, 'start with manifest drift tests before behavior tests');
+    assert.strictEqual(c1.payload.title, c1.payload.claim, 'claim mirrors title');
+    assert.strictEqual(c1.payload.evidence_summary[0], 'caught Codex compatibility regressions early');
+    assert.ok(Math.abs(c1.payload.confidence - 0.36) < 1e-6,
+      `expected confidence ~0.36, got ${c1.payload.confidence}`);
+    assert.deepStrictEqual(c1.payload.tags, ['evolve', 'experiment']);
+    assert.strictEqual(c1.payload.applicability.length, 2);
+    assert.strictEqual(c1.payload.applicability[0].value, 'language=typescript');
+    assert.strictEqual(c1.payload.applicability[1].value, 'topology=plugin');
+    // second insight: q_delta=0.92 → saturates to 1.0
+    const c2 = cards[1];
+    assert.strictEqual(c2.payload.confidence, 1, 'q_delta >= 0.5 saturates to 1.0');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('mapEvolveInsights returns empty array for missing payload.insights (no F1 violation)', () => {
+  const result = mapEvolveInsights({}, { id: 'src_0' });
+  assert.deepStrictEqual(result, []);
 });
 
 test('harvest throws on unknown sourceKind', async () => {

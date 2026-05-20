@@ -45,10 +45,39 @@ function mapRecurringFindings(artifact, sourceMeta) {
   }));
 }
 
-// Phase 3a will register mapEvolveInsights, mapWorkReceipt, mapDocsScan, mapWikiIndex here
-// (one task per mapper per plan §"Phase 3a" / spec §7.1).
+/**
+ * spec §7.1 — Step A mapper for `.deep-evolve/*\/evolve-insights.json`.
+ *   claim source: insight.strategy (deterministic, F1)
+ *   evidence_summary: [insight.outcome] if present
+ *   applicability: project_signature key=value pairs (confidence 0.7)
+ *   confidence: insight.q_delta normalized to [0,1] — q_delta of 0.5+ saturates to 1.0
+ *   tags: ['evolve', 'experiment']
+ */
+function mapEvolveInsights(artifact, sourceMeta) {
+  const insights = artifact.payload?.insights || [];
+  return insights.map((i) => ({
+    memory_type: 'experiment-outcome',
+    title: i.strategy,
+    claim: i.strategy,
+    evidence_summary: [i.outcome].filter(Boolean).slice(0, 5),
+    applicability: Object.entries(i.project_signature || {}).map(([k, v]) => ({
+      value: `${k}=${v}`,
+      source_id: sourceMeta.id,
+      confidence: 0.7,
+    })),
+    non_applicability: [],
+    recommended_action: [],
+    search_keywords: [],
+    tags: ['evolve', 'experiment'],
+    confidence: Math.max(0, Math.min(1, (i.q_delta || 0) / 0.5)),
+    created_at: new Date().toISOString(),
+  }));
+}
+
+// Phase 3a will register mapWorkReceipt, mapDocsScan, mapWikiIndex here next.
 const STEP_A_MAPPERS = {
   'review-recurring': mapRecurringFindings,
+  'evolve-insights': mapEvolveInsights,
 };
 
 function memoryIdFor(memoryType, dk) {
@@ -83,7 +112,7 @@ function buildCardFromDraft(draft, sourceMeta) {
     last_seen_at: new Date(now).toISOString(),
     review_after: new Date(now + REVIEW_AFTER_DAYS * 86400 * 1000).toISOString(),
     feedback: { accepted_count: 0, rejected_count: 0, inaccurate_count: 0 },
-    confidence: 0.5,
+    confidence: typeof draft.confidence === 'number' ? draft.confidence : 0.5,
   };
   return wrap({
     artifact_kind: 'memory-card',
@@ -235,6 +264,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
 module.exports = {
   harvestArtifact,
   mapRecurringFindings,
+  mapEvolveInsights,
   STEP_A_MAPPERS,
   buildCardFromDraft,
   buildSourceMeta,
