@@ -10,9 +10,12 @@ const { dedupeKey } = require('./lib/dedupe');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
 const { acquire, release } = require('./lib/lock');
+const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
 
 const REVIEW_AFTER_DAYS = 90;
 const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
+const PASS2_EXCERPT_BYTES = 4096; // spec §7.2 — bounded LLM input
+const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER']);
 
 // Phase 4 Task 4.2 introduces ./lib/fts-index — Phase 2 dynamic-requires it so the
 // FTS5 upsert path is a no-op until that module lands, without breaking persist.
@@ -256,7 +259,9 @@ function buildCardFromDraft(draft, sourceMeta) {
   const dk = dedupeKey(draft.memory_type, draft.claim, draft.applicability);
   const id = memoryIdFor(draft.memory_type, dk);
   const now = Date.now();
-  const payload = {
+  // Pass 3 redaction at the envelope wrap boundary (spec D17) — payload only,
+  // envelope metadata (producer/run_id/...) is deep-memory-owned and secret-free.
+  const payload = redactObject({
     ...draft,
     memory_id: id,
     dedupe_key: dk,
@@ -267,13 +272,46 @@ function buildCardFromDraft(draft, sourceMeta) {
     review_after: new Date(now + REVIEW_AFTER_DAYS * 86400 * 1000).toISOString(),
     feedback: { accepted_count: 0, rejected_count: 0, inaccurate_count: 0 },
     confidence: typeof draft.confidence === 'number' ? draft.confidence : 0.5,
-  };
+  });
   return wrap({
     artifact_kind: 'memory-card',
     schema: { name: 'memory-card', version: '1.0' },
     payload,
     provenance: { source_artifacts: [sourceMeta] },
   });
+}
+
+/**
+ * Merge Step B output into a Step A draft under spec §7.2 invariants:
+ *   - Step A fields are authoritative — Step B only fills empty slots
+ *   - claim is refined ONLY when Step A claim is the verbatim title (room to grow)
+ *   - non_applicability items get source_id back-filled (orchestrator-owned)
+ *   - confidence boost +0.2 (capped at 1.0) when Step B validated the draft
+ *
+ * Mutates the draft in place — callers pass each draft once per loop iteration.
+ */
+function mergeStepB(draft, stepB, sourceMeta) {
+  if (!stepB) return;
+  if (stepB.claim_refined && draft.claim === draft.title) {
+    draft.claim = stepB.claim_refined;
+  }
+  if (!draft.non_applicability || draft.non_applicability.length === 0) {
+    draft.non_applicability = (stepB.non_applicability || []).map((x) => ({
+      value: x.value,
+      source_id: sourceMeta.id,
+      confidence: x.confidence,
+    }));
+  }
+  if (!draft.recommended_action || draft.recommended_action.length === 0) {
+    draft.recommended_action = stepB.recommended_action || [];
+  }
+  if (!draft.search_keywords || draft.search_keywords.length === 0) {
+    draft.search_keywords = stepB.search_keywords || [];
+  }
+  draft.confidence = Math.min(
+    1,
+    (typeof draft.confidence === 'number' ? draft.confidence : 0.5) + 0.2
+  );
 }
 
 /**
@@ -290,7 +328,13 @@ async function harvestArtifact({
   sourceKind,
   memoryRoot,
   projectId,
-  skipDistillStepB = false, // eslint-disable-line no-unused-vars
+  skipDistillStepB = false,
+  llmAdapter = 'auto',
+  llmRecordedFixture = null,
+  llmTimeoutMs = 30000,
+  liveAgent = false,
+  liveCodex = false,
+  batchMode = false,
 }) {
   const raw = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
   const sourceMeta = buildSourceMeta(artifactPath, raw, sourceKind);
@@ -315,8 +359,32 @@ async function harvestArtifact({
   }
   drafts = kept;
 
-  // Step B (LLM refinement) wired in Phase 3b — for now, Step A drafts go straight to envelope wrap.
-  // When skipDistillStepB === false in Phase 3b, llm-bridge.refine(draft, source) will be called here.
+  // Step B (LLM refinement) — Pass 2 redaction + llm-bridge.refine + graceful fallback.
+  // spec §7.2: SCHEMA_VIOLATION / TIMEOUT / ADAPTER_NOT_WIRED → candidate fallback.
+  if (!skipDistillStepB) {
+    // Pass 2 redaction — payload excerpt sent to the sub-agent, bounded to 4 KiB.
+    const sourceExcerpt = JSON.stringify(redactObject(raw.payload || {})).slice(0, PASS2_EXCERPT_BYTES);
+    for (const d of drafts) {
+      let stepB = null;
+      try {
+        stepB = await llmBridgeRefine(d, sourceExcerpt, {
+          adapter: llmAdapter,
+          recordedFixture: llmRecordedFixture,
+          timeoutMs: llmTimeoutMs,
+          liveAgent,
+          liveCodex,
+          batchMode,
+        });
+      } catch (e) {
+        if (STEP_B_FALLBACK_CODES.has(e.code)) {
+          stepB = null; // candidate fallback (spec §7.2)
+        } else {
+          throw e; // unexpected — surface to caller
+        }
+      }
+      mergeStepB(d, stepB, sourceMeta);
+    }
+  }
 
   const cards = drafts.map((d) => buildCardFromDraft(d, sourceMeta));
 
@@ -439,6 +507,9 @@ module.exports = {
   passesF1,
   partitionByF1,
   quarantineEmptyClaim,
+  mergeStepB,
+  PASS2_EXCERPT_BYTES,
+  STEP_B_FALLBACK_CODES,
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
 };
