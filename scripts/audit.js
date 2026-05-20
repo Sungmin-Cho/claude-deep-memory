@@ -192,10 +192,80 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   return out;
 }
 
+/**
+ * Task 5.4 — detect dedupe collisions (spec §6.4).
+ *
+ * Two cards share the same dedupe_key but have CONTRADICTING applicability sets
+ * (different source_id values or disjoint value sets). The dedupe_key is meant
+ * to collapse equivalent claims; when two cards collide on the key but disagree
+ * on context, the audit flags them so the user can either:
+ *   (a) merge applicability arrays (intentional re-context), or
+ *   (b) deprecate one of the two (conflicting claim should not co-exist).
+ *
+ * Returns:
+ *   {
+ *     scanned: <int>,
+ *     collisions: [{
+ *       dedupe_key,
+ *       memory_ids: [<id>],
+ *       paths: [<path>],
+ *       contradiction_kind: 'applicability_contradiction' | 'duplicate',
+ *     }],
+ *   }
+ */
+function detectDedupeCollisions(memoryRoot) {
+  const cardsRoot = path.join(memoryRoot, 'cards');
+  const buckets = new Map(); // dedupe_key → [{card, path, memory_id}]
+  let scanned = 0;
+  for (const entry of allCardFiles(cardsRoot)) {
+    scanned += 1;
+    let card;
+    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
+    catch { continue; }
+    const dk = card.payload?.dedupe_key;
+    if (!dk) continue;
+    if (!buckets.has(dk)) buckets.set(dk, []);
+    buckets.get(dk).push({
+      card,
+      path: entry.path,
+      memory_id: card.payload?.memory_id || null,
+      applicability: card.payload?.applicability || [],
+    });
+  }
+
+  const collisions = [];
+  for (const [dk, entries] of buckets) {
+    if (entries.length < 2) continue;
+    // Apply spec §6.4 contradiction policy: cards collide when applicability
+    // value-sets differ. If the value-sets are identical, the cards are a true
+    // duplicate (different memory_ids for same claim+context) — also reported
+    // for downstream dedupe merge.
+    const sets = entries.map((e) => new Set(
+      e.applicability.map((a) => (typeof a === 'string' ? a : a.value)).filter(Boolean)
+    ));
+    const allSame = sets.every((s, i) => i === 0 || setsEqual(sets[0], s));
+    const kind = allSame ? 'duplicate' : 'applicability_contradiction';
+    collisions.push({
+      dedupe_key: dk,
+      memory_ids: entries.map((e) => e.memory_id),
+      paths: entries.map((e) => e.path),
+      contradiction_kind: kind,
+    });
+  }
+  return { scanned, collisions };
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 module.exports = {
   validateAllCards,
   applyAutoTransitions,
   detectStaleLocks,
+  detectDedupeCollisions,
   allCardFiles,
   validateCardSchema,
 };
