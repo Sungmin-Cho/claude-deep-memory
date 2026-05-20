@@ -199,6 +199,47 @@ function memoryIdFor(memoryType, dk) {
   return 'mem_' + typeSlug + '_' + shortHash;
 }
 
+/**
+ * F1 partition — split mapper output into (kept, rejected) so the rejected drafts
+ * can be quarantined rather than dropped. A draft passes when claim/title are
+ * non-empty strings AND evidence_summary is a non-empty array.
+ */
+function passesF1(draft) {
+  return (
+    typeof draft.claim === 'string' && draft.claim.length > 0 &&
+    typeof draft.title === 'string' && draft.title.length > 0 &&
+    Array.isArray(draft.evidence_summary) && draft.evidence_summary.length > 0
+  );
+}
+
+function partitionByF1(drafts) {
+  const kept = [];
+  const rejected = [];
+  for (const d of drafts) (passesF1(d) ? kept : rejected).push(d);
+  return { kept, rejected };
+}
+
+/**
+ * spec §7.1 quarantine — write rejected drafts to
+ * `<memory_root>/.quarantine/empty-claim/<run_id>.json` so that audit can surface
+ * upstream artifact problems. File is overwritten per run (last-write-wins by
+ * run_id), so duplicate runs of the same artifact stay at 1 quarantine entry.
+ */
+function quarantineEmptyClaim({ memoryRoot, runId, sourceMeta, rejected }) {
+  const dir = path.join(memoryRoot, '.quarantine', 'empty-claim');
+  fs.mkdirSync(dir, { recursive: true });
+  const safeRunId = String(runId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const file = path.join(dir, safeRunId + '.json');
+  const payload = {
+    quarantined_at: new Date().toISOString(),
+    run_id: runId,
+    source: sourceMeta,
+    rejected_count: rejected.length,
+    rejected,
+  };
+  writeJsonAtomic(file, payload);
+}
+
 function buildSourceMeta(artifactPath, raw, sourceKind) {
   return {
     id: 'src_0',
@@ -261,10 +302,18 @@ async function harvestArtifact({
   let drafts = mapper(redacted, sourceMeta);
 
   // F1 invariant — claim/title/evidence_summary all required.
-  // (Phase 3a will route filtered drafts to `~/.deep-memory/.quarantine/empty-claim/<run_id>.json`.)
-  drafts = drafts.filter(
-    (d) => d.claim && d.title && Array.isArray(d.evidence_summary) && d.evidence_summary.length > 0
-  );
+  // Drafts that fail F1 are quarantined (not silently dropped) so audit can surface
+  // upstream artifact problems. spec §7.1 — `<memory_root>/.quarantine/empty-claim/<run_id>.json`.
+  const { kept, rejected } = partitionByF1(drafts);
+  if (rejected.length > 0) {
+    quarantineEmptyClaim({
+      memoryRoot,
+      runId: sourceMeta.run_id,
+      sourceMeta,
+      rejected,
+    });
+  }
+  drafts = kept;
 
   // Step B (LLM refinement) wired in Phase 3b — for now, Step A drafts go straight to envelope wrap.
   // When skipDistillStepB === false in Phase 3b, llm-bridge.refine(draft, source) will be called here.
@@ -387,6 +436,9 @@ module.exports = {
   memoryIdFor,
   persistWithLockAndLease,
   eventKey,
+  passesF1,
+  partitionByF1,
+  quarantineEmptyClaim,
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
 };

@@ -4,7 +4,16 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt, mapDocsScan, mapWikiIndex } = require('../scripts/harvest');
+const {
+  harvestArtifact,
+  STEP_A_MAPPERS,
+  mapEvolveInsights,
+  mapWorkReceipt,
+  mapDocsScan,
+  mapWikiIndex,
+  passesF1,
+  partitionByF1,
+} = require('../scripts/harvest');
 
 test('harvest of recurring-findings fixture produces failure-case card with claim never-empty', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-harv-'));
@@ -208,6 +217,63 @@ test('Step A: mapWikiIndex — ADR-tagged wiki pages → architecture-decision (
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('F1: empty-claim drafts are quarantined to <memoryRoot>/.quarantine/empty-claim/<run_id>.json (not silently dropped)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-quar-'));
+  try {
+    // sample-recurring-findings.json has 1 valid finding + 1 empty-evidence finding (F1 fail)
+    const cards = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
+      sourceKind: 'review-recurring',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    assert.strictEqual(cards.length, 1, '1 valid finding survives F1');
+    // run_id = '01j_recur_fixture_0001' from fixture envelope
+    const quarFile = path.join(tmp, '.quarantine', 'empty-claim', '01j_recur_fixture_0001.json');
+    assert.ok(fs.existsSync(quarFile), 'quarantine file written');
+    const q = JSON.parse(fs.readFileSync(quarFile, 'utf8'));
+    assert.strictEqual(q.rejected_count, 1);
+    assert.strictEqual(q.run_id, '01j_recur_fixture_0001');
+    assert.strictEqual(q.source.artifact_kind, 'recurring-findings');
+    assert.strictEqual(q.rejected[0].memory_type, 'failure-case');
+    // sanity — the rejected one has empty evidence_summary
+    assert.deepStrictEqual(q.rejected[0].evidence_summary, []);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('F1: harvest with NO violations leaves quarantine directory untouched', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-noquar-'));
+  try {
+    await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-evolve-insights.json'),
+      sourceKind: 'evolve-insights',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    assert.ok(!fs.existsSync(path.join(tmp, '.quarantine')), 'no quarantine dir when F1 passes for all');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('passesF1 + partitionByF1 — pure unit checks', () => {
+  assert.strictEqual(passesF1({ claim: 'a', title: 'b', evidence_summary: ['e'] }), true);
+  assert.strictEqual(passesF1({ claim: '', title: 'b', evidence_summary: ['e'] }), false);
+  assert.strictEqual(passesF1({ claim: 'a', title: '', evidence_summary: ['e'] }), false);
+  assert.strictEqual(passesF1({ claim: 'a', title: 'b', evidence_summary: [] }), false);
+  assert.strictEqual(passesF1({ claim: 'a', title: 'b' }), false);
+  const { kept, rejected } = partitionByF1([
+    { claim: 'a', title: 'b', evidence_summary: ['e'] },
+    { claim: '', title: 'b', evidence_summary: ['e'] },
+  ]);
+  assert.strictEqual(kept.length, 1);
+  assert.strictEqual(rejected.length, 1);
 });
 
 test('mapWikiIndex filters out pages with frontmatter.adr !== true', () => {
