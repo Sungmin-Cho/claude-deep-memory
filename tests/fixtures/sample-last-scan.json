@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Sungmin-Cho/claude-deep-suite/main/schemas/artifact-envelope.schema.json",
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-docs",
+    "producer_version": "2.3.1",
+    "artifact_kind": "last-scan",
+    "run_id": "01j_docs_fixture_0001",
+    "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "last-scan", "version": "1.0" },
+    "git": { "head": "mno7890", "branch": "main", "dirty": false },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "drifts": [
+      {
+        "title": "CLAUDE.md references removed file scripts/legacy-init.js",
+        "path": "CLAUDE.md",
+        "language": "markdown",
+        "recommended_fix": "remove reference or restore file"
+      },
+      {
+        "title": "README.md fails strict YAML on frontmatter version field",
+        "path": "README.md",
+        "language": "markdown",
+        "recommended_fix": "quote version value as string"
+      }
+    ]
+  }
+}

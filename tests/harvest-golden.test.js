@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt } = require('../scripts/harvest');
+const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt, mapDocsScan } = require('../scripts/harvest');
 
 test('harvest of recurring-findings fixture produces failure-case card with claim never-empty', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-harv-'));
@@ -132,6 +132,42 @@ test('mapWorkReceipt ignores slices with outcome other than success/failure (e.g
     { id: 'src_0' }
   );
   assert.deepStrictEqual(result, []);
+});
+
+test('Step A: mapDocsScan — drift → coding-style with language applicability', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-docs-'));
+  try {
+    const cards = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-last-scan.json'),
+      sourceKind: 'docs-scan',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    assert.strictEqual(cards.length, 2);
+    const c1 = cards[0];
+    assert.strictEqual(c1.payload.memory_type, 'coding-style');
+    assert.strictEqual(
+      c1.payload.claim,
+      'CLAUDE.md references removed file scripts/legacy-init.js — remove reference or restore file'
+    );
+    assert.deepStrictEqual(c1.payload.evidence_summary, ['CLAUDE.md']);
+    assert.strictEqual(c1.payload.applicability[0].value, 'language=markdown');
+    assert.deepStrictEqual(c1.payload.recommended_action, ['remove reference or restore file']);
+    assert.deepStrictEqual(c1.payload.tags, ['deep-docs', 'style']);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('mapDocsScan handles missing recommended_fix without breaking F1 claim', () => {
+  const result = mapDocsScan(
+    { payload: { drifts: [{ title: 'X', path: 'a.md' }] } },
+    { id: 'src_0' }
+  );
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].claim, 'X — no recommendation');
+  assert.deepStrictEqual(result[0].recommended_action, []);
 });
 
 test('harvest throws on unknown sourceKind', async () => {

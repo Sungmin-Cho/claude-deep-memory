@@ -119,11 +119,38 @@ function mapWorkReceipt(artifact, sourceMeta) {
   return out;
 }
 
-// Phase 3a will register mapDocsScan + mapWikiIndex here next.
+/**
+ * spec §7.1 — Step A mapper for `.deep-docs/last-scan.json`.
+ *   claim source: "<drift.title> — <drift.recommended_fix>" (deterministic, F1)
+ *   evidence_summary: [drift.path] if present
+ *   applicability: language=<drift.language> if present
+ *   recommended_action: [drift.recommended_fix] if present
+ */
+function mapDocsScan(artifact, sourceMeta) {
+  const drifts = artifact.payload?.drifts || [];
+  return drifts.map((d) => ({
+    memory_type: 'coding-style',
+    title: d.title,
+    claim: `${d.title} — ${d.recommended_fix || 'no recommendation'}`,
+    evidence_summary: [d.path].filter(Boolean).slice(0, 5),
+    applicability: d.language
+      ? [{ value: `language=${d.language}`, source_id: sourceMeta.id, confidence: 0.6 }]
+      : [],
+    non_applicability: [],
+    recommended_action: d.recommended_fix ? [d.recommended_fix] : [],
+    search_keywords: [],
+    tags: ['deep-docs', 'style'],
+    confidence: 0.5,
+    created_at: new Date().toISOString(),
+  }));
+}
+
+// Phase 3a will register mapWikiIndex here next.
 const STEP_A_MAPPERS = {
   'review-recurring': mapRecurringFindings,
   'evolve-insights': mapEvolveInsights,
   'work-receipt': mapWorkReceipt,
+  'docs-scan': mapDocsScan,
 };
 
 function memoryIdFor(memoryType, dk) {
@@ -312,6 +339,7 @@ module.exports = {
   mapRecurringFindings,
   mapEvolveInsights,
   mapWorkReceipt,
+  mapDocsScan,
   STEP_A_MAPPERS,
   buildCardFromDraft,
   buildSourceMeta,
