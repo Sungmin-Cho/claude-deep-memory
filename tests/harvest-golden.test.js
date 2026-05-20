@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights } = require('../scripts/harvest');
+const { harvestArtifact, STEP_A_MAPPERS, mapEvolveInsights, mapWorkReceipt } = require('../scripts/harvest');
 
 test('harvest of recurring-findings fixture produces failure-case card with claim never-empty', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-harv-'));
@@ -47,9 +47,11 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
   }
 });
 
-test('Phase 3a — STEP_A_MAPPERS registers review-recurring + evolve-insights (3 more in subsequent tasks)', () => {
+test('Phase 3a wiring — STEP_A_MAPPERS contains review-recurring + evolve-insights + work-receipt (docs/wiki added in 3a.3/3a.4)', () => {
   const keys = Object.keys(STEP_A_MAPPERS).sort();
-  assert.deepStrictEqual(keys, ['evolve-insights', 'review-recurring']);
+  for (const required of ['evolve-insights', 'review-recurring', 'work-receipt']) {
+    assert.ok(keys.includes(required), `STEP_A_MAPPERS missing ${required}: ${keys.join(',')}`);
+  }
 });
 
 test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to confidence', async () => {
@@ -85,6 +87,50 @@ test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to co
 
 test('mapEvolveInsights returns empty array for missing payload.insights (no F1 violation)', () => {
   const result = mapEvolveInsights({}, { id: 'src_0' });
+  assert.deepStrictEqual(result, []);
+});
+
+test('Step A: mapWorkReceipt — success slice → pattern, failure slice → failure-case', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-work-'));
+  try {
+    const success = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-session-receipt-success.json'),
+      sourceKind: 'work-receipt',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    assert.strictEqual(success.length, 1);
+    const s = success[0];
+    assert.strictEqual(s.payload.memory_type, 'pattern');
+    assert.strictEqual(s.payload.claim, 'Pattern: implement envelope wrap — all tests pass');
+    assert.deepStrictEqual(s.payload.evidence_summary, ['SLICE-001']);
+    assert.deepStrictEqual(s.payload.tags, ['deep-work', 'pattern']);
+
+    const failure = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-session-receipt-failure.json'),
+      sourceKind: 'work-receipt',
+      memoryRoot: tmp,
+      projectId: 'proj_test',
+      skipDistillStepB: true,
+    });
+    // 2 slices in fixture, 1 failure + 1 skipped → only failure persists
+    assert.strictEqual(failure.length, 1);
+    const f = failure[0];
+    assert.strictEqual(f.payload.memory_type, 'failure-case');
+    assert.strictEqual(f.payload.claim, 'Failure: FTS5 upsert lock window — lock acquired but FTS5 commit timed out');
+    assert.deepStrictEqual(f.payload.evidence_summary, ['SLICE-002']);
+    assert.deepStrictEqual(f.payload.tags, ['deep-work', 'failure-case']);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('mapWorkReceipt ignores slices with outcome other than success/failure (e.g. skipped)', () => {
+  const result = mapWorkReceipt(
+    { payload: { slices: [{ id: 'X', title: 't', outcome: 'skipped' }] } },
+    { id: 'src_0' }
+  );
   assert.deepStrictEqual(result, []);
 });
 

@@ -74,10 +74,56 @@ function mapEvolveInsights(artifact, sourceMeta) {
   }));
 }
 
-// Phase 3a will register mapWorkReceipt, mapDocsScan, mapWikiIndex here next.
+/**
+ * spec §7.1 — Step A mapper for `.deep-work/*\/session-receipt.json`.
+ *   Branches by slice.outcome:
+ *     success → memory_type=pattern,    claim = "Pattern: <title> — <outcome_summary>"
+ *     failure → memory_type=failure-case, claim = "Failure: <title> — <failure_reason>"
+ *   Other outcomes (e.g. "skipped") are ignored — no card produced.
+ *   evidence_summary: [slice.id] (deterministic single-element source)
+ */
+function mapWorkReceipt(artifact, sourceMeta) {
+  const slices = artifact.payload?.slices || [];
+  const out = [];
+  for (const s of slices) {
+    if (s.outcome === 'success') {
+      out.push({
+        memory_type: 'pattern',
+        title: s.title,
+        claim: `Pattern: ${s.title} — ${s.outcome_summary || 'success'}`,
+        evidence_summary: [s.id],
+        applicability: [],
+        non_applicability: [],
+        recommended_action: [],
+        search_keywords: [],
+        tags: ['deep-work', 'pattern'],
+        confidence: 0.5,
+        created_at: new Date().toISOString(),
+      });
+    } else if (s.outcome === 'failure') {
+      out.push({
+        memory_type: 'failure-case',
+        title: s.title,
+        claim: `Failure: ${s.title} — ${s.failure_reason || 'unspecified'}`,
+        evidence_summary: [s.id],
+        applicability: [],
+        non_applicability: [],
+        recommended_action: [],
+        search_keywords: [],
+        tags: ['deep-work', 'failure-case'],
+        confidence: 0.5,
+        created_at: new Date().toISOString(),
+      });
+    }
+  }
+  return out;
+}
+
+// Phase 3a will register mapDocsScan + mapWikiIndex here next.
 const STEP_A_MAPPERS = {
   'review-recurring': mapRecurringFindings,
   'evolve-insights': mapEvolveInsights,
+  'work-receipt': mapWorkReceipt,
 };
 
 function memoryIdFor(memoryType, dk) {
@@ -265,6 +311,7 @@ module.exports = {
   harvestArtifact,
   mapRecurringFindings,
   mapEvolveInsights,
+  mapWorkReceipt,
   STEP_A_MAPPERS,
   buildCardFromDraft,
   buildSourceMeta,

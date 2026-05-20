@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Sungmin-Cho/claude-deep-suite/main/schemas/artifact-envelope.schema.json",
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-work",
+    "producer_version": "6.8.0",
+    "artifact_kind": "session-receipt",
+    "run_id": "01j_work_failure_0002",
+    "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "session-receipt", "version": "1.0" },
+    "git": { "head": "jkl3456", "branch": "main", "dirty": false },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "slices": [
+      {
+        "id": "SLICE-002",
+        "title": "FTS5 upsert lock window",
+        "outcome": "failure",
+        "outcome_summary": null,
+        "failure_reason": "lock acquired but FTS5 commit timed out"
+      },
+      {
+        "id": "SLICE-003",
+        "title": "irrelevant slice",
+        "outcome": "skipped",
+        "outcome_summary": null,
+        "failure_reason": null
+      }
+    ]
+  }
+}

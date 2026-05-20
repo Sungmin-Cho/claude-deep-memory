@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Sungmin-Cho/claude-deep-suite/main/schemas/artifact-envelope.schema.json",
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-work",
+    "producer_version": "6.8.0",
+    "artifact_kind": "session-receipt",
+    "run_id": "01j_work_success_0001",
+    "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "session-receipt", "version": "1.0" },
+    "git": { "head": "ghi9012", "branch": "main", "dirty": false },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "slices": [
+      {
+        "id": "SLICE-001",
+        "title": "implement envelope wrap",
+        "outcome": "success",
+        "outcome_summary": "all tests pass",
+        "failure_reason": null
+      }
+    ]
+  }
+}
