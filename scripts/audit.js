@@ -22,6 +22,9 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { isStale: lockIsStale, breakLock } = require('./lib/lock');
+const { hashFile } = require('./lib/source-hash');
+
+const PROFILE_MAX_AGE_DAYS_DEFAULT = 30;
 
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
@@ -261,11 +264,143 @@ function setsEqual(a, b) {
   return true;
 }
 
+/**
+ * Task 5.5 — detect source-artifact renames / content drift.
+ *
+ * For every card, walk payload.deep_memory_provenance[] and compare each entry's
+ * `content_hash` (captured at harvest time) against `hashFile()` of the live
+ * source artifact at envelope.provenance.source_artifacts[source_index].path.
+ *
+ * Mismatch cases:
+ *   - file missing entirely  → unresolved_source.reason = 'missing'
+ *   - hash drift             → unresolved_source.reason = 'content_drift'
+ *   - source_index out of range → unresolved_source.reason = 'index_oob'
+ *
+ * Returns:
+ *   {
+ *     scanned: <int>,                    // total cards scanned
+ *     unresolved: [{
+ *       path: <cardPath>,
+ *       memory_id, reason, dp_id,
+ *       expected_hash, actual_hash, source_path
+ *     }],
+ *   }
+ */
+function detectSourceRenames(memoryRoot) {
+  const cardsRoot = path.join(memoryRoot, 'cards');
+  const out = { scanned: 0, unresolved: [] };
+  for (const entry of allCardFiles(cardsRoot)) {
+    out.scanned += 1;
+    let card;
+    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
+    catch { continue; }
+    const sa = card.envelope?.provenance?.source_artifacts || [];
+    const dp = card.payload?.deep_memory_provenance || [];
+    for (const d of dp) {
+      const idx = d.source_index;
+      if (typeof idx !== 'number' || idx < 0 || idx >= sa.length) {
+        out.unresolved.push({
+          path: entry.path,
+          memory_id: card.payload?.memory_id || null,
+          reason: 'index_oob',
+          dp_id: d.id,
+          expected_hash: d.content_hash,
+          actual_hash: null,
+          source_path: null,
+        });
+        continue;
+      }
+      const srcPath = sa[idx].path;
+      if (!fs.existsSync(srcPath)) {
+        out.unresolved.push({
+          path: entry.path,
+          memory_id: card.payload?.memory_id || null,
+          reason: 'missing',
+          dp_id: d.id,
+          expected_hash: d.content_hash,
+          actual_hash: null,
+          source_path: srcPath,
+        });
+        continue;
+      }
+      let actual;
+      try { actual = hashFile(srcPath); }
+      catch { actual = null; }
+      if (actual !== d.content_hash) {
+        out.unresolved.push({
+          path: entry.path,
+          memory_id: card.payload?.memory_id || null,
+          reason: 'content_drift',
+          dp_id: d.id,
+          expected_hash: d.content_hash,
+          actual_hash: actual,
+          source_path: srcPath,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Task 5.6 — detect stale project-profile.json (older than profile_max_age_days).
+ * Reads `.deep-memory/project-profile.json` from the supplied projectDir (defaults
+ * to cwd) and compares `generated_at` to today.
+ *
+ * Returns:
+ *   { exists: bool, age_days: number|null, stale: bool, max_age_days, profile_path }
+ */
+function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFAULT } = {}) {
+  const profilePath = path.join(projectDir, '.deep-memory', 'project-profile.json');
+  if (!fs.existsSync(profilePath)) {
+    return {
+      exists: false,
+      age_days: null,
+      stale: false,
+      max_age_days: maxAgeDays,
+      profile_path: profilePath,
+    };
+  }
+  let profile;
+  try { profile = JSON.parse(fs.readFileSync(profilePath, 'utf8')); }
+  catch {
+    return {
+      exists: true,
+      age_days: null,
+      stale: true,
+      max_age_days: maxAgeDays,
+      profile_path: profilePath,
+      parse_error: true,
+    };
+  }
+  const generatedAt = profile.generated_at ? new Date(profile.generated_at) : null;
+  if (!generatedAt || isNaN(generatedAt.getTime())) {
+    return {
+      exists: true,
+      age_days: null,
+      stale: true,
+      max_age_days: maxAgeDays,
+      profile_path: profilePath,
+    };
+  }
+  const age_days = (Date.now() - generatedAt.getTime()) / (86400 * 1000);
+  return {
+    exists: true,
+    age_days,
+    stale: age_days > maxAgeDays,
+    max_age_days: maxAgeDays,
+    profile_path: profilePath,
+  };
+}
+
 module.exports = {
   validateAllCards,
   applyAutoTransitions,
   detectStaleLocks,
   detectDedupeCollisions,
+  detectSourceRenames,
+  detectStaleProfile,
   allCardFiles,
   validateCardSchema,
+  PROFILE_MAX_AGE_DAYS_DEFAULT,
 };
