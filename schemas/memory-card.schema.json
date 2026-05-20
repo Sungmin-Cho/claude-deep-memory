@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card.schema.json",
+  "title": "Memory Card",
+  "type": "object",
+  "required": ["schema_version", "envelope", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "envelope": {
+      "type": "object",
+      "required": ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "git", "provenance"],
+      "additionalProperties": false,
+      "properties": {
+        "producer": { "const": "deep-memory" },
+        "producer_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "artifact_kind": { "const": "memory-card" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "schema": {
+          "type": "object",
+          "required": ["name", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "const": "memory-card" },
+            "version": { "type": "string" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "head": { "type": "string" },
+            "branch": { "type": "string" },
+            "dirty": { "type": "string" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["source_artifacts"],
+          "additionalProperties": false,
+          "properties": {
+            "source_artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "run_id": { "type": "string" }
+                }
+              }
+            },
+            "tool_versions": { "type": "object" }
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "memory_id", "memory_type", "dedupe_key", "privacy_level",
+        "title", "claim", "evidence_summary", "applicability",
+        "non_applicability", "recommended_action", "search_keywords",
+        "confidence", "status", "status_history", "tags",
+        "created_at", "last_seen_at", "review_after", "feedback",
+        "deep_memory_provenance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "memory_id": { "type": "string", "pattern": "^mem_[a-z_]+_[a-f0-9]+$" },
+        "memory_type": { "enum": ["pattern", "failure-case", "architecture-decision", "experiment-outcome", "coding-style"] },
+        "dedupe_key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "privacy_level": { "enum": ["local", "global"], "default": "local" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "claim": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "evidence_summary": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 5,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "applicability": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "object",
+            "required": ["value", "source_id", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string", "minLength": 1 },
+              "source_id": { "type": "string", "pattern": "^src_\\d+$" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "non_applicability": { "$ref": "#/properties/payload/properties/applicability" },
+        "recommended_action": {
+          "type": "array",
+          "minItems": 0,
+          "items": { "type": "string" }
+        },
+        "search_keywords": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 15,
+          "items": { "type": "string", "minLength": 1, "maxLength": 40 }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "status": { "enum": ["candidate", "validated", "contradicted", "deprecated"] },
+        "status_history": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "at", "by"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "at": { "type": "string", "format": "date-time" },
+              "by": { "type": "string" }
+            }
+          }
+        },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_seen_at": { "type": "string", "format": "date-time" },
+        "review_after": { "type": "string", "format": "date-time" },
+        "feedback": {
+          "type": "object",
+          "required": ["accepted_count", "rejected_count", "inaccurate_count"],
+          "additionalProperties": false,
+          "properties": {
+            "accepted_count": { "type": "integer", "minimum": 0 },
+            "rejected_count": { "type": "integer", "minimum": 0 },
+            "inaccurate_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "redaction_metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rules_matched": { "type": "integer", "minimum": 0 },
+            "chars_masked": { "type": "integer", "minimum": 0 },
+            "preview": { "type": "string" }
+          }
+        },
+        "deep_memory_provenance": {
+          "type": "array",
+          "minItems": 0,
+          "description": "deep-memory specific per-source provenance. Cross-refs envelope.provenance.source_artifacts[source_index]. Option (b) per .deep-review/decisions/2026-05-20-envelope-compat.md.",
+          "items": {
+            "type": "object",
+            "required": ["id", "content_hash", "captured_at", "artifact_kind", "schema_version", "source_index"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^src_\\d+$" },
+              "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "captured_at": { "type": "string", "format": "date-time" },
+              "artifact_kind": { "type": "string" },
+              "schema_version": { "type": "string" },
+              "source_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Index into envelope.provenance.source_artifacts[]. JSON Schema cannot enforce this is a valid index — runtime invariant tested in Task 4.6 cross-reference test."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

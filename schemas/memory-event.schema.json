@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-event.schema.json",
+  "title": "Memory Event",
+  "type": "object",
+  "required": ["schema_version", "envelope", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "envelope": {
+      "type": "object",
+      "required": ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "git", "provenance"],
+      "additionalProperties": false,
+      "properties": {
+        "producer": { "const": "deep-memory" },
+        "producer_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "artifact_kind": { "const": "memory-event" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "schema": {
+          "type": "object",
+          "required": ["name", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "const": "memory-event" },
+            "version": { "type": "string" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "head": { "type": "string" },
+            "branch": { "type": "string" },
+            "dirty": { "type": "string" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["source_artifacts"],
+          "additionalProperties": false,
+          "properties": {
+            "source_artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "run_id": { "type": "string" }
+                }
+              }
+            },
+            "tool_versions": { "type": "object" }
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": ["event_key", "source_artifact_id", "event_kind", "cards_count", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "event_key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "sha256 hex (no prefix) of (path + content_hash + run_id) — see spec §state-machine event keys."
+        },
+        "source_artifact_id": {
+          "type": "string",
+          "pattern": "^src_\\d+$",
+          "description": "Cross-ref to deep-memory provenance src id."
+        },
+        "event_kind": {
+          "enum": ["harvested", "merged", "promoted", "demoted"]
+        },
+        "cards_count": { "type": "integer", "minimum": 0 },
+        "at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

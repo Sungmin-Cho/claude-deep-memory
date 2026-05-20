@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/project-profile.schema.json",
+  "title": "Project Profile",
+  "type": "object",
+  "required": ["project_id", "repo", "signature", "suite", "privacy", "generated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "project_id": { "type": "string", "pattern": "^proj_[a-f0-9]+$" },
+    "repo": {
+      "type": "object",
+      "required": ["remote_url_hash", "root_path_hash", "default_branch"],
+      "additionalProperties": false,
+      "properties": {
+        "remote_url_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]+$" },
+        "root_path_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]+$" },
+        "default_branch": { "type": "string" },
+        "git_head": { "type": "string" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "runtimes": { "type": "array", "items": { "type": "string" } },
+        "topology": { "type": "string" },
+        "test_frameworks": { "type": "array", "items": { "type": "string" } },
+        "package_managers": { "type": "array", "items": { "type": "string" } },
+        "agent_runtime": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "installed_plugins": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "required": ["scope", "allow_export"],
+      "additionalProperties": false,
+      "properties": {
+        "scope": { "enum": ["local", "team", "org"] },
+        "allow_export": { "type": "boolean" }
+      }
+    },
+    "source_mtimes": { "type": "object" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

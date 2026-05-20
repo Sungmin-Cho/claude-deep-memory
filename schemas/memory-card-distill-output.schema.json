@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card-distill-output.schema.json",
+  "title": "Memory Card Distill Output (Step B sub-agent response)",
+  "description": "Step B sub-agent output (LLM-derived fields only). The orchestrator (harvest.js Step C) maps non_applicability items into the full memory-card.schema shape by back-filling source_id from the originating source artifact's deep_memory_provenance.id. Do not add source_id at this stage.",
+  "type": "object",
+  "required": ["claim_refined", "non_applicability", "recommended_action", "search_keywords"],
+  "additionalProperties": false,
+  "properties": {
+    "claim_refined": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "non_applicability": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["value", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "value": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "recommended_action": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "search_keywords": {
+      "type": "array",
+      "maxItems": 15,
+      "items": { "type": "string", "minLength": 1, "maxLength": 40 }
+    }
+  }
+}
