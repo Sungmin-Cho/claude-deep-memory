@@ -1,6 +1,7 @@
 // scripts/harvest.js
 'use strict';
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { wrap } = require('./lib/envelope');
@@ -8,8 +9,15 @@ const { redactObject } = require('./lib/redact');
 const { dedupeKey } = require('./lib/dedupe');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
+const { acquire, release } = require('./lib/lock');
 
 const REVIEW_AFTER_DAYS = 90;
+const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
+
+// Phase 4 Task 4.2 introduces ./lib/fts-index — Phase 2 dynamic-requires it so the
+// FTS5 upsert path is a no-op until that module lands, without breaking persist.
+let fts = null;
+try { fts = require('./lib/fts-index'); } catch { /* Phase 4 wires this */ }
 
 /**
  * spec §7.1 — Step A mapper for `.deep-review/recurring-findings.json`.
@@ -121,13 +129,107 @@ async function harvestArtifact({
 
   const cards = drafts.map((d) => buildCardFromDraft(d, sourceMeta));
 
-  // Phase 2 simplified persist — Task 2.5 wraps this in lease + lock + idempotent event + FTS5.
-  for (const c of cards) {
-    const dir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
-    fs.mkdirSync(dir, { recursive: true });
-    writeJsonAtomic(path.join(dir, c.payload.memory_id + '.json'), c);
-  }
+  await persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta });
   return cards;
+}
+
+/**
+ * Idempotency key for the events JSONL — pinning the (source path, content hash, run_id)
+ * triple ensures a re-harvest of the same artifact produces zero new event lines.
+ * Concurrent harvests against the same project are additionally fenced by the lease.
+ */
+function eventKey(sourceMeta) {
+  const tuple = [sourceMeta.path, sourceMeta.content_hash, sourceMeta.run_id].join('|');
+  return createHash('sha256').update(tuple).digest('hex');
+}
+
+function readLeaseSafe(leasePath) {
+  try { return JSON.parse(fs.readFileSync(leasePath, 'utf8')); }
+  catch { return null; }
+}
+
+/**
+ * spec §7.3 — wraps card / events / FTS5 writes in one critical section:
+ *   1. acquire project lease (`<memory_root>/.leases/<project_id>.lease`) — 30min stale-break
+ *   2. acquire global lock (`<memory_root>/.lock`) — mkdir-atomic, covers index commit too
+ *   3. append idempotent event line to `events/YYYY-MM.jsonl` (skip if event_key seen)
+ *   4. atomic write each card under `cards/<memory_type>/<project_id>/`
+ *   5. FTS5 upsert in same lock window (Phase 4 wires the actual driver)
+ *   6. release global lock, then delete lease (finally guard)
+ */
+async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta }) {
+  const leaseDir = path.join(memoryRoot, '.leases');
+  fs.mkdirSync(leaseDir, { recursive: true });
+  const leasePath = path.join(leaseDir, projectId + '.lease');
+
+  // 1. lease — claim atomically via wx flag so concurrent callers see EEXIST
+  const leasePayload = JSON.stringify({
+    pid: process.pid,
+    host: os.hostname(),
+    started_at: new Date().toISOString(),
+  });
+  try {
+    fs.writeFileSync(leasePath, leasePayload, { flag: 'wx' });
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    const existing = readLeaseSafe(leasePath);
+    if (existing && Date.now() - new Date(existing.started_at).getTime() < LEASE_STALE_MS) {
+      throw new Error(
+        `Another session already harvesting project ${projectId} ` +
+        `(started ${existing.started_at}, pid ${existing.pid}). ` +
+        `Try later or wait ~30min for stale-break.`
+      );
+    }
+    // stale lease — overwrite
+    fs.writeFileSync(leasePath, leasePayload);
+  }
+
+  const lockPath = path.join(memoryRoot, '.lock');
+  const handle = await acquire(lockPath, { operation: 'harvest' });
+  try {
+    // 3. idempotent event append
+    const yearMonth = new Date().toISOString().slice(0, 7);
+    const eventsDir = path.join(memoryRoot, 'events');
+    fs.mkdirSync(eventsDir, { recursive: true });
+    const eventsFile = path.join(eventsDir, yearMonth + '.jsonl');
+    const existing = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, 'utf8') : '';
+    const key = eventKey(sourceMeta);
+    if (!existing.includes(`"event_key":"${key}"`)) {
+      const event = {
+        event_key: key,
+        source: sourceMeta,
+        run_id: sourceMeta.run_id,
+        at: new Date().toISOString(),
+        cards_count: cards.length,
+        project_id: projectId,
+      };
+      fs.appendFileSync(eventsFile, JSON.stringify(event) + '\n');
+    }
+
+    // 4. atomic card writes
+    for (const c of cards) {
+      const dir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
+      fs.mkdirSync(dir, { recursive: true });
+      writeJsonAtomic(path.join(dir, c.payload.memory_id + '.json'), c);
+    }
+
+    // 5. FTS5 upsert in same lock window (Phase 4 wires ./lib/fts-index)
+    if (fts && fts.openIndex && fts.upsertCard) {
+      const idx = fts.openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+      try {
+        if (idx.driver === 'better-sqlite3') idx.db.exec('BEGIN');
+        for (const c of cards) fts.upsertCard(idx, c, { projectId });
+        if (idx.driver === 'better-sqlite3') idx.db.exec('COMMIT');
+      } finally {
+        if (idx.driver === 'better-sqlite3' && idx.db && typeof idx.db.close === 'function') {
+          idx.db.close();
+        }
+      }
+    }
+  } finally {
+    release(handle);
+    try { fs.unlinkSync(leasePath); } catch { /* best-effort */ }
+  }
 }
 
 module.exports = {
@@ -137,5 +239,8 @@ module.exports = {
   buildCardFromDraft,
   buildSourceMeta,
   memoryIdFor,
+  persistWithLockAndLease,
+  eventKey,
   REVIEW_AFTER_DAYS,
+  LEASE_STALE_MS,
 };
