@@ -47,10 +47,18 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
   }
 });
 
-test('Phase 3a wiring — STEP_A_MAPPERS contains review-recurring + evolve-insights + work-receipt (docs/wiki added in 3a.3/3a.4)', () => {
+test('Phase 3a.5 wiring — STEP_A_MAPPERS contains all 5 spec §7.1 mappers exactly', () => {
   const keys = Object.keys(STEP_A_MAPPERS).sort();
-  for (const required of ['evolve-insights', 'review-recurring', 'work-receipt']) {
-    assert.ok(keys.includes(required), `STEP_A_MAPPERS missing ${required}: ${keys.join(',')}`);
+  assert.deepStrictEqual(keys, [
+    'docs-scan',
+    'evolve-insights',
+    'review-recurring',
+    'wiki-index',
+    'work-receipt',
+  ]);
+  // each entry must be a function (not stale alias / undefined)
+  for (const k of keys) {
+    assert.strictEqual(typeof STEP_A_MAPPERS[k], 'function', `${k} mapper must be a function`);
   }
 });
 

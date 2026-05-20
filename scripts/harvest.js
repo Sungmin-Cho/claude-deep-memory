@@ -172,7 +172,19 @@ function mapWikiIndex(artifact, sourceMeta) {
     }));
 }
 
-// Phase 3a.5 verifies all 5 mappers wired (review/evolve/work/docs/wiki).
+/**
+ * Phase 3a.5 — all 5 spec §7.1 Step A mappers wired.
+ *
+ *   source kind         → memory_type
+ *   ─────────────────────────────────────────
+ *   review-recurring    → failure-case
+ *   evolve-insights     → experiment-outcome
+ *   work-receipt        → pattern | failure-case (branched by slice.outcome)
+ *   docs-scan           → coding-style
+ *   wiki-index          → architecture-decision (ADR filter)
+ *
+ * Registry key MUST match `config.yaml#sources[*].kind`. Tests assert the exact set.
+ */
 const STEP_A_MAPPERS = {
   'review-recurring': mapRecurringFindings,
   'evolve-insights': mapEvolveInsights,
