@@ -19,6 +19,9 @@ const path = require('node:path');
 const Ajv = require('ajv/dist/2020');
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 
+const { evaluateTransitions } = require('./lib/state-machine');
+const { writeJsonAtomic } = require('./lib/atomic-write');
+
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
 const cardSchemaPath = path.join(__dirname, '../schemas/memory-card.schema.json');
@@ -94,8 +97,68 @@ function validateAllCards(memoryRoot) {
   return result;
 }
 
+/**
+ * Task 5.2 — apply state-machine auto transitions to every card on disk.
+ * Returns:
+ *   {
+ *     total: <int>,
+ *     transitioned: <int>,
+ *     transitions: [{memory_id, from, to, by, path}],
+ *   }
+ *
+ * A transition mutates the card in-place via writeJsonAtomic and appends a
+ * status_history entry. The status_history list is capped at MAX_HISTORY by
+ * the state-machine (sliding window). This is the runtime invariant for
+ * "stale memory" (validated → deprecated after review_after past) and the
+ * 4 other automatic transitions defined in scripts/lib/state-machine.js.
+ */
+function applyAutoTransitions(memoryRoot) {
+  const cardsRoot = path.join(memoryRoot, 'cards');
+  const out = { total: 0, transitioned: 0, transitions: [] };
+  for (const entry of allCardFiles(cardsRoot)) {
+    out.total += 1;
+    let card;
+    try {
+      card = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
+    } catch {
+      continue; // schema validation surfaces this separately
+    }
+    // The state-machine lib expects a flat view with status at top level;
+    // we project the wrapped shape into that view (audit-only, no mutation).
+    const view = {
+      status: card.payload?.status,
+      contradicting: card.contradicting || 0,
+      supporting: card.supporting || 0,
+      payload: card.payload,
+    };
+    const result = evaluateTransitions(view, { trimHistory: true });
+    if (!result.transitioned) continue;
+
+    const now = new Date().toISOString();
+    card.payload.status = result.next;
+    card.payload.status_history = [
+      ...(result.trimmed || []),
+      { from: result.current, to: result.next, at: now, by: result.by },
+    ];
+    if (card.payload.status_history.length > 10) {
+      card.payload.status_history = card.payload.status_history.slice(-10);
+    }
+    writeJsonAtomic(entry.path, card);
+    out.transitioned += 1;
+    out.transitions.push({
+      memory_id: card.payload?.memory_id || null,
+      from: result.current,
+      to: result.next,
+      by: result.by,
+      path: entry.path,
+    });
+  }
+  return out;
+}
+
 module.exports = {
   validateAllCards,
+  applyAutoTransitions,
   allCardFiles,
   validateCardSchema,
 };
