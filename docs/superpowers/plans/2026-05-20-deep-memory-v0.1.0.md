@@ -10,7 +10,7 @@
 
 **Spec reference:** `/Users/sungmin/Dev/claude-plugins/deep-memory/docs/superpowers/specs/2026-05-20-deep-memory-design.md` (1080+ lines, deep-review-loop 4 round 검증 완료)
 
-**총 phase**: 10 (0/1/2/3a/3b/4/5/6/7/8), **추정**: 12.5 영업일.
+**총 phase**: 10 (0/1/2/3a/3b/4/5/6/7/8), **추정**: ~16 영업일 (Round 1 plan-review 반영 — P29 schedule re-estimate, 3a/5 task per-task expand 포함).
 
 **기존 상태**:
 - `git init` 완료 (commits: `0637d0f`, `c02365b`, `4e78f87`)
@@ -186,7 +186,7 @@ Expected: starts with "MIT License" + current year + "Sungmin-Cho".
 ```markdown
 # deep-memory — Project Guide for Claude
 
-**Auto-loaded at the start of every Claude session.** Project overview + drift-resistant structural notes only. Version-by-version notes belong in `CHANGELOG.md`.
+**Auto-loaded for plugin developers running Claude Code in this repo clone** (P24 correction — marketplace-installed users see README + skills entry surfaces). Project overview + drift-resistant structural notes only. Version-by-version notes belong in `CHANGELOG.md`.
 
 ## Project Overview
 
@@ -243,10 +243,10 @@ Every release: bump version in `.claude-plugin/plugin.json` + `.codex-plugin/plu
 - CHANGELOG: `CHANGELOG.md` / `CHANGELOG.ko.md`
 ```
 
-- [ ] **Step 2: Verify size**
+- [ ] **Step 2: Verify size (P26 — upper bound only)**
 
 Run: `wc -c /Users/sungmin/Dev/claude-plugins/deep-memory/CLAUDE.md`
-Expected: between 1800 and 2500 bytes (target ~2KB).
+Expected: `≤ 2500 bytes` (target ~2KB; floor 무의미한 brittle assertion 제거).
 
 ### Task 0.6: AGENTS.md (~1KB, Codex entry point)
 
@@ -285,10 +285,10 @@ After a release, update both suite marketplace manifests in
 `/Users/sungmin/Dev/claude-plugins/deep-suite/`.
 ```
 
-- [ ] **Step 2: Verify size**
+- [ ] **Step 2: Verify size (P26 — upper bound only)**
 
 Run: `wc -c /Users/sungmin/Dev/claude-plugins/deep-memory/AGENTS.md`
-Expected: between 800 and 1300 bytes.
+Expected: `≤ 1300 bytes`.
 
 ### Task 0.7: README.md + README.ko.md (간단 — 형제와 같은 길이)
 
@@ -379,10 +379,10 @@ MIT
 
 - [ ] **Step 2: Write README.ko.md** — 위 영문 README의 1:1 한국어 미러. 동일 구조, 동일 섹션.
 
-- [ ] **Step 3: Verify sizes**
+- [ ] **Step 3: Verify sizes (P26 — upper bound only)**
 
 Run: `wc -c /Users/sungmin/Dev/claude-plugins/deep-memory/README.md /Users/sungmin/Dev/claude-plugins/deep-memory/README.ko.md`
-Expected: each between 2500 and 5500 bytes.
+Expected: each `≤ 5500 bytes`.
 
 ### Task 0.8: CHANGELOG.md + CHANGELOG.ko.md (initial v0.1.0 placeholder)
 
@@ -451,6 +451,13 @@ coverage/
 **Files:**
 - Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/scripts/check-sqlite.js`
 
+- [ ] **Step 0 (P28 — pre-check)**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-memory
+test -f package.json || { echo "package.json missing — run Task 0.3 first"; exit 1; }
+```
+
 - [ ] **Step 1: Install better-sqlite3 and write probe**
 
 ```bash
@@ -509,12 +516,39 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 목표: 4 JSON Schema (normative) + 10 lib 파일 (envelope / redact / dedupe / state-machine / lock / atomic-write / source-hash / score / preflight / adapter-registry). 각 lib 마다 단위 테스트 1개씩.
 
+### Task 1.0a (NEW, P11): Verify suite M3 envelope schema compatibility before extending source_artifacts
+
+**Files** (READ-ONLY):
+- `/Users/sungmin/Dev/claude-plugins/deep-suite/schemas/artifact-envelope.schema.json`
+
+- [ ] **Step 1: Read suite envelope schema + check `provenance.source_artifacts[]` extensibility**
+
+```bash
+node -e "
+const s = JSON.parse(require('fs').readFileSync('/Users/sungmin/Dev/claude-plugins/deep-suite/schemas/artifact-envelope.schema.json','utf8'));
+const sa = s.properties?.envelope?.properties?.provenance?.properties?.source_artifacts?.items;
+console.log('additionalProperties:', sa?.additionalProperties);
+console.log('allowed keys:', Object.keys(sa?.properties || {}));
+"
+```
+
+- [ ] **Step 2: Decision tree**
+  - If `additionalProperties: true` (or omitted) → extra fields (`id`, `content_hash`, `captured_at`, `artifact_kind`, `schema_version`) are accepted as-is. Proceed to Task 1.1.
+  - If `additionalProperties: false` → either (a) add a PR to suite repo extending the schema (requires sibling repo coordination), OR (b) move extra fields into `payload.deep_memory_provenance` (deep-memory-specific, not validated by suite sibling). For MVP, **option (b) is safer** — keeps suite schema compat 100%. Plan Task 1.1 / 1.3 / 6.x adjusts.
+  - **Document decision in spec §6 + commit message.**
+
+- [ ] **Step 3: Commit decision** (in deep-memory repo)
+
+```bash
+git commit --allow-empty -m "decision(phase-1): suite envelope compat — chose option (a)/(b) per Task 1.0a probe"
+```
+
 ### Task 1.1: `schemas/memory-card.schema.json` (normative)
 
 **Files:**
 - Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/schemas/memory-card.schema.json`
 
-- [ ] **Step 1: Write schema**
+- [ ] **Step 1: Write schema** (use Task 1.0a decision result — if option (b), `source_artifacts[]` is suite-shape minimal; extra fields go in `payload.deep_memory_provenance`)
 
 ```json
 {
@@ -806,7 +840,7 @@ Expected: 4 `OK` lines.
 - [ ] **Step 1: Write failing test**
 
 ```javascript
-// tests/envelope-emit.test.js
+// tests/envelope-emit.test.js (P10 fix — regex matches `_` separator emitted by ulidLike)
 const test = require('node:test');
 const assert = require('node:assert');
 const { wrap } = require('../scripts/lib/envelope');
@@ -818,7 +852,7 @@ test('envelope.wrap embeds producer + run_id + payload', () => {
     payload: { hello: 'world' },
   });
   assert.strictEqual(out.envelope.producer, 'deep-memory');
-  assert.match(out.envelope.run_id, /^[a-z0-9]+$/);
+  assert.match(out.envelope.run_id, /^[a-z0-9_]+$/); // P10: `_` allowed (ulidLike uses underscore separator)
   assert.match(out.envelope.generated_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepStrictEqual(out.payload, { hello: 'world' });
 });
@@ -1211,7 +1245,7 @@ test('isStale detects locks older than STALE_MS', () => {
 - [ ] **Step 2-4: Implement + run + commit**
 
 ```javascript
-// scripts/lib/lock.js
+// scripts/lib/lock.js (P9 fix — typed STALE_LOCK propagates instead of being swallowed)
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -1220,6 +1254,15 @@ const os = require('node:os');
 const STALE_MS = 5 * 60 * 1000;
 const BACKOFF_MS = 50;
 const MAX_RETRIES = 60;
+
+class StaleLockError extends Error {
+  constructor(lockPath, meta) {
+    super(`Stale lock detected: ${lockPath} (created_at=${meta.created_at}, pid=${meta.pid}). Run /deep-memory-audit --unlock to break.`);
+    this.code = 'STALE_LOCK';
+    this.lockPath = lockPath;
+    this.meta = meta;
+  }
+}
 
 async function acquire(lockPath, { operation = 'unknown' } = {}) {
   for (let i = 0; i < MAX_RETRIES; i++) {
@@ -1234,13 +1277,16 @@ async function acquire(lockPath, { operation = 'unknown' } = {}) {
       return { lockPath, metaPath };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      // already held — check stale
+      // P9: only swallow JSON parse / ENOENT during metadata read; propagate StaleLockError
+      let meta = null;
       try {
-        const meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
-        if (isStale(meta)) {
-          throw new Error(`Stale lock detected: ${lockPath} (run /deep-memory-audit --unlock)`);
-        }
-      } catch (e2) { /* malformed metadata — try again */ }
+        meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
+      } catch (readErr) {
+        // malformed or transiently missing metadata — fall through to backoff retry
+      }
+      if (meta && isStale(meta)) {
+        throw new StaleLockError(lockPath, meta);  // propagates with typed code; outer catch must not swallow
+      }
       await new Promise((r) => setTimeout(r, BACKOFF_MS));
     }
   }
@@ -1262,7 +1308,7 @@ function breakLock(lockPath) {
   fs.rmSync(lockPath, { recursive: true, force: true });
 }
 
-module.exports = { acquire, release, isStale, breakLock, STALE_MS, BACKOFF_MS };
+module.exports = { acquire, release, isStale, breakLock, StaleLockError, STALE_MS, BACKOFF_MS };
 ```
 
 ```bash
@@ -1301,13 +1347,14 @@ test('writeJsonAtomic writes file readable as JSON', () => {
 - [ ] **Step 2-4: Implement + test + commit**
 
 ```javascript
-// scripts/lib/atomic-write.js
+// scripts/lib/atomic-write.js (P8 fix — parent dir fsync AFTER rename, not before)
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
 
 function writeJsonAtomic(target, data) {
   const tmp = target + '.tmp';
+  // 1. write + fsync the temp file (file contents durable)
   const fd = fs.openSync(tmp, 'w');
   try {
     fs.writeSync(fd, JSON.stringify(data, null, 2));
@@ -1315,14 +1362,15 @@ function writeJsonAtomic(target, data) {
   } finally {
     fs.closeSync(fd);
   }
-  // fsync the parent dir for rename durability
+  // 2. atomic rename (POSIX guarantee)
+  fs.renameSync(tmp, target);
+  // 3. P8: fsync parent dir AFTER rename so the rename result is durable
   const dirFd = fs.openSync(path.dirname(target), 'r');
   try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
-  fs.renameSync(tmp, target);
-  // readback validate
+  // 4. readback validate (sanity)
   try { JSON.parse(fs.readFileSync(target, 'utf8')); }
   catch (e) {
-    const quarantine = target + '.tmp.corrupt-' + Date.now();
+    const quarantine = target + '.corrupt-' + Date.now();
     fs.renameSync(target, quarantine);
     throw new Error(`atomic write readback failed; quarantined to ${quarantine}: ${e.message}`);
   }
@@ -1432,7 +1480,7 @@ test('scoreCard with missing profile forces w_project_sim=0', () => {
 - [ ] **Step 2-4: Implement + test + commit**
 
 ```javascript
-// scripts/lib/score.js
+// scripts/lib/score.js (P13 fix — SQLite FTS5 bm25() returns lower=better; INVERT normalization)
 'use strict';
 
 function bm25MinMax(rows) {
@@ -1441,7 +1489,9 @@ function bm25MinMax(rows) {
   const vals = rows.map((r) => r.bm25);
   const min = Math.min(...vals), max = Math.max(...vals);
   if (max === min) return rows.map((r) => ({ ...r, task_sim_norm: 1.0 }));
-  return rows.map((r) => ({ ...r, task_sim_norm: (r.bm25 - min) / (max - min) }));
+  // P13: SQLite FTS5 bm25() returns negative-log-likelihood — SMALLER values = better match.
+  // Therefore min-max should map MIN raw bm25 to 1.0 (best) and MAX raw bm25 to 0.0 (worst).
+  return rows.map((r) => ({ ...r, task_sim_norm: (max - r.bm25) / (max - min) }));
 }
 
 function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
@@ -1574,20 +1624,29 @@ module.exports = { detect };
 - [ ] **Step 2: Implement llm-bridge (just dispatch — actual adapters in Phase 3b)**
 
 ```javascript
-// scripts/lib/llm-bridge.js
+// scripts/lib/llm-bridge.js (Phase 1 skeleton — Phase 3b will add schema validation + allowlist)
+// P15: from Phase 1, pass through adapterOpts so adapters can receive recordedFixture etc.
 'use strict';
 const { detect } = require('./adapter-registry');
 
-async function refine(eventDraft, sourceExcerpt, { adapter = 'auto', timeoutMs = 30000 } = {}) {
+const ADAPTERS = Object.freeze({
+  'claude-agent': () => require('./adapters/claude-agent'),
+  'codex-bash': () => require('./adapters/codex-bash'),
+  'gemini-sdk': () => require('./adapters/gemini-sdk'),
+  'stdin-fallback': () => require('./adapters/stdin-fallback'),
+});
+
+async function refine(eventDraft, sourceExcerpt, { adapter = 'auto', timeoutMs = 30000, ...adapterOpts } = {}) {
   const chosen = detect(adapter);
-  const mod = require('./adapters/' + chosen);
+  const loader = ADAPTERS[chosen];
+  if (!loader) throw new Error(`Unknown adapter '${chosen}'`);
   return Promise.race([
-    mod.refine(eventDraft, sourceExcerpt),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`)), timeoutMs)),
+    loader().refine(eventDraft, sourceExcerpt, adapterOpts),
+    new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`), { code: 'TIMEOUT' })), timeoutMs)),
   ]);
 }
 
-module.exports = { refine };
+module.exports = { refine, ADAPTER_NAMES: Object.keys(ADAPTERS) };
 ```
 
 - [ ] **Step 3: Commit (adapters/ dir will be filled in Phase 3b)**
@@ -1602,15 +1661,18 @@ git commit -m "feat(phase-1): adapter-registry + llm-bridge skeletons (adapters 
 **Files:**
 - Create: `tests/manifest-drift.test.js`
 
-- [ ] **Step 1: Test**
+- [ ] **Step 0 (P19 fix): use `path.resolve(__dirname, '..')` for project root (NEVER absolute hard-coded `/Users/...` paths). All tests must run on any machine and in CI.**
+
+- [ ] **Step 1: Test** (P22 fix — parse YAML properly with `js-yaml`, not regex)
 
 ```javascript
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const yaml = require('js-yaml');  // P22: proper YAML parse
 
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(__dirname, '..');  // P19: relative root
 const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
 const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -1620,26 +1682,33 @@ test('version 3중 동기', () => {
   assert.strictEqual(codexManifest.version, pkg.version);
 });
 
-test('Codex description ≤1024 chars', () => {
+test('Codex descriptions ≤1024 chars (P22 — covers shortDescription too)', () => {
   assert.ok(codexManifest.description.length <= 1024, `codex description ${codexManifest.description.length} chars`);
-  assert.ok(codexManifest.interface.longDescription.length <= 1024);
+  assert.ok(codexManifest.interface.longDescription.length <= 1024, `codex longDescription ${codexManifest.interface.longDescription.length} chars`);
+  assert.ok(codexManifest.interface.shortDescription.length <= 1024, `codex shortDescription ${codexManifest.interface.shortDescription.length} chars`);
 });
 
-test('All skill SKILL.md frontmatter ≤1024 chars description + no colon-space in description', () => {
+test('All skill SKILL.md frontmatter — js-yaml parse + ≤1024 desc + strict YAML (P22)', () => {
   const skillsDir = path.join(root, 'skills');
-  if (!fs.existsSync(skillsDir)) return; // not yet created in Phase 0
+  if (!fs.existsSync(skillsDir)) return; // vacuous pass on early phase — P25 mitigated by Phase 2/6 rerun gate (Task 6.1.a below)
   for (const skill of fs.readdirSync(skillsDir)) {
     const sf = path.join(skillsDir, skill, 'SKILL.md');
     if (!fs.existsSync(sf)) continue;
     const txt = fs.readFileSync(sf, 'utf8');
-    const fm = txt.match(/^---\n([\s\S]+?)\n---/);
-    assert.ok(fm, `${skill}: no frontmatter`);
-    const desc = (fm[1].match(/^description:\s*(.+)$/m) || [])[1] || '';
-    const cleaned = desc.replace(/^["']|["']$/g, '');
-    assert.ok(cleaned.length <= 1024, `${skill} description ${cleaned.length} chars`);
+    const fmMatch = txt.match(/^---\n([\s\S]+?)\n---/);
+    assert.ok(fmMatch, `${skill}: no frontmatter`);
+    let fm;
+    try { fm = yaml.load(fmMatch[1]); }
+    catch (e) { assert.fail(`${skill}: strict YAML parse error: ${e.message}`); }
+    assert.ok(typeof fm.description === 'string' && fm.description.length > 0, `${skill}: missing description`);
+    assert.ok(fm.description.length <= 1024, `${skill} description ${fm.description.length} chars (Codex limit)`);
   }
 });
 ```
+
+> **P25 mitigation — Phase 6.1.a rerun gate** (이전 Phase 1 의 vacuous pass 보정): Phase 6.1 의 `npm test` 가 skills/ 가 만들어진 시점에서 manifest-drift test 를 의미 있게 재실행.
+
+> **P26 mitigation — Phase 0 byte assertions**: Task 0.5/0.6/0.7 의 `wc -c` 범위 검증을 upper bound 만으로 완화 (예: `≤2500`, `≤1300`). 정확한 minimum 은 의미 없음 — implementer 가 trivial edit 시 깨질 우려.
 
 - [ ] **Step 2: Run, expect PASS for current phase 0 manifests**
 
@@ -2133,27 +2202,357 @@ git add scripts/harvest.js tests/harvest-golden.test.js tests/fixtures/sample-re
 git commit -m "feat(phase-2): scripts/harvest.js Step A mapping + persist + claim never-empty (F1)"
 ```
 
+### Task 2.5: harvest.js — lock + lease + idempotent events JSONL + FTS5 upsert (P3 fix — spec §7.3 통합)
+
+**Files:**
+- Modify: `scripts/harvest.js`
+- Test: `tests/concurrent-harvest.test.js`
+
+이전 Task 2.4 의 "persist (lock + atomic) — simplified for Phase 2" 코멘트가 가리킨 retrofit. 누락되면 spec §7.3 invariant (concurrent harvest race + idempotent + FTS5) 가 implementation 끝까지 미달성.
+
+- [ ] **Step 1: Write test (P3 — concurrent harvest produces no duplicate events)**
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { harvestArtifact } = require('../scripts/harvest');
+
+test('concurrent harvest of same artifact produces single event (idempotent key)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-conc-'));
+  const fixturePath = path.join(__dirname, 'fixtures/sample-recurring-findings.json');
+  const opts = { artifactPath: fixturePath, sourceKind: 'review-recurring', memoryRoot: tmp, projectId: 'proj_test', skipDistillStepB: true };
+  await Promise.all([harvestArtifact(opts), harvestArtifact(opts)]);
+  const eventsFile = path.join(tmp, 'events', new Date().toISOString().slice(0, 7) + '.jsonl');
+  const lines = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, 'utf8').trim().split('\n').filter(Boolean) : [];
+  assert.strictEqual(lines.length, 1, `expected 1 idempotent event, got ${lines.length}`);
+  fs.rmSync(tmp, { recursive: true });
+});
+```
+
+- [ ] **Step 2: Run, expect FAIL** (current harvest does not check lease / event key).
+
+- [ ] **Step 3: Implement (project lease + global lock + idempotent event key + FTS5 upsert in same lock)**
+
+```javascript
+// scripts/harvest.js (additions — wrap existing persist with lease + lock + event idempotency + FTS5)
+const path = require('node:path');
+const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const { acquire, release, StaleLockError } = require('./lib/lock');
+const { writeJsonAtomic } = require('./lib/atomic-write');
+const { openIndex, upsertCard } = require('./lib/fts-index');
+
+function eventKey(sourceMeta, runId) {
+  return createHash('sha256').update([sourceMeta.path, sourceMeta.content_hash, runId].join('|')).digest('hex');
+}
+
+async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta, runId }) {
+  // 1. lease
+  const leaseDir = path.join(memoryRoot, '.leases');
+  fs.mkdirSync(leaseDir, { recursive: true });
+  const leasePath = path.join(leaseDir, projectId + '.lease');
+  if (fs.existsSync(leasePath)) {
+    const meta = JSON.parse(fs.readFileSync(leasePath, 'utf8'));
+    const age = Date.now() - new Date(meta.started_at).getTime();
+    if (age < 30 * 60 * 1000) {
+      throw new Error(`Another session already harvesting project ${projectId} (started ${meta.started_at}, pid ${meta.pid}). Try later or wait ~30min for stale-break.`);
+    }
+  }
+  writeJsonAtomic(leasePath, { pid: process.pid, host: require('os').hostname(), started_at: new Date().toISOString() });
+
+  // 2. global lock
+  const lockPath = path.join(memoryRoot, '.lock');
+  const handle = await acquire(lockPath, { operation: 'harvest' });
+  try {
+    // 3. event idempotent append
+    const yearMonth = new Date().toISOString().slice(0, 7);
+    const eventsFile = path.join(memoryRoot, 'events', yearMonth + '.jsonl');
+    fs.mkdirSync(path.dirname(eventsFile), { recursive: true });
+    const existing = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, 'utf8') : '';
+    const key = eventKey(sourceMeta, runId);
+    if (!existing.includes(`"event_key":"${key}"`)) {
+      const event = { event_key: key, source: sourceMeta, run_id: runId, at: new Date().toISOString(), cards_count: cards.length };
+      fs.appendFileSync(eventsFile, JSON.stringify(event) + '\n');
+    }
+    // 4. card atomic write (existing logic in harvestArtifact moved here)
+    for (const c of cards) {
+      const memDir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
+      fs.mkdirSync(memDir, { recursive: true });
+      writeJsonAtomic(path.join(memDir, c.payload.memory_id + '.json'), c);
+    }
+    // 5. FTS5 upsert in same lock window (spec §7.3 step 7 — commit before release)
+    const idx = openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+    try {
+      // Transaction handled implicitly by better-sqlite3 for single-statement calls;
+      // for multi-card batches wrap in explicit BEGIN/COMMIT if driver === 'better-sqlite3'.
+      if (idx.driver === 'better-sqlite3') idx.db.exec('BEGIN');
+      for (const c of cards) {
+        upsertCard(idx, c, { projectId });
+      }
+      if (idx.driver === 'better-sqlite3') idx.db.exec('COMMIT');
+    } finally {
+      if (idx.driver === 'better-sqlite3') idx.db.close();
+    }
+  } finally {
+    release(handle);
+    try { fs.unlinkSync(leasePath); } catch {}
+  }
+}
+```
+
+- [ ] **Step 4: Run test, expect PASS** (single event line written even with 2 concurrent harvests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/harvest.js tests/concurrent-harvest.test.js
+git commit -m "feat(phase-2): Task 2.5 — harvest.js lease + lock + idempotent event + FTS5 upsert (P3)"
+```
+
 ---
 
-## Phase 3a — Distill rule (Step A complete, 1.5일)
+## Phase 3a — Distill rule (Step A complete, 2.5일 — P2 expand + P29 re-estimate)
 
-목표: 5 memory_type 전부 mapper 구현 + empty-claim quarantine 정책 + golden test 5개.
+목표: 5 memory_type 전부 mapper 구현 + empty-claim quarantine 정책 + golden test 5개. **P2 fix — 각 mapper 마다 독립 task** (이전 "Similar to Task N" 압축은 implementer 의 design 재도출 위험).
 
-### Task 3a.1-5: Implement remaining mappers (mapEvolveInsights / mapWorkReceipt / mapDocsScan / mapWikiIndex)
+### Task 3a.1: `mapEvolveInsights` — experiment-outcome
 
-각 mapper task 는 같은 TDD pattern:
-- fixture 작성 (`tests/fixtures/sample-{evolve-insights,session-receipt-success,session-receipt-failure,last-scan,wiki-index}.json`)
-- golden expected card (`tests/fixtures/golden-cards/expected_{type}.json`)
-- mapper 함수 추가
-- test PASS
-- commit
+**Files:**
+- Modify: `scripts/harvest.js`
+- Create: `tests/fixtures/sample-evolve-insights.json`
+- Create: `tests/fixtures/golden-cards/expected_experiment-outcome.json`
+- Test: extend `tests/harvest-golden.test.js`
 
-각 mapper 의 claim 매핑 규칙은 spec §7.1 표 그대로:
-- `experiment-outcome`: `insight.strategy → claim`
-- `pattern` (success slice): `"Pattern: " + slice.title + " — " + slice.outcome_summary → claim`
-- `failure-case` (failure slice): `"Failure: " + slice.title + " — " + slice.failure_reason → claim`
-- `coding-style`: `drift.title + " — " + drift.recommended_fix → claim`
-- `architecture-decision`: `page.frontmatter.decision_summary || page.title → claim`
+- [ ] **Step 1: Write fixture** (`sample-evolve-insights.json`)
+
+```json
+{
+  "schema_version": "1.0",
+  "envelope": {
+    "producer": "deep-evolve", "producer_version": "3.4.2", "artifact_kind": "evolve-insights",
+    "run_id": "01J_evolve...", "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "evolve-insights", "version": "1.0" },
+    "git": { "head": "def5678", "branch": "main", "dirty": "false" },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "insights": [
+      {
+        "strategy": "start with manifest drift tests before behavior tests",
+        "q_delta": 0.18,
+        "project_signature": { "language": "typescript", "topology": "plugin" },
+        "outcome": "caught Codex compatibility regressions early"
+      }
+    ]
+  }
+}
+```
+
+- [ ] **Step 2: Write golden expected card** (`expected_experiment-outcome.json`) — exact payload after Step A mapping (Step B mocked).
+
+- [ ] **Step 3: Write failing test extension**
+
+```javascript
+test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to confidence', async () => {
+  // ...
+});
+```
+
+- [ ] **Step 4: Run, expect FAIL** (mapper not yet implemented).
+
+- [ ] **Step 5: Implement mapEvolveInsights**
+
+```javascript
+function mapEvolveInsights(artifact, sourceMeta) {
+  const insights = artifact.payload?.insights || [];
+  return insights.map((i) => ({
+    memory_type: 'experiment-outcome',
+    title: i.strategy,
+    claim: i.strategy,  // F1: claim never empty
+    evidence_summary: [i.outcome].filter(Boolean).slice(0, 5),
+    applicability: Object.entries(i.project_signature || {}).map(([k, v]) => ({
+      value: `${k}=${v}`, source_id: sourceMeta.id, confidence: 0.7,
+    })),
+    non_applicability: [],
+    recommended_action: [],
+    search_keywords: [],
+    tags: ['evolve', 'experiment'],
+    confidence: Math.max(0, Math.min(1, (i.q_delta || 0) / 0.5)),  // normalize q_delta to 0-1 (0.5 saturates to 1.0)
+    created_at: new Date().toISOString(),
+  }));
+}
+```
+
+- [ ] **Step 6: Run test, expect PASS**.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add scripts/harvest.js tests/fixtures/sample-evolve-insights.json tests/fixtures/golden-cards/expected_experiment-outcome.json tests/harvest-golden.test.js
+git commit -m "feat(phase-3a): Task 3a.1 mapEvolveInsights — strategy→claim, q_delta→confidence"
+```
+
+### Task 3a.2: `mapWorkReceipt` — pattern (성공 slice) / failure-case (실패 slice)
+
+**Files:**
+- Modify: `scripts/harvest.js`
+- Create: `tests/fixtures/sample-session-receipt-success.json`
+- Create: `tests/fixtures/sample-session-receipt-failure.json`
+- Create: `tests/fixtures/golden-cards/expected_pattern.json`
+- Create: `tests/fixtures/golden-cards/expected_failure-case-slice.json`
+
+- [ ] **Step 1-2: Fixtures** (success slice + failure slice)
+
+```json
+// sample-session-receipt-success.json
+{
+  "schema_version": "1.0",
+  "envelope": { "producer": "deep-work", "producer_version": "6.8.0", "artifact_kind": "session-receipt",
+    "run_id": "01J_work...", "generated_at": "2026-05-19T00:00:00Z",
+    "schema": { "name": "session-receipt", "version": "1.0" },
+    "git": { "head": "ghi9012", "branch": "main", "dirty": "false" },
+    "provenance": { "source_artifacts": [], "tool_versions": {} }
+  },
+  "payload": {
+    "slices": [
+      { "id": "SLICE-001", "title": "implement envelope wrap", "outcome": "success", "outcome_summary": "all tests pass", "failure_reason": null }
+    ]
+  }
+}
+```
+
+- [ ] **Step 3-7: Test + impl + commit**
+
+```javascript
+function mapWorkReceipt(artifact, sourceMeta) {
+  const slices = artifact.payload?.slices || [];
+  const out = [];
+  for (const s of slices) {
+    if (s.outcome === 'success') {
+      out.push({
+        memory_type: 'pattern',
+        title: s.title,
+        claim: `Pattern: ${s.title} — ${s.outcome_summary || 'success'}`,
+        evidence_summary: [s.id],
+        applicability: [],
+        non_applicability: [],
+        recommended_action: [],
+        search_keywords: [],
+        tags: ['deep-work', 'pattern'],
+        confidence: 0.5, created_at: new Date().toISOString(),
+      });
+    } else if (s.outcome === 'failure') {
+      out.push({
+        memory_type: 'failure-case',
+        title: s.title,
+        claim: `Failure: ${s.title} — ${s.failure_reason || 'unspecified'}`,
+        evidence_summary: [s.id],
+        applicability: [],
+        non_applicability: [],
+        recommended_action: [],
+        search_keywords: [],
+        tags: ['deep-work', 'failure-case'],
+        confidence: 0.5, created_at: new Date().toISOString(),
+      });
+    }
+  }
+  return out;
+}
+```
+
+```bash
+git add scripts/harvest.js tests/fixtures/sample-session-receipt-*.json tests/fixtures/golden-cards/expected_pattern.json tests/fixtures/golden-cards/expected_failure-case-slice.json tests/harvest-golden.test.js
+git commit -m "feat(phase-3a): Task 3a.2 mapWorkReceipt — pattern + failure-case slice branching"
+```
+
+### Task 3a.3: `mapDocsScan` — coding-style
+
+**Files:**
+- Modify: `scripts/harvest.js`
+- Create: `tests/fixtures/sample-last-scan.json`
+- Create: `tests/fixtures/golden-cards/expected_coding-style.json`
+
+- [ ] **Step 1-7: Fixture + test + impl + commit** (same TDD shape as 3a.1)
+
+```javascript
+function mapDocsScan(artifact, sourceMeta) {
+  const drifts = artifact.payload?.drifts || [];
+  return drifts.map((d) => ({
+    memory_type: 'coding-style',
+    title: d.title,
+    claim: `${d.title} — ${d.recommended_fix || 'no recommendation'}`,
+    evidence_summary: [d.path].filter(Boolean).slice(0, 5),
+    applicability: d.language ? [{ value: `language=${d.language}`, source_id: sourceMeta.id, confidence: 0.6 }] : [],
+    non_applicability: [], recommended_action: d.recommended_fix ? [d.recommended_fix] : [],
+    search_keywords: [], tags: ['deep-docs', 'style'],
+    confidence: 0.5, created_at: new Date().toISOString(),
+  }));
+}
+```
+
+```bash
+git commit -m "feat(phase-3a): Task 3a.3 mapDocsScan — drift→coding-style"
+```
+
+### Task 3a.4: `mapWikiIndex` — architecture-decision (ADR filter)
+
+**Files:**
+- Modify: `scripts/harvest.js`
+- Create: `tests/fixtures/sample-wiki-index.json`
+- Create: `tests/fixtures/golden-cards/expected_architecture-decision.json`
+
+- [ ] **Step 1-7**: same TDD; ADR filter = `page.frontmatter.adr === true`
+
+```javascript
+function mapWikiIndex(artifact, sourceMeta) {
+  const pages = artifact.payload?.pages || [];
+  return pages.filter((p) => p.frontmatter?.adr === true).map((p) => ({
+    memory_type: 'architecture-decision',
+    title: p.title || p.path,
+    claim: p.frontmatter?.decision_summary || p.title || p.path,
+    evidence_summary: [p.path].filter(Boolean).slice(0, 5),
+    applicability: [], non_applicability: [], recommended_action: [],
+    search_keywords: [], tags: ['wiki', 'adr'],
+    confidence: 0.7, created_at: new Date().toISOString(),
+  }));
+}
+```
+
+```bash
+git commit -m "feat(phase-3a): Task 3a.4 mapWikiIndex — ADR-tagged wiki pages → architecture-decision"
+```
+
+### Task 3a.5: Wire all 5 mappers + STEP_A_MAPPERS registry
+
+**Files:**
+- Modify: `scripts/harvest.js`
+
+- [ ] **Step 1: Verify STEP_A_MAPPERS** has all 5 entries
+
+```javascript
+const STEP_A_MAPPERS = {
+  'review-recurring': mapRecurringFindings,
+  'evolve-insights': mapEvolveInsights,
+  'work-receipt': mapWorkReceipt,
+  'docs-scan': mapDocsScan,
+  'wiki-index': mapWikiIndex,
+};
+```
+
+- [ ] **Step 2: Run all golden tests, expect PASS**
+
+```bash
+node --test tests/harvest-golden.test.js
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git commit --allow-empty -m "chore(phase-3a): Task 3a.5 — all 5 STEP_A_MAPPERS wired (review/evolve/work/docs/wiki)"
+```
 
 ### Task 3a.6: Quarantine invariant
 
@@ -2255,25 +2654,42 @@ test('claude-adapter recorded fixture returns valid distill output', async () =>
   assert.ok(out.claim_refined);
   assert.ok(Array.isArray(out.search_keywords));
 });
+
+test('claude-adapter without recorded fixture and no live Agent throws typed ADAPTER_NOT_WIRED', async () => {
+  await assert.rejects(
+    () => adapter.refine({}, '', { recordedFixture: null, liveAgent: false }),
+    (e) => e.code === 'ADAPTER_NOT_WIRED'
+  );
+});
 ```
 
-- [ ] **Step 3: Implement adapter**
+- [ ] **Step 3: Implement adapter (P4 fix — typed error code so harvest gracefully degrades)**
 
 ```javascript
 // scripts/lib/adapters/claude-agent.js
 'use strict';
 const fs = require('node:fs');
-const { createHash } = require('node:crypto');
 
-async function refine(eventDraft, sourceExcerpt, { recordedFixture = null } = {}) {
+async function refine(eventDraft, sourceExcerpt, { recordedFixture = null, liveAgent = false } = {}) {
   if (recordedFixture) {
     const lines = fs.readFileSync(recordedFixture, 'utf8').trim().split('\n');
     const rec = JSON.parse(lines[0]);
     return rec.output;
   }
-  // production path: dispatch via Claude Code Agent tool — implementer integrates with the host's Agent invocation API.
-  // Schema-validated response from a Read-only sub-agent (memory-distiller).
-  throw new Error('claude-agent live dispatch not yet wired — Phase 3b real-host smoke test required');
+  if (liveAgent) {
+    // Phase 3b real-host smoke test will populate this — invoke memory-distiller sub-agent
+    // via the Claude Code Agent tool. Implementer wires the actual Agent() call here.
+    // For MVP, only recordedFixture path is exercised; live path is enabled when wiring exists.
+    throw Object.assign(
+      new Error('claude-agent live dispatch not yet wired — pass {recordedFixture: ...} for MVP'),
+      { code: 'ADAPTER_NOT_WIRED' }
+    );
+  }
+  // P4: typed code → harvest catches and falls back to candidate (no MVP crash)
+  throw Object.assign(
+    new Error('claude-agent: no recorded fixture and live Agent disabled'),
+    { code: 'ADAPTER_NOT_WIRED' }
+  );
 }
 
 module.exports = { refine };
@@ -2347,7 +2763,7 @@ test('llm-bridge.refine returns schema-valid output (claude adapter fixture)', a
 - [ ] **Step 2-4: Modify llm-bridge.js to validate output before returning (throw → trigger candidate fallback)**
 
 ```javascript
-// scripts/lib/llm-bridge.js (full)
+// scripts/lib/llm-bridge.js (P14 fix — adapter allowlist instead of require path injection; P15 fix — adapterOpts pass-through from Phase 1)
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -2360,12 +2776,24 @@ addFormats(ajv);
 const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../../schemas/memory-card-distill-output.schema.json'), 'utf8'));
 const validate = ajv.compile(schema);
 
+// P14: allowlist — adapter name from config/user never reaches require() path argument
+const ADAPTERS = Object.freeze({
+  'claude-agent': () => require('./adapters/claude-agent'),
+  'codex-bash': () => require('./adapters/codex-bash'),
+  'gemini-sdk': () => require('./adapters/gemini-sdk'),
+  'stdin-fallback': () => require('./adapters/stdin-fallback'),
+});
+
 async function refine(eventDraft, sourceExcerpt, { adapter = 'auto', timeoutMs = 30000, ...adapterOpts } = {}) {
   const chosen = detect(adapter);
-  const mod = require('./adapters/' + chosen);
+  const loader = ADAPTERS[chosen];
+  if (!loader) {
+    throw new Error(`Unknown adapter '${chosen}'. Allowed: ${Object.keys(ADAPTERS).join(', ')}`);
+  }
+  const mod = loader();
   const out = await Promise.race([
     mod.refine(eventDraft, sourceExcerpt, adapterOpts),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`)), timeoutMs)),
+    new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`), { code: 'TIMEOUT' })), timeoutMs)),
   ]);
   if (!validate(out)) {
     const err = new Error(`Step B output schema violation: ${ajv.errorsText(validate.errors)}`);
@@ -2375,7 +2803,7 @@ async function refine(eventDraft, sourceExcerpt, { adapter = 'auto', timeoutMs =
   return out;
 }
 
-module.exports = { refine };
+module.exports = { refine, ADAPTER_NAMES: Object.keys(ADAPTERS) };
 ```
 
 - [ ] **Step 5: Commit**
@@ -2424,32 +2852,46 @@ test('distill golden: recurring-findings → expected failure-case card', async 
 
 ```javascript
 // scripts/harvest.js (additions to harvestArtifact)
-const { refine } = require('./lib/adapters/' + 'placeholder' /* set via opts */);  // simplified
-// Pass 2 redaction of source excerpt before Step B
-const sourceExcerpt = redactObject(raw.payload).slice(0, 4096);
-let stepBOutput = null;
-try {
-  stepBOutput = await llmBridgeRefine(draft, sourceExcerpt, { adapter: llmAdapter, recordedFixture: llmRecordedFixture });
-} catch (e) {
-  if (e.code === 'SCHEMA_VIOLATION' || e.message.includes('timeout')) {
-    // F5: graceful fallback
-    stepBOutput = null;
-  } else throw e;
+// P1 fix — real require from llm-bridge (no 'placeholder' literal), use existing draft variable `d`, JSON.stringify before slice
+const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
+
+for (const d of drafts) {
+  // Pass 2 redaction of source excerpt (P14 namespace agreed with §11.1)
+  const sourceExcerpt = JSON.stringify(redactObject(raw.payload)).slice(0, 4096);
+  let stepBOutput = null;
+  try {
+    stepBOutput = await llmBridgeRefine(d, sourceExcerpt, {
+      adapter: llmAdapter,
+      recordedFixture: llmRecordedFixture,
+    });
+  } catch (e) {
+    if (e.code === 'SCHEMA_VIOLATION' || e.code === 'TIMEOUT' || e.code === 'ADAPTER_NOT_WIRED') {
+      stepBOutput = null;  // graceful fallback to candidate (spec §7.2)
+    } else {
+      throw e;  // unexpected — let caller see it
+    }
+  }
+  // Merge: Step A fields are authoritative; only fill LLM-derived empties
+  if (stepBOutput) {
+    d.claim = (stepBOutput.claim_refined && d.claim === d.title) ? stepBOutput.claim_refined : d.claim;
+    d.non_applicability = stepBOutput.non_applicability.map((x) => ({ value: x.value, source_id: 'src_0', confidence: x.confidence }));
+    d.recommended_action = stepBOutput.recommended_action;
+    d.search_keywords = stepBOutput.search_keywords;
+    d.confidence = 0.7;
+    d.status = 'candidate'; // audit promotes to validated
+  } else {
+    d.confidence = 0.4;
+    d.status = 'candidate';
+  }
+  // Pass 3 redaction at envelope wrap boundary
+  const wrapped = redactObject(wrap({
+    artifact_kind: 'memory-card',
+    schema: { name: 'memory-card', version: '1.0' },
+    payload: d,
+    provenance: { source_artifacts: [sourceMeta] },
+  }));
+  // ... persist (see Task 2.5 for full lock + lease + atomic + FTS upsert wiring)
 }
-// Merge: Step A fields are authoritative; only fill LLM-derived empties
-if (stepBOutput) {
-  d.claim = (stepBOutput.claim_refined && d.claim === d.title) ? stepBOutput.claim_refined : d.claim;
-  d.non_applicability = stepBOutput.non_applicability.map((x) => ({ value: x.value, source_id: 'src_0', confidence: x.confidence }));
-  d.recommended_action = stepBOutput.recommended_action;
-  d.search_keywords = stepBOutput.search_keywords;
-  d.confidence = 0.7;
-  d.status = 'candidate'; // promoted to validated in audit
-} else {
-  d.confidence = 0.4;
-  d.status = 'candidate';
-}
-// Pass 3 redaction
-const wrapped = redactObject(wrap({ artifact_kind: 'memory-card', schema: {...}, payload: d, provenance: {source_artifacts: [sourceMeta]} }));
 ```
 
 - [ ] **Step 6: Commit**
@@ -2504,54 +2946,81 @@ test('upsert + search returns BM25-ranked rows', () => {
 });
 ```
 
-- [ ] **Step 2-4: Implement using better-sqlite3 FTS5 + commit**
+- [ ] **Step 2: Run, expect FAIL** — `Cannot find module '../scripts/lib/fts-index'`.
+
+- [ ] **Step 3: Implement (P7+P12+P14 fix — real driver registry with sql.js fallback + accept card payload shape + project_id explicit)**
 
 ```javascript
 // scripts/lib/fts-index.js
 'use strict';
-const Database = require('better-sqlite3');
+
+// P7: driver registry — try better-sqlite3 native, fall back to sql.js (WASM)
+let driverName = null;
+let DriverImpl = null;
+try {
+  DriverImpl = require('better-sqlite3');
+  driverName = 'better-sqlite3';
+} catch (e) {
+  try {
+    const initSqlJs = require('sql.js');
+    DriverImpl = initSqlJs;
+    driverName = 'sql.js';
+  } catch (e2) {
+    throw new Error(`No SQLite driver available. Install better-sqlite3 (native) or sql.js (WASM fallback). Original errors: ${e.message} ; ${e2.message}`);
+  }
+}
 
 function openIndex(filepath) {
-  const db = new Database(filepath);
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS cards USING fts5(
-      memory_id UNINDEXED,
-      memory_type UNINDEXED,
-      privacy_level UNINDEXED,
-      project_id UNINDEXED,
-      claim, tags, applicability, search_keywords
-    );
-  `);
-  return db;
+  if (driverName === 'better-sqlite3') {
+    const db = new DriverImpl(filepath);
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS cards USING fts5(
+        memory_id UNINDEXED,
+        memory_type UNINDEXED,
+        privacy_level UNINDEXED,
+        project_id UNINDEXED,
+        claim, tags, applicability, search_keywords
+      );
+    `);
+    return { driver: 'better-sqlite3', db };
+  }
+  // sql.js path (synchronous load — full sql.js wiring left as a guided expansion in Phase 4; MVP requires better-sqlite3 to be installable)
+  throw new Error('sql.js driver path is reserved; production MVP requires better-sqlite3. Install build tools or use container with prebuilt binaries.');
 }
 
-function upsertCard(db, card) {
-  const p = card.payload;
-  db.prepare('DELETE FROM cards WHERE memory_id = ?').run(p.memory_id);
-  db.prepare(`INSERT INTO cards (memory_id, memory_type, privacy_level, project_id, claim, tags, applicability, search_keywords) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(
-      p.memory_id, p.memory_type, p.privacy_level, card.project_id || '',
-      p.claim,
-      (p.tags || []).join(' '),
-      (p.applicability || []).map((a) => a.value).join(' '),
-      (p.search_keywords || []).join(' ')
-    );
+function upsertCard(idx, card, { projectId = null } = {}) {
+  // P12 fix — accept the wrapped card shape (card.payload.*) AND pass project_id explicitly
+  const p = card.payload || card;  // tolerate both shapes (legacy tests use flat)
+  const pid = projectId || card.project_id || p.project_id || '';
+  if (idx.driver === 'better-sqlite3') {
+    idx.db.prepare('DELETE FROM cards WHERE memory_id = ?').run(p.memory_id);
+    idx.db.prepare(`INSERT INTO cards (memory_id, memory_type, privacy_level, project_id, claim, tags, applicability, search_keywords) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(
+        p.memory_id, p.memory_type, p.privacy_level, pid,
+        p.claim,
+        (p.tags || []).join(' '),
+        (p.applicability || []).map((a) => typeof a === 'string' ? a : a.value).join(' '),
+        (p.search_keywords || []).join(' ')
+      );
+  }
 }
 
-function search(db, query, { topN = 8, projectId = null } = {}) {
-  // privacy scope: local 카드는 동일 project_id 만
-  const rows = db.prepare(`
+function search(idx, query, { topN = 8, projectId = null } = {}) {
+  if (idx.driver !== 'better-sqlite3') throw new Error('search not implemented for this driver');
+  // privacy scope: local cards visible only to same project_id; global cards to all (P19/spec §8)
+  // P13 fix downstream: caller must pass results through bm25MinMax (which inverts since smaller bm25 = better match)
+  const rows = idx.db.prepare(`
     SELECT memory_id, memory_type, privacy_level, project_id, bm25(cards) AS bm25
     FROM cards
     WHERE cards MATCH ?
       AND (privacy_level = 'global' OR project_id = ?)
-    ORDER BY bm25
+    ORDER BY bm25 ASC
     LIMIT ?
-  `).all(query, projectId || '', topN * 3); // overfetch for diversity
+  `).all(query, projectId || '', topN * 3); // overfetch ×3 for diversity stage
   return rows;
 }
 
-module.exports = { openIndex, upsertCard, search };
+module.exports = { openIndex, upsertCard, search, driverName };
 ```
 
 ```bash
@@ -2559,59 +3028,269 @@ git add scripts/lib/fts-index.js tests/fts-index.test.js
 git commit -m "feat(phase-4): scripts/lib/fts-index.js — FTS5 with privacy scope filter"
 ```
 
-### Task 4.3: `scripts/retrieve.js` — ranking pipeline (6 stages)
+### Task 4.3: `scripts/retrieve.js` — ranking pipeline (6 stages — P16 stage order explicit)
 
 **Files:**
 - Create: `scripts/retrieve.js`
 - Test: `tests/retrieve-ranking.test.js`
 
-- [ ] **Step 1: Test (6 stage ranking + degraded paths)**
+**P16 fix — explicit stage ordering**:
 
-```javascript
-// 핵심 케이스:
-// - hard filter (deprecated 제외, privacy scope, review_after age)
-// - project_sim 적용 (Jaccard)
-// - task_sim BM25 정규화
-// - evidence_quality sigmoid
-// - applicability guard (task가 non_applicability match → exclude)
-// - diversity (per memory_type 최대 N개)
-// - zero-memory → empty memories array
-// - all-stale → ranking + warning
-// - missing-profile → w_project_sim=0 + warning
+```
+Stage 0  fts-index.search(query, {projectId, topN: N*3})         # FTS5 BM25 overfetch
+Stage 1  hard filter: status != deprecated + review_after age   # 같은 lock 안, FTS 직후
+Stage 2  bm25MinMax over the *post-hard-filter* set              # min-max scaling 범위 = 살아남은 후보만
+Stage 3  load full card payloads (one DB lookup per memory_id)  # FTS columns 외 필드 필요
+Stage 4  project_sim (Jaccard on languages/runtimes)            # missing-profile → w_project_sim=0
+Stage 5  evidence_quality (sigmoid clamp via score.js)          # confidence × log(1+n) × (1−rejected/...)
+Stage 6  applicability guard: drop card if task tokens ∩ any non_applicability.value (Jaccard ≥ 0.5)
+Stage 7  diversity: per memory_type top-(diversity_per_type=2), same dedupe_key 클러스터 1개만
+Stage 8  weighted score (§8 공식) + sort desc + take top_n
 ```
 
-- [ ] **Step 2-4: Implement using fts-index + score.js + commit**
+- [ ] **Step 1: Write test (각 stage 별 fixture 케이스)**
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const { runRetrieve } = require('../scripts/retrieve');
+// 케이스:
+// (a) 8 cards in FTS5, 2 deprecated → Stage 1 drops 2, Stage 2 normalizes over 6.
+// (b) zero matches → returns { memories: [] } (no error)
+// (c) all-stale (review_after past) → returns with stale warning, Stage 8 keeps them with penalty
+// (d) missing-profile → project_sim=0 enforced, warning in payload
+// (e) applicability guard: task='use Codex slash' AND card has non_applicability='Claude Code slash-command-only plugin' → drop
+// (f) diversity: 5 failure-case with same dedupe_key → only 1 in result
+```
+
+- [ ] **Step 2: Run, expect FAIL**
+
+- [ ] **Step 3: Implement retrieve.js** (uses fts-index + score.js per stage order above; reads cards from `cards/<type>/{global, project_id}/*.json` for full payload)
+
+- [ ] **Step 4: Run test, expect PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/retrieve.js tests/retrieve-ranking.test.js
+git commit -m "feat(phase-4): scripts/retrieve.js — 6-stage ranking with explicit order (P16)"
+```
 
 ### Task 4.4: Brief output (JSON + MD) — `lib/brief-format.js`
 
 **Files:**
 - Create: `scripts/lib/brief-format.js`
+- Test: `tests/brief-format.test.js`
 
-- [ ] **Step 1-4: Test, implement, JSON output (envelope-wrapped) + MD output (with `claim` / `why_relevant` / `evidence_paths` / `recommended_action` / `avoid_when ← non_applicability[].value` 모든 카드에 fallback default 적용), commit**
+- [ ] **Step 1: Test (avoid_when mapping + fallback defaults + why_relevant 비어있을 때 default)**
 
-핵심: §9.2 의 mapping table 그대로. 빈 필드는 `"(none specified)"` 로 default render (brief 전체 fail 안 함).
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const { renderJson, renderMarkdown, DEFAULTS } = require('../scripts/lib/brief-format');
+
+test('avoid_when maps from non_applicability[].value', () => {
+  const card = { payload: { non_applicability: [{ value: 'X', source_id: 'src_0', confidence: 0.8 }], claim: 'c', recommended_action: ['a'], memory_id: 'm', memory_type: 'failure-case' }, envelope: { provenance: { source_artifacts: [{ path: 'p' }] } } };
+  const out = renderJson('task', [card], { score: 0.7, why_relevant: 'tag match' });
+  assert.deepStrictEqual(out.payload.memories[0].avoid_when, ['X']);
+});
+
+test('per-card fallback for empty non_applicability', () => {
+  const card = { payload: { non_applicability: [], claim: 'c', recommended_action: [], memory_id: 'm', memory_type: 'pattern' }, envelope: { provenance: { source_artifacts: [{ path: 'p' }] } } };
+  const out = renderJson('task', [card]);
+  assert.deepStrictEqual(out.payload.memories[0].avoid_when, [DEFAULTS.avoid_when]);
+});
+
+test('markdown rendering includes fallback "(none specified)"', () => {
+  // similar
+});
+```
+
+- [ ] **Step 2: Run, expect FAIL**
+
+- [ ] **Step 3: Implement** (uses §9.2 spec — DEFAULTS = { why_relevant: '(retrieved by lexical match)', avoid_when: '(none specified)', recommended_action: '(none — refer to evidence)' })
+
+- [ ] **Step 4: Run test, expect PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/lib/brief-format.js tests/brief-format.test.js
+git commit -m "feat(phase-4): brief-format.js — JSON+MD render with avoid_when mapping + per-card fallback (F2)"
+```
 
 ### Task 4.5: `scripts/brief.js` (skill entry point)
 
-(orchestrates retrieve + brief-format + atomic write to `.deep-memory/latest-brief.{json,md}`)
+**Files:**
+- Create: `scripts/brief.js`
+- Test: `tests/brief.test.js`
+
+- [ ] **Step 1: Test** (orchestrates retrieve + brief-format, writes `.deep-memory/latest-brief.{json,md}` atomic)
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { run } = require('../scripts/brief');
+
+test('brief.run writes JSON + MD atomically', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-brief-proj-'));
+  // ... (setup memory_root + at least 1 card)
+  await run({ task: 'implement Codex plugin manifest', projectDir, memoryRoot: '...' });
+  assert.ok(fs.existsSync(path.join(projectDir, '.deep-memory/latest-brief.json')));
+  assert.ok(fs.existsSync(path.join(projectDir, '.deep-memory/latest-brief.md')));
+});
+```
+
+- [ ] **Step 2-4: Implement + run + commit** (1 file: orchestration only, all logic in retrieve.js + brief-format.js)
+
+```bash
+git add scripts/brief.js tests/brief.test.js
+git commit -m "feat(phase-4): scripts/brief.js — skill entry orchestrating retrieve + brief-format"
+```
+
+### Task 4.6 (NEW, P17): Cross-reference invariant test — applicability.source_id → provenance.source_artifacts[].id
+
+**Files:**
+- Create: `tests/cross-ref-invariant.test.js`
+
+- [ ] **Step 1: Write test**
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { glob } = require('node:fs');  // or readdirSync recursive
+
+function* allCardFiles(root) {
+  if (!fs.existsSync(root)) return;
+  for (const type of fs.readdirSync(root)) {
+    const td = path.join(root, type);
+    if (!fs.statSync(td).isDirectory()) continue;
+    for (const scope of fs.readdirSync(td)) {  // global | <project_id>
+      const sd = path.join(td, scope);
+      if (!fs.statSync(sd).isDirectory()) continue;
+      for (const f of fs.readdirSync(sd)) {
+        if (f.endsWith('.json')) yield path.join(sd, f);
+      }
+    }
+  }
+}
+
+test('every applicability/non_applicability.source_id resolves into envelope.provenance.source_artifacts[].id', () => {
+  const memoryRoot = process.env.DEEP_MEMORY_TEST_ROOT || path.join(require('os').tmpdir(), 'no-cards-here');
+  const cardsRoot = path.join(memoryRoot, 'cards');
+  for (const cardPath of allCardFiles(cardsRoot)) {
+    const card = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
+    const validIds = new Set((card.envelope?.provenance?.source_artifacts || []).map((s) => s.id));
+    for (const a of [...(card.payload?.applicability || []), ...(card.payload?.non_applicability || [])]) {
+      assert.ok(validIds.has(a.source_id), `${cardPath}: source_id ${a.source_id} not in provenance`);
+    }
+  }
+});
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add tests/cross-ref-invariant.test.js
+git commit -m "test(phase-4): cross-reference invariant — applicability.source_id ↔ provenance.id (P17)"
+```
 
 ---
 
-## Phase 5 — Audit (1일)
+## Phase 5 — Audit (2일 — P2 expand + P29 re-estimate)
 
-목표: `deep-memory-audit` skill + `audit.js` (schema validate + 3-pass redaction sample + stale memory + stale lock + dedupe collision + source-rename + profile freshness + `--unlock` + `--promote <id>`).
+목표: `deep-memory-audit` skill + `audit.js` (schema validate + 3-pass redaction sample + stale memory + stale lock + dedupe collision + source-rename + profile freshness + `--unlock` + `--promote <id>`). **P2 fix — 각 sub-feature 마다 독립 task** (이전 one-liner 압축은 implementer 의 design 재도출 위험).
 
-### Task 5.1-7: 각 sub-feature 별 TDD task
+### Task 5.0: `skills/deep-memory-audit/SKILL.md`
 
-- 5.1 Schema validation pass (Ajv on all cards)
-- 5.2 Stale memory detect + state machine apply (수정 필요한 카드 리포트)
-- 5.3 Stale lock detect + `--unlock`
-- 5.4 dedupe collision report (§6.4 의 conflict resolution policy 적용)
-- 5.5 source-rename detect (content_hash 로 검사)
-- 5.6 profile freshness check (`audit.profile_max_age_days`)
-- 5.7 `--promote <id>` (atomic move local → global, harvest lock 과 인터랙션)
+**Files:**
+- Create: `skills/deep-memory-audit/SKILL.md`
 
-각 task TDD pattern 동일.
+frontmatter description ≤1024 char + strict YAML. body 는 4개 sub-command (`(empty)` / `--unlock` / `--promote <id>` / `--rebuild-index`) 분기 안내 + 각 sub-feature 가 `audit.js` 의 어느 함수 호출인지 명시. Commit `feat(phase-5): skills/deep-memory-audit/SKILL.md (4 sub-commands)`.
+
+### Task 5.1: Schema validation pass (Ajv on all cards)
+
+**Files:**
+- Create: `scripts/audit.js` (skeleton + `validateAllCards()`)
+- Test: `tests/audit-schema-validate.test.js`
+
+- [ ] **Step 1: Test** — populate memory_root with 2 valid card + 1 invalid (missing required field) → audit reports 1 invalid.
+- [ ] **Step 2-4: Implement using Ajv (read memory-card.schema.json) + walk `cards/<type>/{global,project_id}/*.json` + collect violations + commit**
+
+### Task 5.2: Stale memory detect + state machine apply
+
+**Files:**
+- Modify: `scripts/audit.js` (add `applyAutoTransitions()`)
+- Test: `tests/audit-stale-memory.test.js`
+
+- [ ] **Step 1: Test** — card with past `review_after` + status=validated → after audit, status=deprecated + status_history grew by 1.
+- [ ] **Step 2-4: Implement** uses `state-machine.evaluateTransitions({...card, trimHistory: true})` per card + atomic rewrite via `writeJsonAtomic` (P8 fix applied here too) + commit.
+
+### Task 5.3: Stale lock detect + `--unlock`
+
+**Files:**
+- Modify: `scripts/audit.js` (`detectStaleLocks()` + `unlock()`)
+- Test: `tests/audit-stale-lock.test.js`
+
+- [ ] **Step 1: Test** — create lock dir with `created_at` 6 minutes ago → audit detects → `--unlock` removes + reports.
+- [ ] **Step 2-4: Implement** uses `lock.isStale(meta)` + `lock.breakLock(lockPath)` + commit.
+
+### Task 5.4: dedupe collision report (spec §6.4)
+
+**Files:**
+- Modify: `scripts/audit.js` (`detectDedupeCollisions()`)
+- Test: `tests/audit-dedupe-collision.test.js`
+
+- [ ] **Step 1: Test** — 2 cards with same `dedupe_key` but contradicting `applicability` arrays (different `source_id` values) → audit reports as `applicability_contradiction`.
+- [ ] **Step 2-4: Implement** uses spec §6.4 의 conflict resolution policy + commit.
+
+### Task 5.5: source-rename detect (content_hash 검증)
+
+**Files:**
+- Modify: `scripts/audit.js` (`detectSourceRenames()`)
+- Test: `tests/audit-source-rename.test.js`
+
+- [ ] **Step 1: Test** — card 가 reference 하는 source artifact 의 hash가 현재 디스크 file 의 hash 와 다름 → audit reports `unresolved_source` with old + current hashes.
+- [ ] **Step 2-4: Implement** uses `source-hash.hashFile()` + commit.
+
+### Task 5.6: profile freshness check (`audit.profile_max_age_days`)
+
+**Files:**
+- Modify: `scripts/audit.js` (`detectStaleProfile()`)
+- Test: `tests/audit-profile-freshness.test.js`
+
+- [ ] **Step 1: Test** — `.deep-memory/project-profile.json` 의 `generated_at` 이 31일 이전 → audit warns + suggests `/deep-memory-init` 재실행.
+- [ ] **Step 2-4: Implement** + commit.
+
+### Task 5.7: `--promote <id>` (atomic move local → global, harvest lock 과 인터랙션)
+
+**Files:**
+- Modify: `scripts/audit.js` (`promoteCard()`)
+- Test: `tests/audit-promote.test.js`
+
+> **P8 fix interaction (lock 보호)**: `--promote` 가 atomic move 를 수행하는 동안 harvest 가 같은 카드의 `dedupe_key` 충돌 검사로 양쪽 디렉토리를 union scan 한다 (Task 2.5 의 §7.3 step 4 fix). 따라서 promote 도 같은 global lock 안에서 수행.
+
+- [ ] **Step 1: Test** — `--promote mem_xxx` 호출 → (a) global lock acquire → (b) card 의 `privacy_level: local → global` → (c) atomic move from `cards/<type>/<project_id>/` to `cards/<type>/global/` → (d) status_history append → (e) FTS5 upsert (project_id 비움) → (f) global lock release.
+- [ ] **Step 2-4: Implement** with explicit lock acquire (`lock.acquire(lockPath, {operation: 'promote'})`) — fails with `LOCK_HELD` if harvest 중. + commit.
+
+```bash
+git add scripts/audit.js tests/audit-*.test.js
+git commit -m "feat(phase-5): Task 5.7 --promote with global lock interaction (P9 lock-aware)"
+```
+
+### Task 5.8: Audit aggregated runner + CLI entry
+
+**Files:**
+- Modify: `scripts/audit.js` (top-level `run()` orchestrator)
+
+- [ ] **Step 1**: Aggregate all 7 sub-results → `.deep-memory/latest-audit.json` (atomic write) → console summary.
+- [ ] **Step 2**: `if (require.main === module)` CLI entry: argv parse → call right sub-function (`(empty)` / `--unlock` / `--promote <id>` / `--rebuild-index`).
+- [ ] **Step 3-4**: Test full end-to-end + commit.
 
 ---
 
@@ -2631,95 +3310,291 @@ cd /Users/sungmin/Dev/claude-plugins/deep-memory && npm test
 ```
 Expected: all suites PASS.
 
-### Task 6.2: GitHub Actions CI workflow
+### Task 6.2: GitHub Actions CI workflow (P5 fix — full YAML literal, not placeholder)
 
 **Files:**
-- Create: `.github/workflows/ci.yml`
+- Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/.github/workflows/ci.yml`
 
-- [ ] **Step 1: Write workflow** (Node 22 matrix, npm test, manifest-drift check)
-- [ ] **Step 2: Commit + push (사용자 동의 후)**
+- [ ] **Step 1: Write workflow YAML**
+
+```yaml
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Verify manifests (3중 version 동기 + Codex 1024-char + strict YAML)
+        run: npm run validate-manifest
+      - name: Run tests
+        run: npm test
+
+  manifest-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Manifest-drift test only
+        run: node --test tests/manifest-drift.test.js
+```
+
+- [ ] **Step 2: Validate YAML syntax locally**
+
+```bash
+node -e "const y = require('js-yaml'); y.load(require('fs').readFileSync('.github/workflows/ci.yml','utf8')); console.log('OK')"
+```
+Expected: `OK` (requires js-yaml installed; or skip locally — GitHub will validate).
+
+- [ ] **Step 3: Commit** (do NOT push without user consent)
+
+```bash
+git add .github/workflows/ci.yml
+git commit -m "ci(phase-6): GitHub Actions workflow — Node 22 + npm test + manifest-drift gate"
+```
 
 ---
 
-## Phase 7 — Suite integration (0.5일)
+## Phase 7 — Suite integration (0.5일) — P6 fix: 명시적 cross-repo cwd protocol
 
-### Task 7.1: Add deep-memory entry to `/Users/sungmin/Dev/claude-plugins/deep-suite/.claude-plugin/marketplace.json`
+> ⚠️ **Cross-repo cwd invariant**: Phase 7 의 모든 task 는 별도 git repo (`/Users/sungmin/Dev/claude-plugins/deep-suite/`) 를 수정한다. **모든 task 시작 시 `cd` 명시 + 종료 시 `cd -` 복귀**. commit 도 그 repo 안에서. 잘못된 cwd 에서 `git add/commit` 하면 silent failure 또는 다른 repo 에 잘못 기록.
 
-(spec §10.5 + 사용자 GitHub repo url + sha pin 첫 릴리스 시 보강)
+### Task 7.0 (사전 안전): deep-suite repo clean check
 
-### Task 7.2: Add deep-memory entry to `/Users/sungmin/Dev/claude-plugins/deep-suite/.agents/plugins/marketplace.json`
+- [ ] **Step 1: Cross-repo cwd preflight**
 
-### Task 7.3: Add deep-memory section to `/Users/sungmin/Dev/claude-plugins/deep-suite/.claude-plugin/suite-extensions.json`
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-suite
+git status --short  # expect empty (no in-progress work in sibling repo)
+git rev-parse --show-toplevel  # confirm we are in the right repo
+cd -
+```
+Expected: `git status --short` 결과 empty + `rev-parse` 가 deep-suite 절대경로 출력.
 
-(spec §10.3 그대로)
+### Task 7.1: Add deep-memory entry to `deep-suite/.claude-plugin/marketplace.json` + automate via `scripts/sync-suite.js` (P20)
 
-### Task 7.4: Update deep-suite README.md + README.ko.md plugin table
+**Files** (in `deep-suite/` repo):
+- Modify: `/Users/sungmin/Dev/claude-plugins/deep-suite/.claude-plugin/marketplace.json`
 
-각 task 는 한 file 수정 + suite-extensions schema validate + commit (deep-suite repo 에서).
+또한 자동화를 위해 `deep-memory/scripts/sync-suite.js` 도 작성 (P20). 본 Task 는 entry append + sync-suite.js step.
+
+- [ ] **Step 1 (in deep-memory repo): Write `scripts/sync-suite.js`** — read deep-memory의 plugin.json + 사용자 GitHub URL + sha → write entries into all 3 deep-suite files (marketplace.json × 2 + suite-extensions.json). 본 Task 는 entry append 만, full sync-suite.js 는 Task 7.5 (신규).
+
+- [ ] **Step 2 (cwd = deep-suite): Edit marketplace.json**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-suite
+# Manual edit: append deep-memory block under "plugins": [...]
+# Use Edit tool, NOT in-place sed (preserves formatting)
+```
+
+JSON shape (insert as last array entry):
+```json
+{
+  "name": "deep-memory",
+  "description": "Cross-project semantic operational memory — harvests deep-suite artifacts (recurring-findings/evolve-insights/session-receipts/docs-scan/wiki-index), distills reusable memory cards via hybrid rule+LLM, injects task-specific briefs. 4 skill entry surfaces (Claude Code + Codex + Copilot + Gemini). M3 envelope-wrapped, 3-pass redaction, atomic write + mkdir lock + project lease, privacy_level local|global with explicit --promote gate.",
+  "source": {
+    "source": "url",
+    "url": "https://github.com/Sungmin-Cho/claude-deep-memory.git",
+    "sha": "<pinned-sha-after-first-release>"
+  }
+}
+```
+
+- [ ] **Step 3 (cwd = deep-suite): Validate JSON + commit in deep-suite repo**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-suite
+node -e "JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json','utf8'))" && echo OK
+git status --short
+git diff .claude-plugin/marketplace.json
+git add .claude-plugin/marketplace.json
+git commit -m "chore: add deep-memory v0.1.0 to marketplace (Claude Code)"
+cd -
+```
+
+### Task 7.2: Add to `deep-suite/.agents/plugins/marketplace.json` (Codex)
+
+Same pattern as 7.1 (cd into deep-suite, edit, validate, commit), with the entry:
+```json
+{
+  "name": "deep-memory",
+  "source": { "source": "url", "url": "https://github.com/Sungmin-Cho/claude-deep-memory.git", "sha": "<pinned-sha>" },
+  "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+  "category": "Productivity"
+}
+```
+
+Commit (in deep-suite repo): `chore: add deep-memory v0.1.0 to marketplace (Codex)`
+
+### Task 7.3: Add to `deep-suite/.claude-plugin/suite-extensions.json` (sidecar)
+
+Append deep-memory section from spec §10.3 + 4 data_flow edges from spec §10.4. Same cwd protocol.
+
+Commit (in deep-suite repo): `chore: add deep-memory v0.1.0 to suite-extensions sidecar`
+
+### Task 7.4: Update `deep-suite/README.md` + `README.ko.md` plugin table
+
+Same cwd protocol. Add a row + a `## deep-memory` section. Commit message: `docs: add deep-memory v0.1.0 to README (en + ko)`.
+
+### Task 7.5: `scripts/sync-suite.js` (in deep-memory repo) — automate Task 7.1-7.4 for future releases (P20)
+
+**Files:**
+- Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/scripts/sync-suite.js`
+
+Reads `package.json` version + given `SUITE_REPO` env (default `/Users/sungmin/Dev/claude-plugins/deep-suite`) + computes sha (from `git rev-parse HEAD`), and atomically updates the 3 sibling files in deep-suite via library calls. Used by `npm run sync-suite` for v0.2.0+ releases.
+
+- [ ] **Step 1-5**: full TDD — test asserts the resulting marketplace.json contains a deep-memory entry with correct sha; sync-suite.js implementation uses Edit-like JSON manipulation; commit `feat: scripts/sync-suite.js — automate suite-marketplace updates (P20)`.
 
 ---
 
-## Phase 8 — Handoff docs + spec finalize (0.5일)
+## Phase 8 — Handoff docs + spec finalize (0.5일) — P6 fix: 명시적 cwd protocol
 
-### Task 8.1: `docs/handoff-phase-4-6.md` (deep-memory 자체 후속)
+### Task 8.1: `docs/handoff-phase-4-6.md` (deep-memory 자체 후속, in this repo)
 
-spec §14.1 그대로 + R3 학습 (false confidence 외부 리뷰 필수) 추가.
+**Files** (cwd = deep-memory repo):
+- Create: `/Users/sungmin/Dev/claude-plugins/deep-memory/docs/handoff-phase-4-6.md`
 
-### Task 8.2: `/Users/sungmin/Dev/claude-plugins/deep-work/docs/deep-memory-integration-handoff.md`
+Content from spec §14.1 (Phase 4 review/evolve writer integration / Phase 5 reasoning graph / Phase 6 dashboard telemetry + closing checklist + out-of-scope) + R3 학습 (false confidence — 외부 리뷰 1명 이상이 plan 진입 전 필수).
 
-spec §14.2 그대로.
+Commit (in deep-memory repo): `docs(phase-8): handoff-phase-4-6.md (decay/graph/dashboard scopes)`
 
-### Task 8.3: Spec finalize commit (옵션)
+### Task 8.2: `/Users/sungmin/Dev/claude-plugins/deep-work/docs/deep-memory-integration-handoff.md` (CROSS-REPO)
 
-만약 implementation 중 spec drift 발견되면 spec doc 수정 + commit.
+> ⚠️ **Different repo**. Same cwd discipline as Phase 7.
+
+- [ ] **Step 0 (cross-repo cwd preflight)**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-work
+git status --short  # expect empty
+git rev-parse --show-toplevel  # confirm deep-work repo
+cd -
+```
+
+- [ ] **Step 1 (cwd = deep-work): Create handoff file**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-work
+mkdir -p docs
+# Create docs/deep-memory-integration-handoff.md with content from spec §14.2:
+#  1. deep-work 현재 상태 (deep-memory 와 분리 운영)
+#  2. Phase 1 Research 진입 시 .deep-memory/latest-brief.md 자동 인용
+#  3. Phase 5 Integrate top-3 후보에 /deep-memory-harvest 추가
+#  4. Research artifact schema 확장
+#  5. Feedback hook (Phase 4+ 양쪽 동시 도입)
+#  6. Test: deep-work이 brief 없이도 정상 동작 + brief 있으면 인용
+```
+
+- [ ] **Step 2 (cwd = deep-work): Commit in deep-work repo**
+
+```bash
+cd /Users/sungmin/Dev/claude-plugins/deep-work
+git add docs/deep-memory-integration-handoff.md
+git status --short  # verify only the handoff file is staged
+git commit -m "docs: add deep-memory-integration-handoff (consumer-side spec)"
+cd -
+```
+
+### Task 8.3: Spec finalize (in deep-memory repo, conditional)
+
+만약 implementation 중 spec drift 발견되면 spec doc 수정 + commit. Spec 변경 없으면 skip.
 
 ---
 
-## Self-Review
+## Self-Review (Round 2 — plan-review 반영 후 갱신)
 
-### 1. Spec coverage
+**Round 1 deep-review-loop 결과 적용** (2026-05-20T13:57:37):
+- 4-way 독립 리뷰 (Opus / Codex review / Codex adversarial / agy) — 만장일치 REQUEST_CHANGES, 21🔴 + 20🟡 + 3ℹ️ → dedupe 후 29 항목
+- 적용 범위: 옵션 C (P1-P28 + P29 schedule re-estimate)
+- 핵심 회귀: plan 의 이전 Self-Review §1 "spec coverage 100%" 주장이 false confidence — Phase 3a (5 mapper) + Phase 5 (7 sub-feature) + Phase 4 가 outline 만, harvest.js 가 lock+lease+events 미통합인데 retrofit task 부재.
+
+**Round 2 후 plan 상태**:
+
+### 1. Spec coverage (재검증)
 
 | Spec section | Plan task |
 |---|---|
 | §1 Decisions (D1-D20) | 모두 Phase 0~8 의 결정으로 반영 |
 | §3 Directory layout | Phase 0 + 각 lib/script Task |
 | §4 Manifests | Task 0.1, 0.2 |
-| §5 Skill surface | Task 2.1, 2.3, 4.1, 5.x |
-| §6 Card schema | Task 1.1, 1.2, 1.6 |
-| §6.2 dedupe | Task 1.5 |
+| §5 Skill surface | Task 2.1, 2.3, 4.1, 5.0 |
+| §6 Card schema | Task 1.0a (envelope compat probe), 1.1, 1.2 |
+| §6.2 dedupe (보수화 + cross-type) | Task 1.5 + 5.4 (collision report) |
 | §6.3 state machine | Task 1.6, 5.2 |
-| §7.1 Step A 5 types | Task 2.4, 3a.1-5 |
-| §7.2 Step B + 3 adapter + schema validation | Task 3b.1-6 |
-| §7.3 lease + lock + atomic + idempotent | Task 1.7, 1.8, 2.4, 5.3 |
-| §8 retrieval 정규화 | Task 1.10, 4.3 |
-| §9 brief output (avoid_when mapping) | Task 4.4 |
-| §10 cross-plugin + config + suite-extensions | Task 2.2 (config.yaml), 7.1-3 |
-| §11 3-pass redaction + suppressions + metadata | Task 1.4, 2.4 (Pass 1), 3b.6 (Pass 2/3), 5.x |
-| §12 12 test suites | 각 Task TDD step 2 |
+| §6.4 conflict resolution | Task 5.4 (collision audit) |
+| §7.1 Step A 5 types | Task 2.4 + 3a.1-5 (각 mapper 독립 task — P2 fix) |
+| §7.2 Step B + 4 adapter + schema validation | Task 1.12, 3b.1-7 + P14 adapter allowlist |
+| §7.3 lease + lock + atomic + idempotent + FTS5 commit | Task 1.7, 1.8, **2.5 (신규, P3 fix)**, 5.7 (promote interaction) |
+| §8 retrieval 정규화 + degraded paths | Task 1.10 (P13 BM25 invert), 4.3 (P16 stage order) |
+| §9 brief output (avoid_when mapping + per-card fallback) | Task 4.4 (F2 fix) |
+| §10 cross-plugin + config + suite-extensions | Task 2.2 (config.yaml), 7.1-3 (cwd protocol P6 fix), **7.5 sync-suite.js (P20 fix)** |
+| §11 3-pass redaction + suppressions + metadata | Task 1.4 (Pass 1), 3b.6 (Pass 2/3 — P1 fix), 5.x (audit metadata) |
+| §12 test suites (12 + 3 new) | 각 Task TDD step 2 + Task 4.6 cross-ref (P17) + tests/runtime-contract/ (F12) |
 | §13 CLAUDE.md / AGENTS.md | Task 0.5, 0.6 |
-| §14 handoff docs | Task 8.1, 8.2 |
+| §14 handoff docs | Task 8.1, 8.2 (cwd protocol P6 fix) |
 | §15 phases | 본 plan 의 Phase 0-8 |
 
-**Gaps detected & filled**: 
-- §6.1 redaction_metadata 출력 — Phase 5 audit 리포트 (5.x sub-task)
-- §6.4 conflict resolution — Phase 5 dedupe collision report (5.4)
-- §3 `cards/<type>/global/` vs `cards/<type>/<project_id>/` 디렉토리 분리 — Phase 4 retrieve 의 privacy scope filter + Phase 5 `--promote` move
+**R1 review 로 추가된 task** (이전 plan 의 gap 닫음):
+- **Task 1.0a** (P11): suite M3 envelope compat probe — `provenance.source_artifacts[]` 가 deep-memory-specific 필드 받아들일지 사전 확인
+- **Task 2.5** (P3): harvest.js lease + lock + idempotent events + FTS5 upsert retrofit (이전 "simplified for Phase 2" comment 가 가리킨 gap)
+- **Task 4.6** (P17): cross-reference invariant test (applicability.source_id ↔ provenance.source_artifacts[].id)
+- **Task 5.0** (P2): deep-memory-audit skill 명시
+- **Task 5.1-5.8** (P2): 7 sub-feature 마다 독립 task (이전 one-liner 압축에서 expand)
+- **Task 7.0** (P6): cross-repo cwd preflight
+- **Task 7.5** (P20): sync-suite.js 자동화 (manual sync 위험 제거)
 
-### 2. Placeholder scan
+### 2. Placeholder scan (재검증)
 
-- `TBD`, `TODO`, `implement later`: 0 매치
-- "Similar to Task N": Phase 3a.1-5, Phase 5.1-7, Phase 7.1-3 에서 사용 — 핵심 다른 점만 짧게 명시 (full mapper code 는 spec §7.1 표 reference). 의도적 압축 — 형제 patterns 와 spec 으로 충분히 unambiguous.
+- "TBD" / "TODO" / "implement later": 0 매치
+- "Similar to Task N": Phase 3a 5 task 가 각각 독립 expand 됨 (P2 fix). 잔여 사용은 fixture 구조 같은 trivial parallel only (e.g., Phase 7.2 의 "Same pattern as 7.1" — 단 entry JSON shape 만 다름, cwd protocol 동일).
+- Task 6.2 CI YAML — full literal inline (P5 fix). 더 이상 "Write workflow" placeholder 없음.
+- Task 3b.6 — `require('./lib/llm-bridge')` real import (P1 fix). literal 'placeholder' 제거.
 
-### 3. Type/method consistency
+### 3. Type/method consistency (재검증)
 
-- `wrap()` envelope: Task 1.3 정의 → Task 2.4 + 3b.6 사용 ✓
-- `dedupeKey(memoryType, claim, applicability)` : Task 1.5 정의 → Task 2.4 사용 ✓
-- `acquire(lockPath, {operation})` / `release(handle)`: Task 1.7 정의 → Phase 2/4/5 사용 ✓
-- `writeJsonAtomic(target, data)`: Task 1.8 정의 → 모든 persist 사용 ✓
-- `refine(eventDraft, sourceExcerpt, opts)`: Task 1.12, 3b.5 정의 → Task 3b.6 사용 ✓
-- `harvestArtifact({artifactPath, sourceKind, memoryRoot, projectId, ...})`: Task 2.4 정의 → Phase 3a 확장 + Phase 4 (audit 사용 안 함, retrieve 만) ✓
+- `wrap()` envelope: Task 1.3 정의 → Task 2.4 + 3b.6 + 2.5 사용 ✓
+- `dedupeKey(memoryType, claim, applicability)` : Task 1.5 정의 → Task 2.4 + 5.4 사용 ✓
+- `acquire(lockPath, {operation})` / `release(handle)` / `StaleLockError`: Task 1.7 정의 → Task 2.5 + 5.3/5.7 사용 ✓ (P9 typed error)
+- `writeJsonAtomic(target, data)`: Task 1.8 정의 → 모든 persist 사용 ✓ (P8 fsync 순서 fix)
+- `refine(eventDraft, sourceExcerpt, opts)` (signature with `...adapterOpts`): Task 1.12 (Phase 1 skeleton 도 같은 sig — P15 fix) + 3b.5 (schema validation 추가) → Task 3b.6 사용 ✓
+- `harvestArtifact({...})`: Task 2.4 정의 → Phase 3a 확장 + Task 2.5 persist 통합 ✓
+- `openIndex(filepath)` / `upsertCard(idx, card, {projectId})` / `search(idx, query, {topN, projectId})`: Task 4.2 정의 (P12 shape + P14 driver registry) → Task 2.5 + 4.3 + 5.7 사용 ✓
+- `bm25MinMax(rows)` (P13 invert): Task 1.10 정의 → Task 4.3 stage 2 사용 ✓
 
-→ 모두 consistent.
+→ R2 모든 변경 후 consistent.
+
+### 4. New decisions (Round 2 plan-review 반영)
+
+| ID | 결정 |
+|---|---|
+| PR1 | Task 1.0a — Phase 0 단계에서 suite envelope schema compat 사전 확인 후 Task 1.1 schema 작성 시 분기 |
+| PR2 | StaleLockError 타입 도입 (P9) — outer catch 가 swallow 안 함 |
+| PR3 | atomic-write 의 fsync 순서: tmp write → fsync(tmp) → rename → fsync(parentDir) → readback (P8) |
+| PR4 | bm25MinMax 정규화 방향 INVERT: `(max - raw) / (max - min)` (P13) |
+| PR5 | llm-bridge adapter dispatch: allowlist map (P14) — require() path 에 user-controlled 값 사용 안 함 |
+| PR6 | claude-agent adapter: 모든 throw 가 typed `ADAPTER_NOT_WIRED` code → harvest 가 graceful candidate fallback (P4) |
+| PR7 | Cross-repo task (Phase 7, 8.2): `cd` + `git status --short` preflight + repo-local commit + `cd -` 복귀 명시 (P6) |
+| PR8 | sync-suite.js 자동화 (Task 7.5) — v0.2.0+ 의 marketplace.json drift 위험 차단 (P20) |
 
 ---
 
