@@ -6,10 +6,11 @@
   "required": ["schema_version", "envelope", "payload"],
   "additionalProperties": false,
   "properties": {
+    "$schema": { "type": "string" },
     "schema_version": { "const": "1.0" },
     "envelope": {
       "type": "object",
-      "required": ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "git", "provenance"],
+      "required": ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "provenance"],
       "additionalProperties": false,
       "properties": {
         "producer": { "const": "deep-memory" },
@@ -32,7 +33,12 @@
           "properties": {
             "head": { "type": "string" },
             "branch": { "type": "string" },
-            "dirty": { "type": "string" }
+            "dirty": {
+              "oneOf": [
+                { "type": "boolean" },
+                { "type": "string" }
+              ]
+            }
           }
         },
         "provenance": {

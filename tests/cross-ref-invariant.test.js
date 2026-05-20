@@ -31,8 +31,11 @@ function* allCardFiles(cardsRoot) {
 
 function validateCard(cardPath) {
   const card = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
+  // envelope-compat decision Option (b): source IDs live in
+  // payload.deep_memory_provenance[].id (suite envelope source_artifacts only
+  // carries {path, run_id}).
   const validIds = new Set(
-    (card.envelope?.provenance?.source_artifacts || []).map((s) => s.id)
+    (card.payload?.deep_memory_provenance || []).map((s) => s.id)
   );
   const items = [
     ...((card.payload?.applicability) || []),
@@ -42,9 +45,17 @@ function validateCard(cardPath) {
     if (!a || typeof a.source_id !== 'string') continue;
     assert.ok(
       validIds.has(a.source_id),
-      `${cardPath}: source_id ${a.source_id} not in provenance.source_artifacts ids ` +
+      `${cardPath}: source_id ${a.source_id} not in payload.deep_memory_provenance ids ` +
       `[${[...validIds].join(', ')}]`
     );
+  }
+  // Bonus invariant: every deep_memory_provenance.source_index must point
+  // into the envelope source_artifacts array.
+  const saLen = (card.envelope?.provenance?.source_artifacts || []).length;
+  for (const dp of (card.payload?.deep_memory_provenance || [])) {
+    if (typeof dp.source_index !== 'number') continue;
+    assert.ok(dp.source_index >= 0 && dp.source_index < saLen,
+      `${cardPath}: deep_memory_provenance.source_index ${dp.source_index} out of range [0,${saLen})`);
   }
 }
 
@@ -102,11 +113,11 @@ test('P17 in-process with Step B refinement: non_applicability source_id back-fi
     const card = cards[0];
     // Step B populated non_applicability with values from the fixture
     assert.ok(card.payload.non_applicability.length > 0);
-    // every source_id must resolve into provenance
-    const validIds = new Set(card.envelope.provenance.source_artifacts.map((s) => s.id));
+    // every source_id must resolve into payload.deep_memory_provenance ids
+    const validIds = new Set(card.payload.deep_memory_provenance.map((s) => s.id));
     for (const n of card.payload.non_applicability) {
       assert.ok(validIds.has(n.source_id),
-        `Step B non_applicability source_id ${n.source_id} not in provenance ids`);
+        `Step B non_applicability source_id ${n.source_id} not in deep_memory_provenance ids`);
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

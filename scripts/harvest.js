@@ -255,10 +255,38 @@ function buildSourceMeta(artifactPath, raw, sourceKind) {
   };
 }
 
+/**
+ * envelope-compat decision Option (b): split sourceMeta into two artifacts.
+ *   - envelope.provenance.source_artifacts[]: suite-shape {path, run_id} ONLY
+ *     (additionalProperties:false in memory-card.schema.json — deep-memory
+ *      specific fields are NOT allowed in the suite envelope shape)
+ *   - payload.deep_memory_provenance[]: {id, content_hash, captured_at,
+ *      artifact_kind, schema_version, source_index} — index back-refs the
+ *      envelope source_artifacts entry by position
+ */
+function splitSourceMeta(sourceMetas) {
+  const list = Array.isArray(sourceMetas) ? sourceMetas : [sourceMetas];
+  const source_artifacts = list.map((m) => {
+    const out = { path: m.path };
+    if (m.run_id) out.run_id = m.run_id;
+    return out;
+  });
+  const deep_memory_provenance = list.map((m, i) => ({
+    id: m.id,
+    content_hash: m.content_hash,
+    captured_at: m.captured_at,
+    artifact_kind: m.artifact_kind,
+    schema_version: m.schema_version,
+    source_index: i,
+  }));
+  return { source_artifacts, deep_memory_provenance };
+}
+
 function buildCardFromDraft(draft, sourceMeta) {
   const dk = dedupeKey(draft.memory_type, draft.claim, draft.applicability);
   const id = memoryIdFor(draft.memory_type, dk);
   const now = Date.now();
+  const { source_artifacts, deep_memory_provenance } = splitSourceMeta(sourceMeta);
   // Pass 3 redaction at the envelope wrap boundary (spec D17) — payload only,
   // envelope metadata (producer/run_id/...) is deep-memory-owned and secret-free.
   const payload = redactObject({
@@ -272,12 +300,13 @@ function buildCardFromDraft(draft, sourceMeta) {
     review_after: new Date(now + REVIEW_AFTER_DAYS * 86400 * 1000).toISOString(),
     feedback: { accepted_count: 0, rejected_count: 0, inaccurate_count: 0 },
     confidence: typeof draft.confidence === 'number' ? draft.confidence : 0.5,
+    deep_memory_provenance,
   });
   return wrap({
     artifact_kind: 'memory-card',
     schema: { name: 'memory-card', version: '1.0' },
     payload,
-    provenance: { source_artifacts: [sourceMeta] },
+    provenance: { source_artifacts },
   });
 }
 
@@ -501,6 +530,7 @@ module.exports = {
   STEP_A_MAPPERS,
   buildCardFromDraft,
   buildSourceMeta,
+  splitSourceMeta,
   memoryIdFor,
   persistWithLockAndLease,
   eventKey,
