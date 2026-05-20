@@ -34,7 +34,8 @@ test('Task 5.7: promoteCard moves local → global atomically + updates FTS5', a
     const oldPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
     assert.ok(fs.existsSync(oldPath));
 
-    const result = await promoteCard(memoryId, { memoryRoot: tmp });
+    // Pass explicit projectId per ITEM-5 acceptance criteria
+    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_test' });
     assert.strictEqual(result.memory_id, memoryId);
     assert.strictEqual(result.previous_privacy_level, 'local');
     assert.strictEqual(result.new_privacy_level, 'global');
@@ -95,6 +96,67 @@ test('Task 5.7: promoteCard with unknown memory_id throws NOT_FOUND', async () =
 test('Task 5.7: promoteCard requires memoryId + memoryRoot', async () => {
   await assert.rejects(() => promoteCard('', { memoryRoot: '/tmp' }), /requires memoryId/);
   await assert.rejects(() => promoteCard('mem_x', {}), /requires memoryRoot/);
+});
+
+// ITEM-5: Ambiguity detection tests
+
+test('ITEM-5: promoteCard with no projectId throws AMBIGUOUS when same memory_id under 2 scopes', async () => {
+  const tmp = mkRoot();
+  try {
+    // Harvest once to get a real card shape
+    const card = await harvestOne(tmp);
+    const memoryId = card.payload.memory_id;
+
+    // Copy the card file into a second project scope to create ambiguity
+    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
+    fs.mkdirSync(altScopeDir, { recursive: true });
+    fs.copyFileSync(srcPath, path.join(altScopeDir, memoryId + '.json'));
+
+    // Without projectId: should fail-closed with AMBIGUOUS
+    await assert.rejects(
+      () => promoteCard(memoryId, { memoryRoot: tmp }),
+      (e) => {
+        assert.strictEqual(e.code, 'AMBIGUOUS', `Expected AMBIGUOUS, got: ${e.code} — ${e.message}`);
+        assert.strictEqual(e.memory_id, memoryId);
+        assert.ok(Array.isArray(e.scopes) && e.scopes.length === 2, `scopes should have 2 entries: ${JSON.stringify(e.scopes)}`);
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('ITEM-5: promoteCard with projectId promotes only the specified scope, leaves other intact', async () => {
+  const tmp = mkRoot();
+  try {
+    const card = await harvestOne(tmp);
+    const memoryId = card.payload.memory_id;
+
+    // Create same memory_id under proj_alt as well (simulate two-project collision)
+    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
+    fs.mkdirSync(altScopeDir, { recursive: true });
+    const altPath = path.join(altScopeDir, memoryId + '.json');
+    fs.copyFileSync(srcPath, altPath);
+
+    // Promote only proj_test copy
+    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_test' });
+    assert.strictEqual(result.new_privacy_level, 'global');
+
+    // proj_test local copy removed, global copy created
+    assert.ok(!fs.existsSync(srcPath), 'proj_test local copy removed');
+    const globalPath = path.join(tmp, 'cards', 'failure-case', 'global', memoryId + '.json');
+    assert.ok(fs.existsSync(globalPath), 'global copy created');
+
+    // proj_alt copy is UNTOUCHED (still local)
+    assert.ok(fs.existsSync(altPath), 'proj_alt copy still exists (untouched)');
+    const altCard = JSON.parse(fs.readFileSync(altPath, 'utf8'));
+    assert.strictEqual(altCard.payload.privacy_level, 'local', 'proj_alt card still local');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('Task 5.7: status_history truncates at 10 after promote when already full', async () => {

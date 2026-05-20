@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { wrap } = require('./lib/envelope');
-const { redactObject } = require('./lib/redact');
+const { redactObject, redactString } = require('./lib/redact');
 const { dedupeKey } = require('./lib/dedupe');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
@@ -302,11 +302,17 @@ function buildCardFromDraft(draft, sourceMeta) {
     confidence: typeof draft.confidence === 'number' ? draft.confidence : 0.5,
     deep_memory_provenance,
   });
+  // Pass 3: redact source_artifacts paths so home-directory never leaks into
+  // envelope.provenance.source_artifacts[].path (spec §11.1 / line 812).
+  const redactedSourceArtifacts = source_artifacts.map((sa) => ({
+    ...sa,
+    path: redactString(sa.path),
+  }));
   return wrap({
     artifact_kind: 'memory-card',
     schema: { name: 'memory-card', version: '1.0' },
     payload,
-    provenance: { source_artifacts },
+    provenance: { source_artifacts: redactedSourceArtifacts },
   });
 }
 
@@ -495,10 +501,43 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
     }
 
     // 4. atomic card writes
+    // R2 partial fix (Phase 6 dispatch) — full spec §6.4 union-merge deferred to v0.1.x
     for (const c of cards) {
       const dir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
       fs.mkdirSync(dir, { recursive: true });
-      writeJsonAtomic(path.join(dir, c.payload.memory_id + '.json'), c);
+      const targetPath = path.join(dir, c.payload.memory_id + '.json');
+      const existing = fs.existsSync(targetPath)
+        ? JSON.parse(fs.readFileSync(targetPath, 'utf8'))
+        : null;
+      if (existing && existing.payload) {
+        // Preserve user-accumulated state; refresh source-driven fields + last_seen_at
+        c.payload.status = existing.payload.status;
+        c.payload.status_history = existing.payload.status_history;
+        c.payload.feedback = existing.payload.feedback;
+        c.payload.created_at = existing.payload.created_at;
+        c.payload.confidence = Math.max(
+          existing.payload.confidence || 0,
+          c.payload.confidence || 0
+        );
+        // Preserve LLM-derived fields when fresh harvest didn't run Step B
+        if ((!c.payload.non_applicability || c.payload.non_applicability.length === 0)
+            && existing.payload.non_applicability?.length) {
+          c.payload.non_applicability = existing.payload.non_applicability;
+        }
+        if ((!c.payload.recommended_action || c.payload.recommended_action.length === 0)
+            && existing.payload.recommended_action?.length) {
+          c.payload.recommended_action = existing.payload.recommended_action;
+        }
+        if ((!c.payload.search_keywords || c.payload.search_keywords.length === 0)
+            && existing.payload.search_keywords?.length) {
+          c.payload.search_keywords = existing.payload.search_keywords;
+        }
+        // privacy_level: if existing is global, keep global (don't downgrade)
+        if (existing.payload.privacy_level === 'global') {
+          c.payload.privacy_level = 'global';
+        }
+      }
+      writeJsonAtomic(targetPath, c);
     }
 
     // 5. FTS5 upsert in same lock window (Phase 4 wires ./lib/fts-index)

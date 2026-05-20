@@ -16,6 +16,7 @@ const path = require('node:path');
 const { runRetrieve } = require('./retrieve');
 const { renderJson, renderMarkdown } = require('./lib/brief-format');
 const { writeJsonAtomic } = require('./lib/atomic-write');
+const { projectId: deriveProjectId } = require('./init');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -33,7 +34,22 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
   if (!task) throw new Error('brief.run requires task');
   const cwd = projectDir || process.cwd();
   const resolvedMemoryRoot = resolveMemoryRoot(memoryRoot);
-  const profile = loadProjectProfile(cwd);
+  let profile = loadProjectProfile(cwd);
+
+  // Security guard: re-derive the expected project_id from cwd and reject a
+  // profile whose stored project_id does not match — prevents project_id spoofing
+  // that would expose another project's local memories (spec §privacy boundary).
+  let profileMismatchWarning = null;
+  if (profile) {
+    const expected = deriveProjectId(cwd);
+    if (profile.project_id !== expected) {
+      const expectedFirst8 = expected.slice(0, 8 + 'proj_'.length);
+      const gotFirst8 = String(profile.project_id || '').slice(0, 8 + 'proj_'.length);
+      profileMismatchWarning =
+        `project-profile mismatch: expected=${expectedFirst8} got=${gotFirst8} — using global-only retrieval`;
+      profile = null; // trigger existing global-only path
+    }
+  }
 
   const result = await runRetrieve({
     task,
@@ -42,6 +58,11 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
     topN,
     diversityPerType,
   });
+
+  if (profileMismatchWarning) {
+    result.warnings = result.warnings || [];
+    result.warnings.push(profileMismatchWarning);
+  }
 
   // Render JSON + MD
   const json = renderJson(task, result.memories);

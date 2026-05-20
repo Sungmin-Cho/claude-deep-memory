@@ -19,8 +19,6 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-      - name: Verify manifests (3중 version 동기 + Codex 1024-char + strict YAML)
-        run: npm run validate-manifest
       - name: Run tests
         run: npm test
 

@@ -415,9 +415,17 @@ function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFA
  *   - card not found → Error{code:'NOT_FOUND'}
  *   - card already global → Error{code:'ALREADY_GLOBAL'} (idempotent caller
  *     can catch and continue)
+ *   - ambiguous (same memory_id under 2+ scopes, no projectId supplied) →
+ *     Error{code:'AMBIGUOUS', memory_id, scopes:[...]}
  *   - lock not acquired in time → Error from lib/lock (LOCK_HELD upstream)
+ *
+ * @param {string} memoryId
+ * @param {{ memoryRoot: string, projectId?: string|null, by?: string }} opts
+ *   projectId — when provided, only considers files under cards/<type>/<projectId>/.
+ *               When null/undefined, falls back to ambiguity-detection: fails-closed
+ *               with AMBIGUOUS if 2+ scopes match.
  */
-async function promoteCard(memoryId, { memoryRoot, by = 'manual:promote' } = {}) {
+async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manual:promote' } = {}) {
   if (!memoryId) throw new Error('promoteCard requires memoryId');
   if (!memoryRoot) throw new Error('promoteCard requires memoryRoot');
 
@@ -425,19 +433,37 @@ async function promoteCard(memoryId, { memoryRoot, by = 'manual:promote' } = {})
   const handle = await acquire(lockPath, { operation: 'promote' });
   try {
     const cardsRoot = path.join(memoryRoot, 'cards');
-    let found = null;
+
+    // Collect matches: when projectId is specified, filter by scope; otherwise
+    // accumulate all matches across scopes to detect ambiguity.
+    const matches = [];
     for (const entry of allCardFiles(cardsRoot)) {
+      // When projectId is supplied, only consider files in that scope dir
+      if (projectId !== null && entry.scope !== projectId) continue;
+
       let card;
       try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
       catch { continue; }
       if (card.payload?.memory_id === memoryId) {
-        found = { entry, card };
-        break;
+        matches.push({ entry, card });
       }
     }
-    if (!found) {
+
+    if (matches.length === 0) {
       throw Object.assign(new Error(`Card not found: ${memoryId}`), { code: 'NOT_FOUND' });
     }
+
+    // Ambiguity guard (only when projectId was not supplied — backward-compat path)
+    if (projectId === null && matches.length > 1) {
+      const scopes = matches.map((m) => m.entry.scope);
+      throw Object.assign(
+        new Error(`Ambiguous memory_id (found in ${matches.length} scopes): ${scopes.join(', ')}`),
+        { code: 'AMBIGUOUS', memory_id: memoryId, scopes }
+      );
+    }
+
+    const found = matches[0];
+
     if (found.card.payload.privacy_level === 'global') {
       throw Object.assign(new Error(`Card already global: ${memoryId}`), {
         code: 'ALREADY_GLOBAL',
