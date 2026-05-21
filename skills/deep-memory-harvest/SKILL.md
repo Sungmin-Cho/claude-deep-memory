@@ -59,7 +59,7 @@ config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
 - **3-pass redaction** — 동일한 redact rule 을 Pass 1 / 2 / 3 에서 모두 적용 (multi-stage 누락 방지).
 - **lease + lock** — project lease 는 같은 project 안 동시 harvest 충돌 방지, `~/.deep-memory/.lock` 은 cards/events/index 의 atomic 일관성 보장.
 - **idempotent event** — `event_key = sha256(source.path | content_hash | run_id)`. 동일 key 의 event line 이 이미 있으면 skip (concurrent harvest 도 single line 보장).
-- **FTS5 upsert in lock window** — card atomic write 직후 같은 lock 안에서 index commit. release 전 commit 실패 시 카드도 롤백되어 cards · events · index 불일치 차단.
+- **FTS5 upsert in lock window** — card atomic write 직후 같은 lock 안에서 index commit. v0.1.2+ — `better-sqlite3` 로드 실패 시 graceful degradation (cards/events 정상 write, FTS5 upsert skip + warning 노출). 런타임 upsert 실패는 throw 되며 lock release 전 발생 — 다음 harvest 가 재시도.
 
 ## Outputs
 
@@ -79,7 +79,8 @@ config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
 - `Another session already harvesting project <id>` — lease 충돌. 다른 셸 종료 또는 30분 후 자동 stale-break.
 - `Unknown sourceKind` — config.yaml 의 `sources[*].kind` 가 builtin mapper 와 불일치. config 확인 안내.
 - LLM Step B 실패 (`llm-bridge.on_failure: candidate`) — Step A 결과만으로 candidate card 생성 (Step B 결여 → confidence 낮음).
-- FTS5 upsert 실패 → lock 안에서 카드 write 롤백 (release 전 throw, 다음 harvest 가 재시도).
+- FTS5 module 로드 실패 (`better-sqlite3` unavailable) → graceful degradation. cards/events 는 정상 write, FTS5 upsert 만 skip. `cards.warnings` (non-enumerable) 에 redacted warning 노출, `.deep-memory/latest-harvest.json` 의 `warnings[]` 에도 mirror.
+- FTS5 런타임 upsert 실패 → lock 안에서 throw, release 전이므로 lock + lease 는 finally 가 정리. cards 는 이미 disk 에 commit 된 상태 (rollback 없음 — `/deep-memory-audit --rebuild-index` 안내).
 
 ## See also
 

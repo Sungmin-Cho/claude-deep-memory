@@ -38,6 +38,7 @@ const FTS_DEGRADED_WARNING_RETRIEVE =
   'environment). brief returns empty — re-run with Node 22 LTS, or wait for ' +
   'v0.2.0 sql.js fallback. See README.md > Troubleshooting.';
 const { bm25MinMax, scoreCard, jaccard } = require('./lib/score');
+const { redactString } = require('./lib/redact');
 
 const DEFAULT_TOP_N = 8;
 const DEFAULT_DIVERSITY_PER_TYPE = 2;
@@ -145,9 +146,11 @@ async function runRetrieve({
   // native binding unavailable). Return empty result + explicit warning so the
   // brief renderer surfaces the actionable message to the user.
   if (!_fts) {
+    // v0.1.3 — redact native loader error before exposing it (paths may leak).
+    const causeRedacted = _ftsLoadError ? redactString(_ftsLoadError) : '';
     warnings.push(
       FTS_DEGRADED_WARNING_RETRIEVE +
-        (_ftsLoadError ? ` (cause: ${_ftsLoadError})` : '')
+        (causeRedacted ? ` (cause: ${causeRedacted})` : '')
     );
     return { task, memories: [], warnings };
   }

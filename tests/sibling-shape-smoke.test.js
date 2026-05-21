@@ -46,14 +46,27 @@ const SIBLING_FIXTURES = [
   },
 ];
 
+// v0.1.3 — env-gated hard-fail. When DEEP_MEMORY_FULL_SUITE=1 is set (CI runners
+// that clone the full sibling suite, or developers intentionally exercising
+// drift detection), missing sibling fixtures fail the test loudly instead of
+// silently skipping. Round 1 review-respond — Opus 🟡 #3 fix.
+const FULL_SUITE_MODE = process.env.DEEP_MEMORY_FULL_SUITE === '1';
+
 for (const { kind, fixture, minCards } of SIBLING_FIXTURES) {
   const absFixture = path.resolve(__dirname, fixture);
-  const skipReason = !fs.existsSync(absFixture)
+  const exists = fs.existsSync(absFixture);
+  const skipReason = !exists
     ? `sibling fixture not found at ${path.relative(process.cwd(), absFixture)} (skipping — not a regression, just a partial checkout)`
     : null;
 
   test(`sibling-shape smoke: ${kind} produces ≥${minCards} card(s) from real sibling fixture`, async (t) => {
     if (skipReason) {
+      if (FULL_SUITE_MODE) {
+        assert.fail(
+          `DEEP_MEMORY_FULL_SUITE=1 is set but ${kind} fixture is missing at ` +
+          `${absFixture}. Either clone the sibling repo at the expected path or unset the env var.`
+        );
+      }
       t.skip(skipReason);
       return;
     }
@@ -106,8 +119,20 @@ test('sibling-shape smoke: full-suite check writes ≥4 cards across all 4 sibli
       total += cards.length;
     }
     if (available === 0) {
+      if (FULL_SUITE_MODE) {
+        assert.fail(
+          'DEEP_MEMORY_FULL_SUITE=1 is set but no sibling repos are checked out. ' +
+          'Either clone the sibling repos at ../deep-{review,evolve,work,docs}/ or unset the env var.'
+        );
+      }
       t.skip('no sibling repos checked out next to deep-memory — aggregate smoke skipped');
       return;
+    }
+    if (FULL_SUITE_MODE && available < SIBLING_FIXTURES.length) {
+      assert.fail(
+        `DEEP_MEMORY_FULL_SUITE=1 expects all ${SIBLING_FIXTURES.length} sibling fixtures, ` +
+        `found only ${available}.`
+      );
     }
     assert.ok(
       total >= available,

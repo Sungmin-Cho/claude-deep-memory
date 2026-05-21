@@ -2,6 +2,54 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.3] - 2026-05-21
+
+Round 1 deep-review-loop response (review report `2026-05-21-151916-review.md`,
+verdict=CONCERN, 4 🟡 + 3 ℹ️). Fast-follow patch addressing 5 of 7 items.
+
+### Fixed
+
+- **Privacy invariant — degraded-mode warnings now redacted** (Codex adversarial 🟡 #2).
+  `ftsLoadError` was concatenated raw into `cards.warnings` and `latest-harvest.json`;
+  if the native loader error embedded an absolute homedir path, it leaked to disk.
+  Now routed through `redactString` in both `scripts/harvest.js` and
+  `scripts/retrieve.js`. Regression tests in `harvest-fts-silent-disable.test.js`
+  + `retrieve-fts-degraded.test.js` inject a simulated error containing
+  `os.homedir()` and assert the resulting warning contains `~/` instead.
+- **`better-sqlite3` moved to `optionalDependencies`** (Codex 🟡 #1).
+  Previously a hard `dependencies` entry, so `npm install` would abort when the
+  native build failed — the v0.1.2 graceful runtime catch never got a chance to
+  execute. Now `npm install` succeeds even when the native binding fails;
+  `harvest.js` + `retrieve.js` runtime catches surface the explicit warning.
+  Marketplace-cache scenario (prebuilt baked in) is unaffected. sql.js WASM
+  fallback for v0.2.0 still tracked separately.
+- **`tests/sibling-shape-smoke.test.js` env-gated hard-fail** (Opus 🟡 #3).
+  When `DEEP_MEMORY_FULL_SUITE=1` is set (e.g. in CI runners that clone the
+  full sibling suite), missing sibling fixtures now fail loudly instead of
+  silently skipping. Default behavior (no env var) unchanged — partial-checkout
+  dev still works.
+- **`cards.warnings` regression coverage** (Opus 🟡 #4). New test in
+  `harvest-fts-silent-disable.test.js` spawn-forks to simulate fts-load
+  failure, calls `harvestArtifact()` against the recurring-findings fixture,
+  and asserts `cards.warnings` is a non-empty array containing
+  `FTS_DEGRADED_WARNING` (and is properly redacted). Closes the gap where
+  v0.1.2 had zero coverage of the actual degraded-mode return value.
+- **SKILL.md doc drift** (Opus ℹ️ #1). `deep-memory-brief/SKILL.md` +
+  `deep-memory-harvest/SKILL.md` degraded-paths sections updated to match
+  v0.1.2/v0.1.3 graceful behavior (was still describing pre-v0.1.2 hard-fail).
+
+### Deferred to user
+
+- "Breaking" label in v0.1.2 CHANGELOG (Opus ℹ️ #2) — editorial; current
+  framing is conservative but not strictly wrong. Left for user discretion.
+
+### Not addressed (rejected with rationale)
+
+- Defensive-coding edge cases that quietly quarantine (Opus ℹ️ #3) — the
+  noted edges (no `session_id`+no `task_description`, etc.) ARE correctly
+  funneled to the quarantine path; that's the F1 contract. Adding tests
+  for each would expand coverage without surfacing new failure modes.
+
 ## [0.1.2] - 2026-05-21
 
 ### Fixed

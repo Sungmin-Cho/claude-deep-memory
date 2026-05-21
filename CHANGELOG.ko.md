@@ -2,6 +2,51 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 따릅니다.
 
+## [0.1.3] - 2026-05-21
+
+Round 1 deep-review-loop 대응 (리뷰 리포트 `2026-05-21-151916-review.md`,
+verdict=CONCERN, 4 🟡 + 3 ℹ️). 7개 항목 중 5개 fast-follow patch.
+
+### Fixed
+
+- **Privacy invariant — degraded-mode warning redaction** (Codex adversarial 🟡 #2).
+  `ftsLoadError` 가 `cards.warnings` 와 `latest-harvest.json` 에 raw 로 연결되어,
+  native loader 에러에 절대 homedir 경로가 들어있으면 disk 로 누수됨.
+  `scripts/harvest.js` + `scripts/retrieve.js` 양쪽에서 `redactString` 경유로 수정.
+  회귀 테스트 (`harvest-fts-silent-disable.test.js` +
+  `retrieve-fts-degraded.test.js`) 가 `os.homedir()` 포함 simulated 에러를 주입해
+  결과 warning 이 `~/` 마커를 포함하는지 검증.
+- **`better-sqlite3` 를 `optionalDependencies` 로 이동** (Codex 🟡 #1).
+  v0.1.2 까지는 `dependencies` 에 있어서 native build 실패 시 `npm install`
+  자체가 abort — v0.1.2 의 graceful runtime catch 가 실행될 기회조차 없음.
+  이제 native build 실패해도 npm install 성공 + `harvest.js`/`retrieve.js`
+  runtime catch 가 명시적 warning 노출. marketplace-cache 시나리오 (prebuilt
+  내장) 무영향. v0.2.0 sql.js WASM fallback 은 별도 트랙으로 계속 추적.
+- **`tests/sibling-shape-smoke.test.js` env-gated hard-fail** (Opus 🟡 #3).
+  `DEEP_MEMORY_FULL_SUITE=1` 설정 시 (예: 전체 sibling suite 를 clone 하는
+  CI runner), sibling fixture 부재가 silent skip 대신 loud fail. 기본 동작
+  (env var 없음) 은 그대로 — partial-checkout 개발 환경 영향 없음.
+- **`cards.warnings` 회귀 커버리지** (Opus 🟡 #4).
+  `harvest-fts-silent-disable.test.js` 신규 테스트 — fts-load 실패 시뮬레이션
+  + `harvestArtifact()` 호출 + `cards.warnings` 가 non-empty array 이고
+  `FTS_DEGRADED_WARNING` 포함하는지 검증 (그리고 redaction 통과). v0.1.2 가
+  실제 degraded-mode 반환값을 검증하지 못하던 gap 해소.
+- **SKILL.md 문서 drift** (Opus ℹ️ #1). `deep-memory-brief/SKILL.md` +
+  `deep-memory-harvest/SKILL.md` 의 degraded-paths 섹션이 pre-v0.1.2 hard-fail
+  설명을 유지하고 있어 v0.1.2/v0.1.3 graceful 동작에 맞게 갱신.
+
+### Deferred to user
+
+- v0.1.2 CHANGELOG 의 "Breaking" 라벨 (Opus ℹ️ #2) — editorial; 현재 framing 이
+  conservative 하지만 strictly 틀린 것은 아니므로 사용자 재량으로 위임.
+
+### Not addressed (rejected with rationale)
+
+- Quietly-quarantined edge cases (Opus ℹ️ #3) — 지적된 edge (`session_id` +
+  `task_description` 둘다 없음 등) 는 F1 quarantine 경로로 올바르게 funnel 되고
+  있음. 각각에 대한 테스트 추가는 신규 failure mode 를 surface 하지 않으므로
+  coverage matrix 만 부풀림. 거부.
+
 ## [0.1.2] - 2026-05-21
 
 ### Fixed

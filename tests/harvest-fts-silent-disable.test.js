@@ -95,6 +95,87 @@ test('FTS_DEGRADED_WARNING constant is informative and actionable', () => {
   assert.ok(w.includes('Troubleshooting') || w.includes('README'), 'warning must point to docs');
 });
 
+test('v0.1.3 — harvestArtifact attaches cards.warnings in degraded mode (regression coverage)', () => {
+  // Round 1 review-respond — Opus 🟡 #4: prior test only verified `isFtsAvailable() === false`
+  // and the warning constant. No test actually exercised the degraded-mode return value of
+  // `harvestArtifact()`. A future refactor could silently drop the `Object.defineProperty`
+  // block without a single red test. This test closes that gap.
+  //
+  // Plus round 1 Codex 🟡 #2 (redaction) — the simulated loader error embeds a homedir
+  // path; assert the resulting warning has been redacted (no literal `/Users/...`).
+  const fixturePath = path.join(REPO_ROOT, 'tests', 'fixtures', 'sample-recurring-findings.json');
+  const script = `
+    'use strict';
+    const Module = require('module');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const os = require('node:os');
+
+    const ftsPath = ${JSON.stringify(FTS_PATH)};
+    const harvestPath = ${JSON.stringify(HARVEST_PATH)};
+
+    delete require.cache[ftsPath];
+    delete require.cache[harvestPath];
+
+    const origLoad = Module._load;
+    // Embed a homedir-like substring in the simulated error to exercise the redaction path.
+    const simulatedErr = "Cannot find module '" + os.homedir() + "/.cache/plugin/better-sqlite3.node'";
+    Module._load = function(request, parent, isMain) {
+      if (request === ftsPath || (parent && Module._resolveFilename(request, parent) === ftsPath)) {
+        throw new Error(simulatedErr);
+      }
+      return origLoad.call(this, request, parent, isMain);
+    };
+
+    (async () => {
+      try {
+        const harvest = require(harvestPath);
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-degraded-test-'));
+        const cards = await harvest.harvestArtifact({
+          artifactPath: ${JSON.stringify(fixturePath)},
+          sourceKind: 'review-recurring',
+          memoryRoot: tmp,
+          projectId: 'proj_aaaaaaaaaaaa',
+          skipDistillStepB: true,
+        });
+
+        // cards.length should still be ≥1 — disk write must succeed in degraded mode.
+        if (cards.length < 1) { process.stderr.write('ERROR: no cards written in degraded mode\\n'); process.exit(1); }
+
+        // cards.warnings must be a non-empty array with the FTS5 degraded warning.
+        if (!Array.isArray(cards.warnings)) { process.stderr.write('ERROR: cards.warnings is not an array\\n'); process.exit(1); }
+        if (cards.warnings.length === 0) { process.stderr.write('ERROR: cards.warnings is empty\\n'); process.exit(1); }
+        const w0 = cards.warnings[0];
+        if (!w0.includes('FTS5')) { process.stderr.write('ERROR: warning missing FTS5: ' + w0 + '\\n'); process.exit(1); }
+
+        // Redaction check — warning must NOT contain literal homedir.
+        if (w0.includes(os.homedir())) {
+          process.stderr.write('ERROR: warning leaked homedir path: ' + w0 + '\\n');
+          process.exit(1);
+        }
+        if (!w0.includes('~/')) {
+          process.stderr.write('ERROR: warning missing ~/ redaction marker: ' + w0 + '\\n');
+          process.exit(1);
+        }
+
+        fs.rmSync(tmp, { recursive: true, force: true });
+        process.stdout.write('OK\\n');
+        process.exit(0);
+      } catch (e) {
+        process.stderr.write('ERROR: harvest threw unexpectedly: ' + e.message + '\\n');
+        process.exit(1);
+      }
+    })();
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+  assert.strictEqual(result.status, 0, `Child failed.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.ok(result.stdout.includes('OK'), `Expected OK in stdout, got: ${result.stdout}`);
+});
+
 test('source verification — harvest.js no longer hard-throws on fts-index require failure', () => {
   // Documentation-grade: verify the hard-throw was reversed.
   const src = fs.readFileSync(HARVEST_PATH, 'utf8');

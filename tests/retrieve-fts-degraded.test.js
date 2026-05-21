@@ -24,10 +24,13 @@ test('graceful degradation — retrieve module loads + runRetrieve returns empty
     delete require.cache[ftsPath];
     delete require.cache[retrievePath];
 
+    const os = require('node:os');
     const origLoad = Module._load;
+    // v0.1.3 — embed homedir-like substring to exercise redaction path (Codex 🟡 #2).
+    const simulatedErr = "Cannot find module '" + os.homedir() + "/.cache/plugin/better-sqlite3.node'";
     Module._load = function(request, parent, isMain) {
       if (request === ftsPath || (parent && Module._resolveFilename(request, parent) === ftsPath)) {
-        throw new Error('simulated fts-index load failure');
+        throw new Error(simulatedErr);
       }
       return origLoad.call(this, request, parent, isMain);
     };
@@ -57,6 +60,18 @@ test('graceful degradation — retrieve module loads + runRetrieve returns empty
         );
         if (!hasDegradedWarning) {
           process.stderr.write('ERROR: degraded warning not present in warnings[]: ' + JSON.stringify(result.warnings) + '\\n');
+          process.exit(1);
+        }
+        // v0.1.3 redaction check — warning must NOT contain literal homedir.
+        const homedir = os.homedir();
+        const leaked = result.warnings.find((w) => typeof w === 'string' && w.includes(homedir));
+        if (leaked) {
+          process.stderr.write('ERROR: warning leaked homedir path: ' + leaked + '\\n');
+          process.exit(1);
+        }
+        const hasTilde = result.warnings.some((w) => typeof w === 'string' && w.includes('~/'));
+        if (!hasTilde) {
+          process.stderr.write('ERROR: warning missing ~/ redaction marker: ' + JSON.stringify(result.warnings) + '\\n');
           process.exit(1);
         }
         process.stdout.write('OK\\n');

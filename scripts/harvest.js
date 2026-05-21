@@ -548,12 +548,17 @@ async function harvestArtifact({
   // Attach degraded-mode warning as a non-enumerable property on the array so
   // callers that destructure or iterate cards are unaffected, but the CLI /
   // skill harness can surface it via `Array.isArray(out) && out.warnings`.
+  // v0.1.3 — the native loader error may embed absolute paths (e.g.
+  // `Cannot find module '/Users/.../better-sqlite3.node'`). Route through
+  // redactString to honor the repo's 3-pass privacy invariant before the
+  // message is mirrored to disk in `latest-harvest.json`.
   if (!fts) {
+    const causeRedacted = ftsLoadError ? redactString(ftsLoadError) : '';
     Object.defineProperty(cards, 'warnings', {
       enumerable: false,
       configurable: true,
       writable: true,
-      value: [FTS_DEGRADED_WARNING + (ftsLoadError ? ` (cause: ${ftsLoadError})` : '')],
+      value: [FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : '')],
     });
   }
   return cards;
