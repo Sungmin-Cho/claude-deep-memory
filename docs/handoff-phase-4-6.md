@@ -143,6 +143,18 @@ Carried forward from spec §16:
 - automatic SessionStart / Stop hooks
 - per-card encryption at rest
 
+## Known limitations carried forward to v0.1.x
+
+- **C-R1 (multi-project memory_id collision)** — `memoryIdFor()` derives the id
+  from `(memory_type, dedupe_key)` only; FTS5 `upsertCard` deletes by `memory_id`.
+  Two projects sharing a `dedupe_key` overwrite each other's FTS5 row. v0.1.0 is
+  single-project-safe — see CHANGELOG.md Known limitations. Round 1 + 2 added
+  mitigations (AMBIGUOUS promote guard, global-scope read-before-write, audit lock)
+  that close the single-project blast paths. v0.2.0 plan: widen memoryIdFor signature
+  to include projectId + composite `(memory_id, project_id)` FTS key (12+ file change).
+
+---
+
 ## R3 review-loop lesson — "false confidence"
 
 The Round 1 `deep-review-loop` over the v0.1.0 plan caught a class of error

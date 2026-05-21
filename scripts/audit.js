@@ -546,22 +546,30 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
 async function run({ memoryRoot, projectDir } = {}) {
   if (!memoryRoot) throw new Error('audit.run requires memoryRoot');
   const cwd = projectDir || process.cwd();
+  // ITEM-5-r3: Read-only sub-checks BEFORE acquiring lock (so stale-lock surfaces in report
+  // even when acquire() would throw STALE_LOCK or retry exhaustion).
   const schema = validateAllCards(memoryRoot);
-
-  // ITEM-4-r2: acquire global lock around applyAutoTransitions (write-side operation per spec §7.3)
-  const lockPath = path.join(memoryRoot, '.lock');
-  const lockHandle = await acquire(lockPath, { operation: 'audit' });
-  let transitions;
-  try {
-    transitions = applyAutoTransitions(memoryRoot);
-  } finally {
-    release(lockHandle);
-  }
-
   const stale_locks = detectStaleLocks(memoryRoot);
   const dedupe = detectDedupeCollisions(memoryRoot);
   const source_renames = detectSourceRenames(memoryRoot);
   const profile = detectStaleProfile(cwd);
+
+  // Side-effecting phase: applyAutoTransitions inside the lock.
+  // If the lock is stale, the report still contains the stale-lock entry above.
+  let transitions;
+  const lockPath = path.join(memoryRoot, '.lock');
+  try {
+    const lockHandle = await acquire(lockPath, { operation: 'audit' });
+    try {
+      transitions = applyAutoTransitions(memoryRoot);
+    } finally {
+      release(lockHandle);
+    }
+  } catch (e) {
+    // Lock unavailable (likely STALE_LOCK or retry exhaustion).
+    // detectStaleLocks already captured it; record + skip transitions.
+    transitions = { total: 0, transitioned: 0, transitions: [], skipped_due_to_lock: e.code || e.message };
+  }
 
   const issues =
     schema.invalid +

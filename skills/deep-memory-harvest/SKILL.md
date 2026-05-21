@@ -43,7 +43,15 @@ Harvest deep-suite sibling artifacts, distill them through the two-step pipeline
 5. **lease 해제** — `~/.deep-memory/.leases/<project_id>.lease` 삭제 (finally guard).
 6. **결과 보고** — `.deep-memory/latest-harvest.json` (project-local) 에 `{sources_scanned, events_created, cards_created, skipped, warnings, generated_at}` atomic write. 콘솔에도 동일 summary 출력.
 
-전체 절차는 `scripts/harvest.js` 가 단일 진입점으로 수행합니다.
+전체 절차는 `scripts/harvest.js` 가 단일 진입점으로 수행합니다. v0.1.0 CLI는 아티팩트 1개를 직접 지정하는 방식입니다:
+
+```
+node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]
+```
+
+`sourceKind`: `review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index`
+
+config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
 
 ## Invariants (spec §7.3 reference)
 

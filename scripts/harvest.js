@@ -17,10 +17,18 @@ const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
 const PASS2_EXCERPT_BYTES = 4096; // spec §7.2 — bounded LLM input
 const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER']);
 
-// Phase 4 Task 4.2 introduces ./lib/fts-index — Phase 2 dynamic-requires it so the
-// FTS5 upsert path is a no-op until that module lands, without breaking persist.
-let fts = null;
-try { fts = require('./lib/fts-index'); } catch { /* Phase 4 wires this */ }
+// FTS5 index module is REQUIRED for harvest to be usable — without it, cards
+// would be persisted to disk but unsearchable via /deep-memory-brief. Surface
+// the load failure clearly rather than silently disabling indexing.
+let fts;
+try {
+  fts = require('./lib/fts-index');
+} catch (e) {
+  throw new Error(
+    'deep-memory harvest requires scripts/lib/fts-index.js + better-sqlite3 to be loadable. ' +
+    'Original error: ' + (e && e.message ? e.message : String(e))
+  );
+}
 
 /**
  * spec §7.1 — Step A mapper for `.deep-review/recurring-findings.json`.
@@ -198,7 +206,7 @@ const STEP_A_MAPPERS = {
 
 function memoryIdFor(memoryType, dk) {
   const typeSlug = memoryType.replace(/-/g, '_');
-  const shortHash = createHash('sha256').update(dk).digest('hex').slice(0, 6);
+  const shortHash = createHash('sha256').update(dk).digest('hex').slice(0, 16); // 64-bit; was 6 (24-bit)
   return 'mem_' + typeSlug + '_' + shortHash;
 }
 
@@ -565,7 +573,12 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
       const idx = fts.openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
       try {
         if (idx.driver === 'better-sqlite3') idx.db.exec('BEGIN');
-        for (const c of cards) fts.upsertCard(idx, c, { projectId });
+        for (const c of cards) {
+          // ITEM-7-r3: globally-promoted cards must get project_id='' in FTS row
+          // so FTS metadata matches the card's actual scope (global dir).
+          const fts_pid = c.payload.privacy_level === 'global' ? '' : projectId;
+          fts.upsertCard(idx, c, { projectId: fts_pid });
+        }
         if (idx.driver === 'better-sqlite3') idx.db.exec('COMMIT');
       } finally {
         if (idx.driver === 'better-sqlite3' && idx.db && typeof idx.db.close === 'function') {
@@ -604,3 +617,59 @@ module.exports = {
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
 };
+
+// ITEM-6-r3: CLI entry point — minimal single-artifact invocation for v0.1.0.
+// Full config.yaml-driven glob scan is deferred to v0.1.x (see docs/handoff-phase-4-6.md).
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  // Parse --kind=<sourceKind> or --kind <sourceKind>
+  let sourceKind = null;
+  let projectId = null;
+  const remainingArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('--kind=')) {
+      sourceKind = args[i].slice('--kind='.length);
+    } else if (args[i] === '--kind' && i + 1 < args.length) {
+      sourceKind = args[++i];
+    } else if (args[i].startsWith('--project=')) {
+      projectId = args[i].slice('--project='.length);
+    } else if (args[i] === '--project' && i + 1 < args.length) {
+      projectId = args[++i];
+    } else if (!args[i].startsWith('--')) {
+      remainingArgs.push(args[i]);
+    }
+  }
+  const artifactPath = remainingArgs[0] || null;
+  const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
+
+  if (!artifactPath || !sourceKind) {
+    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
+    console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
+    console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
+    process.exit(1);
+  }
+
+  const cwd = process.cwd();
+  let profile = null;
+  try {
+    profile = JSON.parse(fs.readFileSync(path.join(cwd, '.deep-memory', 'project-profile.json'), 'utf8'));
+  } catch { /* no profile — use fallback */ }
+  const finalProjectId = projectId || profile?.project_id || 'proj_unknown';
+
+  harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
+    .then((cards) => {
+      const summary = {
+        generated_at: new Date().toISOString(),
+        artifactPath,
+        sourceKind,
+        projectId: finalProjectId,
+        cards_count: cards.length,
+        memory_ids: cards.map((c) => c.payload?.memory_id),
+      };
+      const outDir = path.join(cwd, '.deep-memory');
+      fs.mkdirSync(outDir, { recursive: true });
+      writeJsonAtomic(path.join(outDir, 'latest-harvest.json'), summary);
+      console.log(`Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
+    })
+    .catch((e) => { console.error(e.message); process.exit(1); });
+}

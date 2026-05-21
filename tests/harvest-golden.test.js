@@ -33,7 +33,7 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
     assert.ok(c.payload.title.length > 0, 'F1: title never empty');
     assert.ok(c.payload.evidence_summary.length > 0, 'F1: evidence_summary not empty');
     assert.match(c.payload.dedupe_key, /^sha256:[a-f0-9]{64}$/);
-    assert.match(c.payload.memory_id, /^mem_failure_case_[a-f0-9]{6}$/);
+    assert.match(c.payload.memory_id, /^mem_failure_case_[a-f0-9]{16}$/);
     assert.strictEqual(c.payload.privacy_level, 'local');
     assert.strictEqual(c.payload.status, 'candidate');
     assert.strictEqual(c.payload.feedback.accepted_count, 0);

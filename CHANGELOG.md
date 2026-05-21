@@ -18,3 +18,14 @@ All notable changes to deep-memory are documented here. Follows [Keep a Changelo
 - Project lease with idempotent event keys (sha256(path+content_hash+run_id))
 - 12 test suites including `runtime-contract/` per-adapter fixtures
 - Suite integration: `deep-suite/.claude-plugin/marketplace.json` + `.agents/plugins/marketplace.json` + `suite-extensions.json` entries
+
+### Known limitations
+
+- **Multi-project memory_id collision (C-R1, tracked for v0.2.0)** — when two
+  distinct projects in the same `~/.deep-memory` store harvest artifacts that
+  produce the same `dedupe_key`, both projects share a `memory_id`. The lexical
+  index (FTS5) is keyed on `memory_id` alone, so the second project's harvest
+  overwrites the first project's index row. The card files on disk are preserved
+  (scope-separated under `cards/<type>/<project_id>/`), but `/deep-memory-brief`
+  may return phantom or missing results until v0.2.0 reworks the id scheme.
+  v0.1.0 is **single-project-safe**. Workaround: use `DEEP_MEMORY_ROOT` per project.

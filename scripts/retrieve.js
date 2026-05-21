@@ -39,7 +39,7 @@ const APPLICABILITY_GUARD_THRESHOLD = 0.5;
 function tokenize(text) {
   return String(text || '')
     .toLowerCase()
-    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')  // ITEM-3-r3: Unicode-aware (was /[^a-z0-9\s]+/g)
     .split(/\s+/)
     .filter(Boolean);
 }
