@@ -60,7 +60,10 @@ function renderMemory(card, extra = {}) {
  * of cards (production path). The single-card overload is a convenience for
  * brief-format.test.js — production always passes the array.
  */
-function renderJson(task, cardsOrCard, extra = {}) {
+// ITEM-4-r5: accept optional cwd and thread to wrap so gitStateSafe in envelope.js
+// captures the correct repo's git state when called from a different process.cwd().
+// Backward compat: cwd defaults to null → gitStateSafe uses process.cwd() as before.
+function renderJson(task, cardsOrCard, extra = {}, cwd = null) {
   const cards = Array.isArray(cardsOrCard) ? cardsOrCard : [cardsOrCard];
   const memories = cards.map((c) => renderMemory(c, extra));
   return wrap({
@@ -73,6 +76,7 @@ function renderJson(task, cardsOrCard, extra = {}) {
       memories,
     },
     provenance: { source_artifacts: [] },
+    cwd,
   });
 }
 

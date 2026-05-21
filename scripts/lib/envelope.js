@@ -19,17 +19,23 @@ function ulidLike() {
  *   - `dirty` MUST be a boolean (or the literal string "unknown" if the enum permits).
  * Returns `null` if any git command fails or HEAD is not a valid hex SHA — the caller
  * MUST omit the `envelope.git` field in that case (better than emitting an invalid stub).
+ *
+ * ITEM-4-r5: accept optional `cwd` so SDK-style callers whose process.cwd() differs from
+ * the project directory get the correct repo's git state. When cwd is null/undefined the
+ * behaviour is identical to the previous implementation (process.cwd() default).
  */
-function gitStateSafe() {
+function gitStateSafe(cwd) {
   try {
-    const head = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+    const opts = { stdio: ['ignore', 'pipe', 'ignore'] };
+    if (cwd) opts.cwd = cwd;
+    const head = execSync('git rev-parse HEAD', opts)
       .toString()
       .trim();
     if (!/^[a-f0-9]{7,40}$/.test(head)) return null; // suite schema requires hex
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', opts)
       .toString()
       .trim();
-    const dirtyOutput = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const dirtyOutput = execSync('git status --porcelain', opts).toString();
     const dirty = dirtyOutput.trim().length > 0; // boolean (suite constraint)
     return { head, branch, dirty };
   } catch {
@@ -37,8 +43,13 @@ function gitStateSafe() {
   }
 }
 
-function wrap({ artifact_kind, schema, payload, provenance = { source_artifacts: [] } }) {
-  const git = gitStateSafe();
+/**
+ * ITEM-4-r5: accept optional `cwd` and thread it through to gitStateSafe so that callers
+ * in different process.cwd() contexts get the envelope.git fields from the intended repo.
+ * Backward compat: if cwd is null/undefined, gitStateSafe uses process.cwd() as before.
+ */
+function wrap({ artifact_kind, schema, payload, provenance = { source_artifacts: [] }, cwd = null }) {
+  const git = gitStateSafe(cwd);
   const envelope = {
     producer: PRODUCER,
     producer_version: PRODUCER_VERSION,

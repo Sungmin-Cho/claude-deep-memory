@@ -1,6 +1,6 @@
 ---
 name: deep-memory-audit
-description: "Audit the deep-memory store — schema validation (Ajv strict on every card), stale-memory state-machine transitions, stale-lock detection (`--unlock` to break), dedupe-collision report (spec §6.4), source-rename detect via content_hash, project-profile freshness check, and atomic `--promote <id>` to move a local card → global (lock-aware vs concurrent harvest). Triggers on `/deep-memory-audit`, \"audit memory\", \"deep-memory audit\", \"메모리 감사\", \"메모리 점검\". Optional flags: `--unlock` (break stale locks), `--promote <memory_id> [--project <project_id>]` (local → global; `--project` disambiguates when same memory_id exists in multiple scopes), `--rebuild-index` (drop + repopulate FTS5 from on-disk cards)."
+description: "Audit the deep-memory store — schema validation (Ajv strict on every card), stale-memory state-machine transitions, stale-lock detection (`--unlock` to break), dedupe-collision report (spec §6.4), source-rename detect via content_hash, project-profile freshness check, and atomic `--promote <id>` to move a local card → global (lock-aware vs concurrent harvest). Triggers on `/deep-memory-audit`, \"audit memory\", \"deep-memory audit\", \"메모리 감사\", \"메모리 점검\". Optional flags: `--unlock` (break stale locks), `--promote <memory_id> [--project <project_id>]` (local → global; `--project` disambiguates when same memory_id exists in multiple scopes)."
 user-invocable: true
 ---
 
@@ -22,7 +22,6 @@ Run end-to-end health checks against the deep-memory store and (optionally) appl
 | (없음) | 7개 sub-check 전체 실행 + `.deep-memory/latest-audit.json` atomic write | `run()` |
 | `--unlock` | stale lock detect + 5분 이상 된 lock 디렉토리 제거 | `unlock()` |
 | `--promote <memory_id> [--project <project_id>]` | local 카드를 global 로 atomic 승격 (lock 보호). 같은 `memory_id` 가 2개 이상 scope 에 존재하면 `--project <project_id>` 로 disambiguate 필요 — 미지정 시 `AMBIGUOUS` 에러 반환. | `promoteCard(id, { projectId })` |
-| `--rebuild-index` | FTS5 인덱스 drop + on-disk 카드로 재인서트 | `rebuildIndex()` |
 
 ## Steps (default — no flags)
 
@@ -66,6 +65,10 @@ harvest 가 lock 점유 중이면 `LOCK_HELD` 에러 — 사용자에게 다시 
 - `LOCK_HELD` — promote 가 harvest 와 충돌. 사용자에게 lock 해제 후 재시도 안내.
 - `STALE_LOCK` (`lib/lock`) — 5분 이상 lock → audit 가 표시. `--unlock` 으로 명시 break.
 - Ajv schema violation — `latest-audit.json` 의 `schema_violations[]` 에 모이고, audit 는 graceful 종료.
+
+## v0.1.x scope
+
+Index rebuild is planned for v0.1.x — until then, delete `~/.deep-memory/indexes/lexical.sqlite` and re-harvest to rebuild.
 
 ## See also
 

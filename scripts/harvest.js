@@ -245,7 +245,13 @@ function quarantineEmptyClaim({ memoryRoot, runId, sourceMeta, rejected }) {
   const payload = {
     quarantined_at: new Date().toISOString(),
     run_id: runId,
-    source: sourceMeta,
+    // ITEM-2-r5: redact sourceMeta.path before writing quarantine file — symmetric with
+    // round-1 ITEM-2 (cards) and round-4 ITEM-4 (events JSONL). Home dir must not leak
+    // into any deep-memory output file (spec §11.1 privacy invariant).
+    source: {
+      ...sourceMeta,
+      path: redactString(sourceMeta.path),
+    },
     rejected_count: rejected.length,
     rejected,
   };
@@ -253,10 +259,14 @@ function quarantineEmptyClaim({ memoryRoot, runId, sourceMeta, rejected }) {
 }
 
 function buildSourceMeta(artifactPath, raw, sourceKind) {
+  // ITEM-3-r5: resolve relative paths to absolute so provenance is stable across cwd changes.
+  // audit cross-cwd would resolve relative paths against THAT cwd → false-positive missing/drift.
+  // After redaction (ITEM-2 r1), the absolute path becomes ~/... which expandTilde in audit handles.
+  const resolvedPath = path.resolve(artifactPath);
   return {
     id: 'src_0',
-    path: artifactPath,
-    content_hash: hashFile(artifactPath),
+    path: resolvedPath,
+    content_hash: hashFile(resolvedPath),
     captured_at: new Date().toISOString(),
     artifact_kind: raw.envelope?.artifact_kind || sourceKind,
     schema_version: raw.envelope?.schema?.version || '1.0',
@@ -291,7 +301,7 @@ function splitSourceMeta(sourceMetas) {
   return { source_artifacts, deep_memory_provenance };
 }
 
-function buildCardFromDraft(draft, sourceMeta) {
+function buildCardFromDraft(draft, sourceMeta, cwd = null) {
   const dk = dedupeKey(draft.memory_type, draft.claim, draft.applicability);
   const id = memoryIdFor(draft.memory_type, dk);
   const now = Date.now();
@@ -317,11 +327,14 @@ function buildCardFromDraft(draft, sourceMeta) {
     ...sa,
     path: redactString(sa.path),
   }));
+  // ITEM-4-r5: thread cwd to wrap so gitStateSafe captures the correct repo's git state
+  // when process.cwd() differs from the project directory (SDK-style invocation).
   return wrap({
     artifact_kind: 'memory-card',
     schema: { name: 'memory-card', version: '1.0' },
     payload,
     provenance: { source_artifacts: redactedSourceArtifacts },
+    cwd,
   });
 }
 
@@ -379,6 +392,7 @@ async function harvestArtifact({
   liveAgent = false,
   liveCodex = false,
   batchMode = false,
+  cwd = null,  // ITEM-4-r5: optional cwd for gitStateSafe in envelope
 }) {
   // ITEM-2-r4: validate projectId at entry boundary before any path.join site
   validateProjectId(projectId);
@@ -432,7 +446,7 @@ async function harvestArtifact({
     }
   }
 
-  const cards = drafts.map((d) => buildCardFromDraft(d, sourceMeta));
+  const cards = drafts.map((d) => buildCardFromDraft(d, sourceMeta, cwd));
 
   await persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta });
   return cards;
@@ -633,6 +647,10 @@ module.exports = {
 // ITEM-6-r3: CLI entry point — minimal single-artifact invocation for v0.1.0.
 // Full config.yaml-driven glob scan is deferred to v0.1.x (see docs/handoff-phase-4-6.md).
 if (require.main === module) {
+  // ITEM-1-r5: import projectId deriver from init.js for mismatch guard (fail-closed).
+  // Placed inside require.main block to avoid circular-require risk for library callers.
+  const { projectId: deriveProjectId } = require('./init');
+
   const args = process.argv.slice(2);
   // Parse --kind=<sourceKind> or --kind <sourceKind>
   let sourceKind = null;
@@ -666,6 +684,23 @@ if (require.main === module) {
   try {
     profile = JSON.parse(fs.readFileSync(path.join(cwd, '.deep-memory', 'project-profile.json'), 'utf8'));
   } catch { /* no profile — use fallback */ }
+
+  // ITEM-1-r5: fail-closed profile mismatch guard — harvest writes are STRONGER than brief reads.
+  // If the user did NOT explicitly pass --project and the profile's project_id doesn't match
+  // what the current cwd would derive, refuse rather than writing cards under the wrong scope.
+  if (!projectId && profile && profile.project_id) {
+    const cwdProjectId = deriveProjectId(cwd);
+    if (profile.project_id !== cwdProjectId) {
+      console.error(
+        `Error: project-profile mismatch — profile says project_id=${profile.project_id.slice(0, 13)} ` +
+        `but cwd derives ${cwdProjectId.slice(0, 13)}. ` +
+        `Refusing harvest (cards would be written under the wrong scope). ` +
+        `Run /deep-memory-init to refresh the profile after a workspace move.`
+      );
+      process.exit(1);
+    }
+  }
+
   const finalProjectId = projectId || profile?.project_id || 'proj_unknown';
 
   // ITEM-2-r4: validate before passing to harvestArtifact (CLI entry boundary)
