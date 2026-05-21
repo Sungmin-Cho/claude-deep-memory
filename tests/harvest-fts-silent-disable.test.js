@@ -1,10 +1,15 @@
 'use strict';
-// ITEM-4-r3: harvest.js must NOT silently swallow fts-index load failures.
-// When fts-index is loadable (normal CI), the module loads and fts is an object.
-// When fts-index fails, harvest throws with a message mentioning 'fts-index' or 'better-sqlite3'.
+// v0.1.2 — FTS5 graceful degradation. v0.1.0 round-5 made harvest hard-throw
+// when scripts/lib/fts-index.js failed to require (better-sqlite3 native
+// binding unavailable). That posture was wrong for Node v26+ environments
+// where the plugin cache is immutable and the user can't fix the build.
 //
-// Because harvest.js throws at require()-time (module scope), we test the failure path
-// by spawning a child process that poisons the require cache before requiring harvest.js.
+// v0.1.2 reverses to graceful degradation: harvest writes cards/events to
+// disk, FTS5 upsert is skipped, and an explicit warning surfaces via
+// `cards.warnings`. brief returns empty + same warning. sql.js WASM fallback
+// is deferred to v0.2.0 (handoff-phase-4-6.md).
+//
+// These tests verify the new (graceful) behavior, NOT the old hard-throw.
 const test = require('node:test');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
@@ -15,34 +20,28 @@ const REPO_ROOT = path.join(__dirname, '..');
 const HARVEST_PATH = path.join(REPO_ROOT, 'scripts', 'harvest.js');
 const FTS_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'fts-index.js');
 
-test('ITEM-4-r3: happy path — harvest module loads without error when fts-index is available', () => {
-  // Verify that in normal CI (better-sqlite3 installed), the module-scope require succeeds.
+test('happy path — harvest module loads without error when fts-index is available', () => {
   const harvest = require('../scripts/harvest');
   assert.ok(harvest, 'harvest module must load without throwing');
   assert.strictEqual(typeof harvest.harvestArtifact, 'function', 'harvestArtifact must be exported');
+  assert.strictEqual(typeof harvest.isFtsAvailable, 'function', 'isFtsAvailable probe must be exported');
+  assert.strictEqual(harvest.isFtsAvailable(), true, 'fts must be available in normal CI');
 });
 
-test('ITEM-4-r3: failure path — if fts-index throws on require, harvest throws with descriptive message', () => {
-  // Spawn a child that deletes the fts-index cache entry and replaces it with a module
-  // that throws, then tries to require harvest.js (which will also need its cache cleared).
-  // Use absolute paths throughout since spawnSync runs in project root.
+test('graceful degradation — when fts-index require fails, harvest module STILL loads (no throw)', () => {
+  // Spawn a child that poisons fts-index require, then loads harvest.js.
+  // Pre-v0.1.2: harvest threw at module scope.
+  // Post-v0.1.2: harvest loads OK; isFtsAvailable() returns false.
   const script = `
     'use strict';
-    const path = require('path');
     const Module = require('module');
 
     const ftsPath = ${JSON.stringify(FTS_PATH)};
     const harvestPath = ${JSON.stringify(HARVEST_PATH)};
 
-    // Clear any cached versions so they re-execute
     delete require.cache[ftsPath];
     delete require.cache[harvestPath];
 
-    // Inject a poisoned module for fts-index that throws on require
-    const fakeMod = new Module(ftsPath, null);
-    fakeMod.filename = ftsPath;
-    fakeMod.loaded = true;
-    // Override Module._load for fts-index specifically
     const origLoad = Module._load;
     Module._load = function(request, parent, isMain) {
       if (request === ftsPath || (parent && Module._resolveFilename(request, parent) === ftsPath)) {
@@ -52,16 +51,29 @@ test('ITEM-4-r3: failure path — if fts-index throws on require, harvest throws
     };
 
     try {
-      require(harvestPath);
-      process.stderr.write('ERROR: harvest should have thrown but did not\\n');
-      process.exit(1);
-    } catch (e) {
-      if (!e.message.includes('fts-index') && !e.message.includes('better-sqlite3')) {
-        process.stderr.write('ERROR: thrown message does not mention fts-index or better-sqlite3: ' + e.message + '\\n');
+      const harvest = require(harvestPath);
+      if (typeof harvest.harvestArtifact !== 'function') {
+        process.stderr.write('ERROR: harvest module loaded but missing harvestArtifact\\n');
         process.exit(1);
       }
-      process.stdout.write('OK: ' + e.message.slice(0, 80) + '\\n');
+      if (typeof harvest.isFtsAvailable !== 'function') {
+        process.stderr.write('ERROR: harvest module missing isFtsAvailable probe\\n');
+        process.exit(1);
+      }
+      if (harvest.isFtsAvailable() !== false) {
+        process.stderr.write('ERROR: isFtsAvailable should return false when fts-index unloadable\\n');
+        process.exit(1);
+      }
+      // Verify the degraded-warning constant is exported and mentions the user-actionable fix.
+      if (!harvest.FTS_DEGRADED_WARNING || !harvest.FTS_DEGRADED_WARNING.includes('better-sqlite3')) {
+        process.stderr.write('ERROR: FTS_DEGRADED_WARNING missing or unhelpful\\n');
+        process.exit(1);
+      }
+      process.stdout.write('OK\\n');
       process.exit(0);
+    } catch (e) {
+      process.stderr.write('ERROR: harvest threw unexpectedly: ' + e.message + '\\n');
+      process.exit(1);
     }
   `;
   const result = spawnSync(process.execPath, ['-e', script], {
@@ -73,20 +85,108 @@ test('ITEM-4-r3: failure path — if fts-index throws on require, harvest throws
   assert.ok(result.stdout.includes('OK'), `Expected OK in stdout, got: ${result.stdout}`);
 });
 
-test('ITEM-4-r3: error message template mentions fts-index and better-sqlite3', () => {
-  // Documentation-grade: verify the exact error message strings are present in the source.
+test('FTS_DEGRADED_WARNING constant is informative and actionable', () => {
+  const harvest = require('../scripts/harvest');
+  const w = harvest.FTS_DEGRADED_WARNING;
+  assert.strictEqual(typeof w, 'string');
+  assert.ok(w.includes('FTS5'), 'warning must mention FTS5');
+  assert.ok(w.includes('better-sqlite3'), 'warning must mention better-sqlite3 (the cause)');
+  assert.ok(w.includes('harvest continues'), 'warning must reassure that harvest write succeeded');
+  assert.ok(w.includes('Troubleshooting') || w.includes('README'), 'warning must point to docs');
+});
+
+test('v0.1.3 — harvestArtifact attaches cards.warnings in degraded mode (regression coverage)', () => {
+  // Round 1 review-respond — Opus 🟡 #4: prior test only verified `isFtsAvailable() === false`
+  // and the warning constant. No test actually exercised the degraded-mode return value of
+  // `harvestArtifact()`. A future refactor could silently drop the `Object.defineProperty`
+  // block without a single red test. This test closes that gap.
+  //
+  // Plus round 1 Codex 🟡 #2 (redaction) — the simulated loader error embeds a homedir
+  // path; assert the resulting warning has been redacted (no literal `/Users/...`).
+  const fixturePath = path.join(REPO_ROOT, 'tests', 'fixtures', 'sample-recurring-findings.json');
+  const script = `
+    'use strict';
+    const Module = require('module');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const os = require('node:os');
+
+    const ftsPath = ${JSON.stringify(FTS_PATH)};
+    const harvestPath = ${JSON.stringify(HARVEST_PATH)};
+
+    delete require.cache[ftsPath];
+    delete require.cache[harvestPath];
+
+    const origLoad = Module._load;
+    // Embed a homedir-like substring in the simulated error to exercise the redaction path.
+    const simulatedErr = "Cannot find module '" + os.homedir() + "/.cache/plugin/better-sqlite3.node'";
+    Module._load = function(request, parent, isMain) {
+      if (request === ftsPath || (parent && Module._resolveFilename(request, parent) === ftsPath)) {
+        throw new Error(simulatedErr);
+      }
+      return origLoad.call(this, request, parent, isMain);
+    };
+
+    (async () => {
+      try {
+        const harvest = require(harvestPath);
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-degraded-test-'));
+        const cards = await harvest.harvestArtifact({
+          artifactPath: ${JSON.stringify(fixturePath)},
+          sourceKind: 'review-recurring',
+          memoryRoot: tmp,
+          projectId: 'proj_aaaaaaaaaaaa',
+          skipDistillStepB: true,
+        });
+
+        // cards.length should still be ≥1 — disk write must succeed in degraded mode.
+        if (cards.length < 1) { process.stderr.write('ERROR: no cards written in degraded mode\\n'); process.exit(1); }
+
+        // cards.warnings must be a non-empty array with the FTS5 degraded warning.
+        if (!Array.isArray(cards.warnings)) { process.stderr.write('ERROR: cards.warnings is not an array\\n'); process.exit(1); }
+        if (cards.warnings.length === 0) { process.stderr.write('ERROR: cards.warnings is empty\\n'); process.exit(1); }
+        const w0 = cards.warnings[0];
+        if (!w0.includes('FTS5')) { process.stderr.write('ERROR: warning missing FTS5: ' + w0 + '\\n'); process.exit(1); }
+
+        // Redaction check — warning must NOT contain literal homedir.
+        if (w0.includes(os.homedir())) {
+          process.stderr.write('ERROR: warning leaked homedir path: ' + w0 + '\\n');
+          process.exit(1);
+        }
+        if (!w0.includes('~/')) {
+          process.stderr.write('ERROR: warning missing ~/ redaction marker: ' + w0 + '\\n');
+          process.exit(1);
+        }
+
+        fs.rmSync(tmp, { recursive: true, force: true });
+        process.stdout.write('OK\\n');
+        process.exit(0);
+      } catch (e) {
+        process.stderr.write('ERROR: harvest threw unexpectedly: ' + e.message + '\\n');
+        process.exit(1);
+      }
+    })();
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+  assert.strictEqual(result.status, 0, `Child failed.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.ok(result.stdout.includes('OK'), `Expected OK in stdout, got: ${result.stdout}`);
+});
+
+test('source verification — harvest.js no longer hard-throws on fts-index require failure', () => {
+  // Documentation-grade: verify the hard-throw was reversed.
   const src = fs.readFileSync(HARVEST_PATH, 'utf8');
   assert.ok(
-    src.includes('fts-index.js + better-sqlite3 to be loadable'),
-    'harvest.js must contain the descriptive error message'
+    !src.includes(
+      "throw new Error(\n    'deep-memory harvest requires scripts/lib/fts-index.js + better-sqlite3 to be loadable. ' +"
+    ),
+    'round-5 ITEM-4 hard-throw must be reversed in v0.1.2'
   );
   assert.ok(
-    src.includes('throw new Error('),
-    'harvest.js must throw (not just log) on fts-index load failure'
-  );
-  // Verify the silent-disable pattern is gone
-  assert.ok(
-    !src.includes('catch { /* Phase 4 wires this */ }'),
-    'The silent-disable catch comment must be removed'
+    src.includes('graceful degradation') || src.includes('FTS_DEGRADED_WARNING'),
+    'harvest.js must reference the graceful-degradation path'
   );
 });

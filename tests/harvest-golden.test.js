@@ -25,8 +25,8 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    // Fixture has 2 findings — 1 valid, 1 with empty evidence (F1 must filter it).
-    assert.strictEqual(cards.length, 1, 'F1 must filter the empty-evidence finding');
+    // Fixture has 2 findings — 1 valid, 1 with empty description+example_files (F1 must filter it).
+    assert.strictEqual(cards.length, 1, 'F1 must filter the empty-description finding');
     const c = cards[0];
     assert.strictEqual(c.payload.memory_type, 'failure-case');
     assert.ok(c.payload.claim.length > 0, 'F1: claim never empty');
@@ -37,10 +37,21 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
     assert.strictEqual(c.payload.privacy_level, 'local');
     assert.strictEqual(c.payload.status, 'candidate');
     assert.strictEqual(c.payload.feedback.accepted_count, 0);
-    assert.deepStrictEqual(c.payload.tags, ['codex', 'skill', 'manifest']);
-    // applicability built from category
-    assert.strictEqual(c.payload.applicability[0].value, 'manifest');
+    // sibling-real shape: tags = [category, severity]
+    assert.deepStrictEqual(c.payload.tags, ['manifest', 'critical']);
+    // applicability built from category as 'category=<category>'
+    assert.strictEqual(c.payload.applicability[0].value, 'category=manifest');
     assert.strictEqual(c.payload.applicability[0].source_id, 'src_0');
+    // claim is the description (verbatim, F1 source)
+    assert.match(c.payload.claim, /Codex skill discovery silently fails/);
+    // title is description truncated to 80 chars
+    assert.ok(c.payload.title.length <= 80);
+    // evidence_summary comes from example_files (max 5)
+    assert.deepStrictEqual(c.payload.evidence_summary, [
+      'skills/wiki-ingest/SKILL.md',
+      'skills/wiki-query/SKILL.md',
+      'skills/wiki-lint/SKILL.md',
+    ]);
     // envelope
     assert.strictEqual(c.envelope.producer, 'deep-memory');
     assert.strictEqual(c.envelope.artifact_kind, 'memory-card');
@@ -74,7 +85,7 @@ test('Phase 3a.5 wiring — STEP_A_MAPPERS contains all 5 spec §7.1 mappers exa
   }
 });
 
-test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to confidence', async () => {
+test('Step A: mapEvolveInsights — unions insights_for_deep_work + insights_for_deep_review', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-evolve-'));
   try {
     const cards = await harvestArtifact({
@@ -84,33 +95,38 @@ test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to co
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
+    // 1 insight in each of the two arrays → 2 cards
     assert.strictEqual(cards.length, 2);
-    // first insight: q_delta=0.18 → confidence=0.36
-    const c1 = cards[0];
-    assert.strictEqual(c1.payload.memory_type, 'experiment-outcome');
-    assert.strictEqual(c1.payload.claim, 'start with manifest drift tests before behavior tests');
-    assert.strictEqual(c1.payload.title, c1.payload.claim, 'claim mirrors title');
-    assert.strictEqual(c1.payload.evidence_summary[0], 'caught Codex compatibility regressions early');
-    assert.ok(Math.abs(c1.payload.confidence - 0.36) < 1e-6,
-      `expected confidence ~0.36, got ${c1.payload.confidence}`);
-    assert.deepStrictEqual(c1.payload.tags, ['evolve', 'experiment']);
-    assert.strictEqual(c1.payload.applicability.length, 2);
-    assert.strictEqual(c1.payload.applicability[0].value, 'language=typescript');
-    assert.strictEqual(c1.payload.applicability[1].value, 'topology=plugin');
-    // second insight: q_delta=0.92 → saturates to 1.0
-    const c2 = cards[1];
-    assert.strictEqual(c2.payload.confidence, 1, 'q_delta >= 0.5 saturates to 1.0');
+    const work = cards.find((c) => c.payload.tags.includes('for-deep-work'));
+    const review = cards.find((c) => c.payload.tags.includes('for-deep-review'));
+    assert.ok(work, 'card with for-deep-work tag present');
+    assert.ok(review, 'card with for-deep-review tag present');
+    assert.strictEqual(work.payload.memory_type, 'experiment-outcome');
+    assert.match(work.payload.title, /early_termination_on_diverging_loss/);
+    // claim source is the suggestion (most actionable)
+    assert.match(work.payload.claim, /Add early termination guard/);
+    // evidence_summary mixes evidence string + source_archive_ids (max 5)
+    assert.ok(work.payload.evidence_summary.length >= 2);
+    assert.ok(work.payload.evidence_summary.includes('arch-2026-05-01-A'));
+    // recommended_action gets the suggestion
+    assert.strictEqual(work.payload.recommended_action[0], work.payload.claim);
+    // applicability is empty (no project_signature in real shape)
+    assert.deepStrictEqual(work.payload.applicability, []);
+    // confidence default 0.5 (no q_delta in real shape)
+    assert.strictEqual(work.payload.confidence, 0.5);
+    // review insight gets the other tag
+    assert.deepStrictEqual(review.payload.tags, ['evolve', 'for-deep-review']);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('mapEvolveInsights returns empty array for missing payload.insights (no F1 violation)', () => {
+test('mapEvolveInsights returns empty array for missing payload sub-arrays (no F1 violation)', () => {
   const result = mapEvolveInsights({}, { id: 'src_0' });
   assert.deepStrictEqual(result, []);
 });
 
-test('Step A: mapWorkReceipt — success slice → pattern, failure slice → failure-case', async () => {
+test('Step A: mapWorkReceipt — Option A (1 card per session-receipt), outcome=merge → pattern', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-work-'));
   try {
     const success = await harvestArtifact({
@@ -120,12 +136,18 @@ test('Step A: mapWorkReceipt — success slice → pattern, failure slice → fa
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    assert.strictEqual(success.length, 1);
+    assert.strictEqual(success.length, 1, 'Option A: 1 card per session-receipt');
     const s = success[0];
-    assert.strictEqual(s.payload.memory_type, 'pattern');
-    assert.strictEqual(s.payload.claim, 'Pattern: implement envelope wrap — all tests pass');
-    assert.deepStrictEqual(s.payload.evidence_summary, ['SLICE-001']);
-    assert.deepStrictEqual(s.payload.tags, ['deep-work', 'pattern']);
+    assert.strictEqual(s.payload.memory_type, 'pattern', 'outcome=merge → pattern');
+    assert.match(s.payload.claim, /^Pattern: implement envelope wrap with M3 adoption/);
+    assert.match(s.payload.claim, /quality 8\.7\/10/);
+    assert.match(s.payload.claim, /4\/4 slices completed/);
+    assert.match(s.payload.claim, /outcome=merge/);
+    assert.deepStrictEqual(s.payload.evidence_summary, ['dw-2026-05-19T10-00-00-000Z']);
+    assert.deepStrictEqual(s.payload.tags, ['deep-work', 'session', 'merge']);
+    // confidence = quality_score / 10 = 0.87
+    assert.ok(Math.abs(s.payload.confidence - 0.87) < 1e-6,
+      `expected confidence ~0.87, got ${s.payload.confidence}`);
 
     const failure = await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-session-receipt-failure.json'),
@@ -134,27 +156,29 @@ test('Step A: mapWorkReceipt — success slice → pattern, failure slice → fa
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    // 2 slices in fixture, 1 failure + 1 skipped → only failure persists
     assert.strictEqual(failure.length, 1);
     const f = failure[0];
-    assert.strictEqual(f.payload.memory_type, 'failure-case');
-    assert.strictEqual(f.payload.claim, 'Failure: FTS5 upsert lock window — lock acquired but FTS5 commit timed out');
-    assert.deepStrictEqual(f.payload.evidence_summary, ['SLICE-002']);
-    assert.deepStrictEqual(f.payload.tags, ['deep-work', 'failure-case']);
+    assert.strictEqual(f.payload.memory_type, 'failure-case', 'outcome=discard → failure-case');
+    assert.match(f.payload.claim, /^Failure: FTS5 upsert lock window experiment/);
+    assert.match(f.payload.claim, /quality 2\.1\/10/);
+    assert.match(f.payload.claim, /outcome=discard/);
+    assert.deepStrictEqual(f.payload.tags, ['deep-work', 'session', 'discard']);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('mapWorkReceipt ignores slices with outcome other than success/failure (e.g. skipped)', () => {
+test('mapWorkReceipt produces 1 card per receipt regardless of slice counts', () => {
+  // Even with no slices info, a receipt with task_description still produces 1 card.
   const result = mapWorkReceipt(
-    { payload: { slices: [{ id: 'X', title: 't', outcome: 'skipped' }] } },
+    { payload: { session_id: 'sid', task_description: 'X', outcome: 'merge' } },
     { id: 'src_0' }
   );
-  assert.deepStrictEqual(result, []);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].memory_type, 'pattern');
 });
 
-test('Step A: mapDocsScan — drift → coding-style with language applicability', async () => {
+test('Step A: mapDocsScan — flattens documents[].issues[] (nested → 1 card per issue)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-docs-'));
   try {
     const cards = await harvestArtifact({
@@ -164,30 +188,43 @@ test('Step A: mapDocsScan — drift → coding-style with language applicability
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
+    // 1 document with 2 issues → 2 cards
     assert.strictEqual(cards.length, 2);
-    const c1 = cards[0];
-    assert.strictEqual(c1.payload.memory_type, 'coding-style');
-    assert.strictEqual(
-      c1.payload.claim,
-      'CLAUDE.md references removed file scripts/legacy-init.js — remove reference or restore file'
-    );
-    assert.deepStrictEqual(c1.payload.evidence_summary, ['CLAUDE.md']);
-    assert.strictEqual(c1.payload.applicability[0].value, 'language=markdown');
-    assert.deepStrictEqual(c1.payload.recommended_action, ['remove reference or restore file']);
-    assert.deepStrictEqual(c1.payload.tags, ['deep-docs', 'style']);
+    const dead = cards.find((c) => c.payload.title.startsWith('dead-reference'));
+    assert.ok(dead, 'dead-reference card present');
+    assert.strictEqual(dead.payload.memory_type, 'coding-style');
+    assert.match(dead.payload.claim, /dead-reference at CLAUDE\.md:42 — git rename detected/);
+    assert.deepStrictEqual(dead.payload.evidence_summary, ['CLAUDE.md:42']);
+    assert.strictEqual(dead.payload.applicability[0].value, 'category=auto-fix');
+    assert.deepStrictEqual(dead.payload.recommended_action, ['remove reference or restore file']);
+    // tags include severity now too
+    assert.ok(dead.payload.tags.includes('deep-docs'));
+    assert.ok(dead.payload.tags.includes('auto-fix'));
+    assert.ok(dead.payload.tags.includes('high'));
+    // confidence severity-mapped: high=0.7
+    assert.strictEqual(dead.payload.confidence, 0.7);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('mapDocsScan handles missing recommended_fix without breaking F1 claim', () => {
+test('mapDocsScan handles missing line number gracefully (location = path only)', () => {
   const result = mapDocsScan(
-    { payload: { drifts: [{ title: 'X', path: 'a.md' }] } },
+    {
+      payload: {
+        documents: [
+          { path: 'a.md', issues: [{ type: 'orphan', category: 'audit-only', severity: 'low' }] },
+        ],
+      },
+    },
     { id: 'src_0' }
   );
   assert.strictEqual(result.length, 1);
-  assert.strictEqual(result[0].claim, 'X — no recommendation');
-  assert.deepStrictEqual(result[0].recommended_action, []);
+  // No line → location is just the path
+  assert.strictEqual(result[0].claim, 'orphan at a.md');
+  assert.deepStrictEqual(result[0].evidence_summary, ['a.md']);
+  // severity=low → confidence 0.3
+  assert.strictEqual(result[0].confidence, 0.3);
 });
 
 test('Step A: mapWikiIndex — ADR-tagged wiki pages → architecture-decision (non-ADR filtered)', async () => {
@@ -225,7 +262,7 @@ test('Step A: mapWikiIndex — ADR-tagged wiki pages → architecture-decision (
 test('F1: empty-claim drafts are quarantined to <memoryRoot>/.quarantine/empty-claim/<run_id>.json (not silently dropped)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-quar-'));
   try {
-    // sample-recurring-findings.json has 1 valid finding + 1 empty-evidence finding (F1 fail)
+    // sample-recurring-findings.json has 1 valid finding + 1 empty-description finding (F1 fail)
     const cards = await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
@@ -242,7 +279,7 @@ test('F1: empty-claim drafts are quarantined to <memoryRoot>/.quarantine/empty-c
     assert.strictEqual(q.run_id, '01j_recur_fixture_0001');
     assert.strictEqual(q.source.artifact_kind, 'recurring-findings');
     assert.strictEqual(q.rejected[0].memory_type, 'failure-case');
-    // sanity — the rejected one has empty evidence_summary
+    // sanity — the rejected one has empty evidence_summary (no example_files)
     assert.deepStrictEqual(q.rejected[0].evidence_summary, []);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

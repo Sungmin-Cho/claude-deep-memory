@@ -12,14 +12,32 @@
     "provenance": { "source_artifacts": [], "tool_versions": {} }
   },
   "payload": {
-    "slices": [
-      {
-        "id": "SLICE-001",
-        "title": "implement envelope wrap",
-        "outcome": "success",
-        "outcome_summary": "all tests pass",
-        "failure_reason": null
-      }
-    ]
+    "schema_version": "1.0",
+    "canonical": false,
+    "derived_from": "receipts/SLICE-*.json",
+    "session_id": "dw-2026-05-19T10-00-00-000Z",
+    "task_description": "implement envelope wrap with M3 adoption",
+    "started_at": "2026-05-19T10:00:00.000Z",
+    "finished_at": "2026-05-19T11:42:00.000Z",
+    "worktree_branch": "feat/m3-envelope-adoption",
+    "worktree_base_commit": "abc1234",
+    "outcome": "merge",
+    "outcome_ref": null,
+    "slices": {
+      "total": 4,
+      "completed": 4,
+      "spike": 0
+    },
+    "tdd_compliance": {
+      "strict": 4,
+      "relaxed": 0,
+      "override": 0,
+      "spike": 0
+    },
+    "quality_score": 8.7,
+    "quality_breakdown": {
+      "tdd_compliance": 1.0,
+      "sensor_clean": 0.9
+    }
   }
 }

@@ -64,9 +64,31 @@ Or directly from this repo with `--source url` pointed at the GitHub URL.
 
 Same skills run from Claude Code (slash), Codex (`$deep-memory:...`), Copilot CLI, Gemini CLI, Agent SDK (`Skill({skill:"deep-memory:..."})`). LLM distillation auto-detects the host adapter (claude-agent / codex-bash / gemini-sdk / stdin-fallback).
 
+## Troubleshooting
+
+### `FTS5 lexical index unavailable` warning during /deep-memory-harvest or /deep-memory-brief
+
+This message means `better-sqlite3` could not be loaded in your current Node
+runtime. Common causes:
+
+- **Node v26+** — prebuilt better-sqlite3 binaries are not yet published for
+  Node 26 at the time of v0.1.2, and the marketplace plugin cache is immutable
+  (no on-the-fly rebuild). harvest still writes cards/events to disk, but the
+  FTS5 index is skipped and `/deep-memory-brief` returns empty results.
+- **Missing build toolchain** — if you've cleared the cache and tried to
+  rebuild from source, you need Python 3, a C++ compiler, and make.
+
+**Workaround for now (v0.1.2)**: use Node 22 LTS — `nvm install 22 && nvm use 22`
+— and re-run `/deep-memory-harvest`.
+
+**Future fix (v0.2.0)**: a sql.js WASM fallback wrapper will keep the index
+functional regardless of native-module availability. Tracked in
+[`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
+
 ## Documentation
 
 - [Handoff for Phases 4 / 5 / 6 (post-v0.1.0 roadmap)](docs/handoff-phase-4-6.md)
+- [v0.1.x immediate follow-up handoff](docs/handoff-v0.1.x-immediate.md)
 - [CHANGELOG](CHANGELOG.md)
 - [한국어 README](README.ko.md)
 

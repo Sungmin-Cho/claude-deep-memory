@@ -28,7 +28,7 @@ Generate a structured brief of the most relevant memory cards for the user's sta
 
 - `/deep-memory-init` 가 선행되어야 함 — `.deep-memory/project-profile.json` 부재 시 init 안내 후 abort.
 - 한 번 이상의 `/deep-memory-harvest` 가 실행되어 cards/events/index 가 채워져 있어야 의미 있는 brief 생성. zero-card 상태에서도 빈 brief 가 정상 출력.
-- `better-sqlite3` 가 설치되어야 함 — Phase 0 install probe (`check-sqlite.js`) 가 통과 상태.
+- `better-sqlite3` 권장 — `optionalDependencies` 로 설치. 부재 시 graceful degradation (아래 Degraded paths 참조).
 
 ## Steps
 
@@ -62,7 +62,7 @@ Generate a structured brief of the most relevant memory cards for the user's sta
 
 - **profile 부재** — abort with `/deep-memory-init` 안내.
 - **memory_root 부재 (zero harvest)** — empty brief 출력 (`memories: []`), MD 에 "no memories yet — run /deep-memory-harvest" 안내.
-- **better-sqlite3 부재** — Phase 0 install probe 실패 시 hard fail. 향후 Phase 4+ 의 sql.js WASM fallback 은 `docs/handoff-phase-4-6.md` 참조.
+- **better-sqlite3 부재 / 로드 실패** — v0.1.2+ graceful degradation. brief 는 `{ memories: [], warnings: [<FTS5 unavailable 메시지>] }` 반환 (hard fail 아님). 사용자에게는 Node 22 LTS 권장 또는 v0.2.0 sql.js fallback 대기 안내 (README.md > Troubleshooting). v0.1.3+ 에서 warning 메시지의 native loader 경로는 `redactString` 으로 redaction 처리됨 (homedir 누수 없음).
 
 ## Outputs
 

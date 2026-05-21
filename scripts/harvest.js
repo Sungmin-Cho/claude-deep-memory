@@ -18,113 +18,122 @@ const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
 const PASS2_EXCERPT_BYTES = 4096; // spec §7.2 — bounded LLM input
 const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER']);
 
-// FTS5 index module is REQUIRED for harvest to be usable — without it, cards
-// would be persisted to disk but unsearchable via /deep-memory-brief. Surface
-// the load failure clearly rather than silently disabling indexing.
-let fts;
+// FTS5 index module — graceful degradation (v0.1.2). On Node v26+ where
+// better-sqlite3 prebuilt binaries are unavailable AND the plugin cache is
+// immutable, harvest must still write cards/events to disk; only the FTS5
+// upsert is skipped and an explicit warning surfaces. /deep-memory-brief
+// returns empty + warning in the same regime. sql.js WASM fallback is the
+// proper fix and is deferred to v0.2.0 (see docs/handoff-phase-4-6.md).
+//
+// Round-5 ITEM-4 (hard-throw on FTS5 require failure) had the right intent
+// for environments where the user CAN fix the build, but was the wrong
+// posture for plugin-cache environments where rebuild is impossible. The
+// warning surfaced both here and in brief is loud enough to flag the
+// degradation without forcing a hard-fail on first use.
+const FTS_DEGRADED_WARNING =
+  'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
+  'environment). harvest continues — cards and events are written to disk — ' +
+  'but /deep-memory-brief will return empty results until the index is ' +
+  'restored (use Node 22 LTS, or wait for v0.2.0 sql.js fallback). ' +
+  'See README.md > Troubleshooting.';
+let fts = null;
+let ftsLoadError = null;
 try {
   fts = require('./lib/fts-index');
 } catch (e) {
-  throw new Error(
-    'deep-memory harvest requires scripts/lib/fts-index.js + better-sqlite3 to be loadable. ' +
-    'Original error: ' + (e && e.message ? e.message : String(e))
-  );
+  ftsLoadError = e && e.message ? e.message : String(e);
+}
+
+/**
+ * Truncate a string to N chars (no ellipsis) — used for title generation
+ * where deterministic length cap matters more than display.
+ */
+function truncate(s, n) {
+  if (typeof s !== 'string') return '';
+  return s.length <= n ? s : s.slice(0, n);
 }
 
 /**
  * spec §7.1 — Step A mapper for `.deep-review/recurring-findings.json`.
- *   claim source: finding.title (deterministic, F1 — never empty)
- *   evidence_summary: first 5 evidence strings
- *   applicability: [{value: category, source_id, confidence: 0.7}]
- *   tags: finding.tags
- *   created_at: finding.first_seen
+ *
+ * Sibling-real payload (deep-review v1.4.0+): `payload.findings[]` where each item is
+ *   { category, severity, occurrences, example_files[], description, source_reports[] }.
+ *   There is no `title` / `evidence` / `first_seen` / `tags` at the finding level —
+ *   those existed only in the ideal-shape spec, not in the sibling's actual emit.
+ *
+ *   claim source: finding.description (F1 — primary deterministic claim)
+ *   title: first 80 chars of description (truncated)
+ *   evidence_summary: finding.example_files (already file:line strings — max 5)
+ *   applicability: [{value: 'category=<category>', source_id, confidence: 0.7}]
+ *   tags: [category, severity] filtered for truthy
+ *   created_at: envelope.generated_at fallback to now
  */
 function mapRecurringFindings(artifact, sourceMeta) {
   const findings = artifact.payload?.findings || [];
+  const generatedAt = artifact.envelope?.generated_at;
   return findings.map((f) => ({
     memory_type: 'failure-case',
-    title: f.title,
-    claim: f.title,
-    evidence_summary: (f.evidence || []).slice(0, 5),
+    title: truncate(f.description || '', 80),
+    claim: f.description || '',
+    evidence_summary: Array.isArray(f.example_files) ? f.example_files.slice(0, 5) : [],
     applicability: f.category
-      ? [{ value: f.category, source_id: sourceMeta.id, confidence: 0.7 }]
+      ? [{ value: `category=${f.category}`, source_id: sourceMeta.id, confidence: 0.7 }]
       : [],
     non_applicability: [],
     recommended_action: [],
     search_keywords: [],
-    tags: f.tags || [],
-    created_at: f.first_seen || new Date().toISOString(),
+    tags: [f.category, f.severity].filter(Boolean),
+    created_at: generatedAt || new Date().toISOString(),
   }));
 }
 
 /**
  * spec §7.1 — Step A mapper for `.deep-evolve/*\/evolve-insights.json`.
- *   claim source: insight.strategy (deterministic, F1)
- *   evidence_summary: [insight.outcome] if present
- *   applicability: project_signature key=value pairs (confidence 0.7)
- *   confidence: insight.q_delta normalized to [0,1] — q_delta of 0.5+ saturates to 1.0
- *   tags: ['evolve', 'experiment']
+ *
+ * Sibling-real payload (deep-evolve v3.2.0+):
+ *   payload.{
+ *     updated_at,
+ *     insights_for_deep_work[]:   { pattern, evidence, source_archive_ids[], suggestion },
+ *     insights_for_deep_review[]: { pattern, evidence, source_archive_ids[], suggestion },
+ *   }
+ *   Note: no `strategy` / `outcome` / `project_signature` / `q_delta` at the item
+ *   level — those existed only in the ideal-shape spec.
+ *
+ *   Strategy: union both arrays; tag indicates target ('for-deep-work' / 'for-deep-review').
+ *   claim source: insight.suggestion (most actionable, F1)
+ *   title: insight.pattern (truncated 80)
+ *   evidence_summary: [insight.evidence, ...insight.source_archive_ids].slice(0, 5)
+ *   applicability: empty (no project_signature in real shape)
+ *   confidence: 0.5 default (no q_delta to normalize)
+ *   tags: ['evolve', 'for-deep-work'|'for-deep-review']
  */
 function mapEvolveInsights(artifact, sourceMeta) {
-  const insights = artifact.payload?.insights || [];
-  return insights.map((i) => ({
-    memory_type: 'experiment-outcome',
-    title: i.strategy,
-    claim: i.strategy,
-    evidence_summary: [i.outcome].filter(Boolean).slice(0, 5),
-    applicability: Object.entries(i.project_signature || {}).map(([k, v]) => ({
-      value: `${k}=${v}`,
-      source_id: sourceMeta.id,
-      confidence: 0.7,
-    })),
-    non_applicability: [],
-    recommended_action: [],
-    search_keywords: [],
-    tags: ['evolve', 'experiment'],
-    confidence: Math.max(0, Math.min(1, (i.q_delta || 0) / 0.5)),
-    created_at: new Date().toISOString(),
-  }));
-}
-
-/**
- * spec §7.1 — Step A mapper for `.deep-work/*\/session-receipt.json`.
- *   Branches by slice.outcome:
- *     success → memory_type=pattern,    claim = "Pattern: <title> — <outcome_summary>"
- *     failure → memory_type=failure-case, claim = "Failure: <title> — <failure_reason>"
- *   Other outcomes (e.g. "skipped") are ignored — no card produced.
- *   evidence_summary: [slice.id] (deterministic single-element source)
- */
-function mapWorkReceipt(artifact, sourceMeta) {
-  const slices = artifact.payload?.slices || [];
+  const payload = artifact.payload || {};
+  const generatedAt = artifact.envelope?.generated_at;
+  const targets = [
+    { tag: 'for-deep-work', items: payload.insights_for_deep_work || [] },
+    { tag: 'for-deep-review', items: payload.insights_for_deep_review || [] },
+  ];
   const out = [];
-  for (const s of slices) {
-    if (s.outcome === 'success') {
+  for (const { tag, items } of targets) {
+    for (const i of items) {
+      const evidence = [];
+      if (typeof i.evidence === 'string' && i.evidence.length > 0) evidence.push(i.evidence);
+      if (Array.isArray(i.source_archive_ids)) {
+        for (const sid of i.source_archive_ids.slice(0, 4)) evidence.push(sid);
+      }
       out.push({
-        memory_type: 'pattern',
-        title: s.title,
-        claim: `Pattern: ${s.title} — ${s.outcome_summary || 'success'}`,
-        evidence_summary: [s.id],
+        memory_type: 'experiment-outcome',
+        title: truncate(i.pattern || '', 80),
+        claim: i.suggestion || i.pattern || '',
+        evidence_summary: evidence.slice(0, 5),
         applicability: [],
         non_applicability: [],
-        recommended_action: [],
+        recommended_action: i.suggestion ? [i.suggestion] : [],
         search_keywords: [],
-        tags: ['deep-work', 'pattern'],
+        tags: ['evolve', tag],
         confidence: 0.5,
-        created_at: new Date().toISOString(),
-      });
-    } else if (s.outcome === 'failure') {
-      out.push({
-        memory_type: 'failure-case',
-        title: s.title,
-        claim: `Failure: ${s.title} — ${s.failure_reason || 'unspecified'}`,
-        evidence_summary: [s.id],
-        applicability: [],
-        non_applicability: [],
-        recommended_action: [],
-        search_keywords: [],
-        tags: ['deep-work', 'failure-case'],
-        confidence: 0.5,
-        created_at: new Date().toISOString(),
+        created_at: generatedAt || new Date().toISOString(),
       });
     }
   }
@@ -132,29 +141,116 @@ function mapWorkReceipt(artifact, sourceMeta) {
 }
 
 /**
+ * spec §7.1 — Step A mapper for `.deep-work/*\/session-receipt.json`.
+ *
+ * Sibling-real payload (deep-work v6.5.0+): `payload.slices` is an aggregate object
+ *   `{ total, completed, spike }`, NOT an array. Per-slice receipts live in separate
+ *   files at `<sid>/receipts/SLICE-*.json`.
+ *
+ *   Strategy: Option A — 1 card per session-receipt summarising the whole session.
+ *   Slice-level memory is deferred (would require source-kind reconfiguration).
+ *
+ *   Memory type branches on `payload.outcome`:
+ *     'merge' / 'pr' / 'keep' → pattern
+ *     'discard' / 'abandon'   → failure-case
+ *     other (or undefined)    → pattern (default to "we learned something")
+ *
+ *   claim source: deterministic summary string built from task_description + outcome
+ *     + quality_score + slices.completed/total (F1 — never empty as long as
+ *     task_description or session_id is present)
+ *   title: task_description (truncated 80)
+ *   evidence_summary: [session_id] (deterministic single source)
+ *   tags: ['deep-work', 'session', outcome]
+ *   confidence: quality_score / 10 (clamped to [0, 1]) — default 0.5 if absent
+ */
+function mapWorkReceipt(artifact, sourceMeta) {
+  const p = artifact.payload || {};
+  const generatedAt = artifact.envelope?.generated_at;
+  const outcome = p.outcome || 'unknown';
+  const failureOutcomes = new Set(['discard', 'abandon']);
+  const memoryType = failureOutcomes.has(outcome) ? 'failure-case' : 'pattern';
+
+  const taskDesc = p.task_description || p.session_id || '';
+  const slices = p.slices || {};
+  const completed = typeof slices.completed === 'number' ? slices.completed : 0;
+  const total = typeof slices.total === 'number' ? slices.total : 0;
+  const qs = typeof p.quality_score === 'number' ? p.quality_score : null;
+
+  const verbPrefix = memoryType === 'failure-case' ? 'Failure' : 'Pattern';
+  const claimParts = [
+    `${verbPrefix}: ${taskDesc}`,
+    qs !== null ? `quality ${qs.toFixed(1)}/10` : null,
+    total > 0 ? `${completed}/${total} slices completed` : null,
+    `outcome=${outcome}`,
+  ].filter(Boolean);
+
+  const evidence = [];
+  if (p.session_id) evidence.push(p.session_id);
+
+  return [{
+    memory_type: memoryType,
+    title: truncate(taskDesc, 80),
+    claim: claimParts.join(' — '),
+    evidence_summary: evidence,
+    applicability: [],
+    non_applicability: [],
+    recommended_action: [],
+    search_keywords: [],
+    tags: ['deep-work', 'session', outcome],
+    confidence: qs !== null ? Math.max(0, Math.min(1, qs / 10)) : 0.5,
+    created_at: generatedAt || p.finished_at || new Date().toISOString(),
+  }];
+}
+
+/**
  * spec §7.1 — Step A mapper for `.deep-docs/last-scan.json`.
- *   claim source: "<drift.title> — <drift.recommended_fix>" (deterministic, F1)
- *   evidence_summary: [drift.path] if present
- *   applicability: language=<drift.language> if present
- *   recommended_action: [drift.recommended_fix] if present
+ *
+ * Sibling-real payload (deep-docs v1.3.1+): `payload.documents[].issues[]` (nested).
+ *   Each document = { path, issues[], metrics }
+ *   Each issue   = { type, category, severity, line, current_value, suggested_value, evidence }
+ *
+ *   Strategy: flatten — each issue becomes 1 card.
+ *   claim source: `${issue.type} at ${document.path}:${issue.line} — ${issue.evidence}` (F1)
+ *   title: `${issue.type} in ${document.path}` (truncated 80)
+ *   evidence_summary: [`${document.path}:${issue.line}`]
+ *   applicability: [{value: `category=${issue.category}`, confidence: 0.6}]
+ *   recommended_action: [issue.suggested_value] if present
+ *   tags: ['deep-docs', issue.category, issue.severity] filtered
+ *   confidence: severity-mapped (high=0.7, medium=0.5, low=0.3) — default 0.5
  */
 function mapDocsScan(artifact, sourceMeta) {
-  const drifts = artifact.payload?.drifts || [];
-  return drifts.map((d) => ({
-    memory_type: 'coding-style',
-    title: d.title,
-    claim: `${d.title} — ${d.recommended_fix || 'no recommendation'}`,
-    evidence_summary: [d.path].filter(Boolean).slice(0, 5),
-    applicability: d.language
-      ? [{ value: `language=${d.language}`, source_id: sourceMeta.id, confidence: 0.6 }]
-      : [],
-    non_applicability: [],
-    recommended_action: d.recommended_fix ? [d.recommended_fix] : [],
-    search_keywords: [],
-    tags: ['deep-docs', 'style'],
-    confidence: 0.5,
-    created_at: new Date().toISOString(),
-  }));
+  const docs = artifact.payload?.documents || [];
+  const generatedAt = artifact.envelope?.generated_at;
+  const SEVERITY_CONFIDENCE = { high: 0.7, medium: 0.5, low: 0.3 };
+  const out = [];
+  for (const doc of docs) {
+    const docPath = doc.path || '';
+    const issues = Array.isArray(doc.issues) ? doc.issues : [];
+    for (const issue of issues) {
+      const issueType = issue.type || '';
+      const location = issue.line != null ? `${docPath}:${issue.line}` : docPath;
+      const evidenceText = issue.evidence || issue.suggested_value || '';
+      const claim = evidenceText
+        ? `${issueType} at ${location} — ${evidenceText}`
+        : `${issueType} at ${location}`;
+      out.push({
+        memory_type: 'coding-style',
+        title: truncate(issueType ? `${issueType} in ${docPath}` : docPath, 80),
+        claim,
+        evidence_summary: location ? [location] : [],
+        applicability: issue.category
+          ? [{ value: `category=${issue.category}`, source_id: sourceMeta.id, confidence: 0.6 }]
+          : [],
+        non_applicability: [],
+        recommended_action: issue.suggested_value ? [issue.suggested_value] : [],
+        search_keywords: [],
+        tags: ['deep-docs', issue.category, issue.severity].filter(Boolean),
+        confidence: SEVERITY_CONFIDENCE[issue.severity] ?? 0.5,
+        created_at: generatedAt || new Date().toISOString(),
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -449,6 +545,22 @@ async function harvestArtifact({
   const cards = drafts.map((d) => buildCardFromDraft(d, sourceMeta, cwd));
 
   await persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta });
+  // Attach degraded-mode warning as a non-enumerable property on the array so
+  // callers that destructure or iterate cards are unaffected, but the CLI /
+  // skill harness can surface it via `Array.isArray(out) && out.warnings`.
+  // v0.1.3 — the native loader error may embed absolute paths (e.g.
+  // `Cannot find module '/Users/.../better-sqlite3.node'`). Route through
+  // redactString to honor the repo's 3-pass privacy invariant before the
+  // message is mirrored to disk in `latest-harvest.json`.
+  if (!fts) {
+    const causeRedacted = ftsLoadError ? redactString(ftsLoadError) : '';
+    Object.defineProperty(cards, 'warnings', {
+      enumerable: false,
+      configurable: true,
+      writable: true,
+      value: [FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : '')],
+    });
+  }
   return cards;
 }
 
@@ -594,7 +706,9 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
       writeJsonAtomic(writePath, c);
     }
 
-    // 5. FTS5 upsert in same lock window (Phase 4 wires ./lib/fts-index)
+    // 5. FTS5 upsert in same lock window (v0.1.2 — graceful degradation:
+    //    `fts === null` when better-sqlite3 require failed; cards/events
+    //    are still written, but the index is not populated.)
     if (fts && fts.openIndex && fts.upsertCard) {
       const idx = fts.openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
       try {
@@ -642,6 +756,8 @@ module.exports = {
   STEP_B_FALLBACK_CODES,
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
+  FTS_DEGRADED_WARNING,
+  isFtsAvailable: () => fts !== null,
 };
 
 // ITEM-6-r3: CLI entry point — minimal single-artifact invocation for v0.1.0.
@@ -713,6 +829,7 @@ if (require.main === module) {
 
   harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
     .then((cards) => {
+      const warnings = Array.isArray(cards.warnings) ? cards.warnings : [];
       const summary = {
         generated_at: new Date().toISOString(),
         artifactPath,
@@ -720,11 +837,13 @@ if (require.main === module) {
         projectId: finalProjectId,
         cards_count: cards.length,
         memory_ids: cards.map((c) => c.payload?.memory_id),
+        warnings,
       };
       const outDir = path.join(cwd, '.deep-memory');
       fs.mkdirSync(outDir, { recursive: true });
       writeJsonAtomic(path.join(outDir, 'latest-harvest.json'), summary);
       console.log(`Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
+      for (const w of warnings) console.warn(`Warning: ${w}`);
     })
     .catch((e) => { console.error(e.message); process.exit(1); });
 }

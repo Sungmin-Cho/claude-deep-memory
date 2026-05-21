@@ -12,23 +12,32 @@
     "provenance": { "source_artifacts": [], "tool_versions": { "node": "v22.0.0" } }
   },
   "payload": {
+    "updated_at": "2026-05-19T00:00:00Z",
+    "taxonomy_version": "1.0",
     "findings": [
       {
-        "title": "Codex skill discovery silently fails on invalid frontmatter",
         "category": "manifest",
-        "first_seen": "2026-05-15T00:00:00Z",
-        "evidence": [
-          "deep-evolve description trimmed at 1024 chars",
-          "deep-wiki YAML parse fix for trailing colon"
+        "severity": "critical",
+        "occurrences": 3,
+        "example_files": [
+          "skills/wiki-ingest/SKILL.md",
+          "skills/wiki-query/SKILL.md",
+          "skills/wiki-lint/SKILL.md"
         ],
-        "tags": ["codex", "skill", "manifest"]
+        "description": "Codex skill discovery silently fails on invalid frontmatter — empty description or trailing colon yields zero-match.",
+        "source_reports": [
+          "2026-05-18-110000-review.md",
+          "2026-05-17-200000-review.md",
+          "2026-05-16-150000-review.md"
+        ]
       },
       {
-        "title": "Empty evidence finding — should be filtered by F1 (claim/evidence both required)",
         "category": "quality",
-        "first_seen": "2026-05-15T00:00:00Z",
-        "evidence": [],
-        "tags": []
+        "severity": "warning",
+        "occurrences": 1,
+        "example_files": [],
+        "description": "",
+        "source_reports": []
       }
     ]
   }

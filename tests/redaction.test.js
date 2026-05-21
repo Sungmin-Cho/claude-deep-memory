@@ -1,11 +1,19 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
+const os = require('node:os');
 const { redactString, redactObject, REDACT_TAG } = require('../scripts/lib/redact');
 const fixture = require('./fixtures/dangerous-secrets.json');
 
 test('redactString masks all known secret patterns', () => {
-  for (const sample of fixture.samples) {
+  // v0.1.3 — HOME_RE is derived from os.homedir(), but the fixture file hardcodes
+  // `/Users/sungmin/...` which only matches on the maintainer's macOS. On Linux CI
+  // (`/home/runner`) the literal path doesn't match HOME_RE and the assertion fails.
+  // Substitute the literal `/Users/sungmin` prefix with the runner's actual homedir
+  // so the test exercises the home-dir collapse path on any platform.
+  const HOME = os.homedir();
+  for (const raw of fixture.samples) {
+    const sample = raw.replace('/Users/sungmin', HOME);
     const out = redactString(sample);
     assert.ok(out.includes(REDACT_TAG) || out.includes('~'),
       `pattern not masked: ${sample} -> ${out}`);
