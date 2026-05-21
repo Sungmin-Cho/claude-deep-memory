@@ -16,7 +16,7 @@ test('distill-golden: recurring-findings → failure-case with Step B refinement
       artifactPath: RECURRING_FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       llmAdapter: 'claude-agent',
       llmRecordedFixture: CLAUDE_FIXTURE,
     });
@@ -52,7 +52,7 @@ test('distill: Step B failure (no fixture, no live) → candidate fallback (Step
       artifactPath: RECURRING_FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       llmAdapter: 'claude-agent',
       llmRecordedFixture: null, // forces ADAPTER_NOT_WIRED
     });
@@ -79,7 +79,7 @@ test('distill: skipDistillStepB:true skips Step B entirely (back-compat path)', 
       artifactPath: RECURRING_FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true, // legacy callers
       llmRecordedFixture: CLAUDE_FIXTURE, // would normally refine — but skipped
     });

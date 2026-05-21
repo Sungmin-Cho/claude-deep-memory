@@ -11,6 +11,7 @@ const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
 const { acquire, release } = require('./lib/lock');
 const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
+const { validateProjectId } = require('./lib/validate-project-id');
 
 const REVIEW_AFTER_DAYS = 90;
 const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
@@ -379,6 +380,8 @@ async function harvestArtifact({
   liveCodex = false,
   batchMode = false,
 }) {
+  // ITEM-2-r4: validate projectId at entry boundary before any path.join site
+  validateProjectId(projectId);
   const raw = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
   const sourceMeta = buildSourceMeta(artifactPath, raw, sourceKind);
   const mapper = STEP_A_MAPPERS[sourceKind];
@@ -460,6 +463,9 @@ function readLeaseSafe(leasePath) {
  *   6. release global lock, then delete lease (finally guard)
  */
 async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMeta }) {
+  // ITEM-2-r4: defensive validation at persist boundary (harvestArtifact already validates,
+  // but direct callers of persistWithLockAndLease also need the guard)
+  validateProjectId(projectId);
   const leaseDir = path.join(memoryRoot, '.leases');
   fs.mkdirSync(leaseDir, { recursive: true });
   const leasePath = path.join(leaseDir, projectId + '.lease');
@@ -504,7 +510,13 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
     if (!existing.includes(`"event_key":"${key}"`)) {
       const event = {
         event_key: key,
-        source: sourceMeta,
+        // ITEM-4-r4: redact path in event source to prevent home-directory leakage
+        // into events JSONL. event_key is computed from raw sourceMeta.path BEFORE
+        // this redaction (see eventKey() above), so idempotency is not affected.
+        source: {
+          ...sourceMeta,
+          path: redactString(sourceMeta.path),
+        },
         run_id: sourceMeta.run_id,
         at: new Date().toISOString(),
         cards_count: cards.length,
@@ -655,6 +667,14 @@ if (require.main === module) {
     profile = JSON.parse(fs.readFileSync(path.join(cwd, '.deep-memory', 'project-profile.json'), 'utf8'));
   } catch { /* no profile — use fallback */ }
   const finalProjectId = projectId || profile?.project_id || 'proj_unknown';
+
+  // ITEM-2-r4: validate before passing to harvestArtifact (CLI entry boundary)
+  try {
+    validateProjectId(finalProjectId);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
 
   harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
     .then((cards) => {

@@ -24,7 +24,7 @@ test('R3 P3: sequential re-harvest of same artifact stays at 1 event line (idemp
     artifactPath: FIXTURE,
     sourceKind: 'review-recurring',
     memoryRoot: tmp,
-    projectId: 'proj_test',
+    projectId: 'proj_aaaaaaaaaaaa',
     skipDistillStepB: true,
   };
   try {
@@ -35,7 +35,7 @@ test('R3 P3: sequential re-harvest of same artifact stays at 1 event line (idemp
     assert.strictEqual(lines.length, 1, `expected 1 idempotent event, got ${lines.length}`);
     const parsed = JSON.parse(lines[0]);
     assert.match(parsed.event_key, /^[a-f0-9]{64}$/);
-    assert.strictEqual(parsed.project_id, 'proj_test');
+    assert.strictEqual(parsed.project_id, 'proj_aaaaaaaaaaaa');
     assert.strictEqual(parsed.cards_count, 1);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -48,7 +48,7 @@ test('R3 P3: concurrent harvest of same project is fenced by lease (one succeeds
     artifactPath: FIXTURE,
     sourceKind: 'review-recurring',
     memoryRoot: tmp,
-    projectId: 'proj_test',
+    projectId: 'proj_aaaaaaaaaaaa',
     skipDistillStepB: true,
   };
   try {
@@ -62,7 +62,7 @@ test('R3 P3: concurrent harvest of same project is fenced by lease (one succeeds
     const lines = readEventLines(tmp);
     assert.strictEqual(lines.length, 1);
     // lease cleaned up by winner's finally
-    assert.ok(!fs.existsSync(path.join(tmp, '.leases', 'proj_test.lease')));
+    assert.ok(!fs.existsSync(path.join(tmp, '.leases', 'proj_aaaaaaaaaaaa.lease')));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -76,7 +76,7 @@ test('eventKey changes with content_hash (re-harvest after artifact edit creates
     artifactPath: fixtureCopy,
     sourceKind: 'review-recurring',
     memoryRoot: tmp,
-    projectId: 'proj_test',
+    projectId: 'proj_aaaaaaaaaaaa',
     skipDistillStepB: true,
   };
   try {

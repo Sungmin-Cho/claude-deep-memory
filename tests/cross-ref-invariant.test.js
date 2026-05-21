@@ -81,7 +81,7 @@ test('P17 in-process: a freshly harvested artifact obeys the cross-ref invariant
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_xref',
+      projectId: 'proj_bbbbbbbbbbbb',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1);
@@ -105,7 +105,7 @@ test('P17 in-process with Step B refinement: non_applicability source_id back-fi
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_xref',
+      projectId: 'proj_bbbbbbbbbbbb',
       llmAdapter: 'claude-agent',
       llmRecordedFixture: path.join(__dirname, 'fixtures/runtime-recorded/claude-agent.jsonl'),
     });

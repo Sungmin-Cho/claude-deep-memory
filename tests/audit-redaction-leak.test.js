@@ -24,7 +24,7 @@ test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into 
       artifactPath,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
 
@@ -44,7 +44,7 @@ test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into 
 
     // Also verify the persisted on-disk card has the same redacted path
     const onDisk = path.join(
-      tmp, 'cards', 'failure-case', 'proj_test', card.payload.memory_id + '.json'
+      tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', card.payload.memory_id + '.json'
     );
     const persisted = JSON.parse(fs.readFileSync(onDisk, 'utf8'));
     const diskPath = persisted.envelope.provenance.source_artifacts[0].path;

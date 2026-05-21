@@ -14,7 +14,7 @@ const { createHash } = require('crypto');
 function normalize(text) {
   return String(text)
     .toLowerCase()
-    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')  // ITEM-3-r4: Unicode-aware (was /[^a-z0-9\s]+/g)
     .replace(/\s+/g, ' ')
     .trim();
 }

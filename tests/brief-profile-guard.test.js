@@ -90,8 +90,8 @@ test('ITEM-3: brief.run rejects spoofed project-profile and returns only global 
     const globalPayload = makePayload('mem_global_one', 'global');
     plantCard(memoryRoot, globalPayload, 'global');
 
-    // Write a spoofed project-profile with a DIFFERENT project_id
-    const spoofedId = 'proj_spoofed_aaaabbbb1234';
+    // Write a spoofed project-profile with a DIFFERENT project_id (valid format, but wrong)
+    const spoofedId = 'proj_000000000000';
     const profileDir = path.join(projectDir, '.deep-memory');
     fs.mkdirSync(profileDir, { recursive: true });
     writeJsonAtomic(path.join(profileDir, 'project-profile.json'), {

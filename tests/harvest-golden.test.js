@@ -22,7 +22,7 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     // Fixture has 2 findings — 1 valid, 1 with empty evidence (F1 must filter it).
@@ -50,7 +50,7 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
     assert.strictEqual(c.payload.deep_memory_provenance[0].artifact_kind, 'recurring-findings');
     assert.match(c.envelope.provenance.source_artifacts[0].path, /sample-recurring-findings\.json$/);
     // persisted to disk
-    const onDisk = path.join(tmp, 'cards', 'failure-case', 'proj_test', c.payload.memory_id + '.json');
+    const onDisk = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', c.payload.memory_id + '.json');
     assert.ok(fs.existsSync(onDisk));
     const persisted = JSON.parse(fs.readFileSync(onDisk, 'utf8'));
     assert.strictEqual(persisted.payload.memory_id, c.payload.memory_id);
@@ -81,7 +81,7 @@ test('Step A: mapEvolveInsights — strategy → claim, q_delta normalized to co
       artifactPath: path.join(__dirname, 'fixtures/sample-evolve-insights.json'),
       sourceKind: 'evolve-insights',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 2);
@@ -117,7 +117,7 @@ test('Step A: mapWorkReceipt — success slice → pattern, failure slice → fa
       artifactPath: path.join(__dirname, 'fixtures/sample-session-receipt-success.json'),
       sourceKind: 'work-receipt',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(success.length, 1);
@@ -131,7 +131,7 @@ test('Step A: mapWorkReceipt — success slice → pattern, failure slice → fa
       artifactPath: path.join(__dirname, 'fixtures/sample-session-receipt-failure.json'),
       sourceKind: 'work-receipt',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     // 2 slices in fixture, 1 failure + 1 skipped → only failure persists
@@ -161,7 +161,7 @@ test('Step A: mapDocsScan — drift → coding-style with language applicability
       artifactPath: path.join(__dirname, 'fixtures/sample-last-scan.json'),
       sourceKind: 'docs-scan',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 2);
@@ -197,7 +197,7 @@ test('Step A: mapWikiIndex — ADR-tagged wiki pages → architecture-decision (
       artifactPath: path.join(__dirname, 'fixtures/sample-wiki-index.json'),
       sourceKind: 'wiki-index',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     // 3 pages in fixture: 2 ADR + 1 non-ADR → 2 cards
@@ -230,7 +230,7 @@ test('F1: empty-claim drafts are quarantined to <memoryRoot>/.quarantine/empty-c
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1, '1 valid finding survives F1');
@@ -256,7 +256,7 @@ test('F1: harvest with NO violations leaves quarantine directory untouched', asy
       artifactPath: path.join(__dirname, 'fixtures/sample-evolve-insights.json'),
       sourceKind: 'evolve-insights',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.ok(!fs.existsSync(path.join(tmp, '.quarantine')), 'no quarantine dir when F1 passes for all');
@@ -302,7 +302,7 @@ test('harvest throws on unknown sourceKind', async () => {
         artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
         sourceKind: 'unknown-kind',
         memoryRoot: tmp,
-        projectId: 'proj_test',
+        projectId: 'proj_aaaaaaaaaaaa',
         skipDistillStepB: true,
       }),
       /Unknown sourceKind/

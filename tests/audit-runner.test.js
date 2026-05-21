@@ -30,7 +30,7 @@ test('Task 5.8: run() aggregates 6 sub-results and atomic-writes latest-audit.js
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     const result = await runAudit({ memoryRoot, projectDir });
@@ -88,7 +88,7 @@ test('Task 5.8: issues aggregate across sub-feature results (corrupted card surf
   const { memoryRoot, projectDir, cleanup } = setup();
   try {
     // plant a structurally broken card
-    const dir = path.join(memoryRoot, 'cards', 'pattern', 'proj_test');
+    const dir = path.join(memoryRoot, 'cards', 'pattern', 'proj_aaaaaaaaaaaa');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'mem_broken.json'), '{ NOT JSON');
     const result = await runAudit({ memoryRoot, projectDir });

@@ -24,7 +24,7 @@ test('Task 5.5: source file unchanged → no unresolved entries (clean baseline)
       artifactPath: fixture,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     const result = detectSourceRenames(tmp);
@@ -45,7 +45,7 @@ test('Task 5.5: source file content mutated → content_drift reported', async (
       artifactPath: fixture,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     // mutate source content → hash should drift
@@ -76,7 +76,7 @@ test('Task 5.5: source file deleted → missing reported', async () => {
       artifactPath: fixture,
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     fs.unlinkSync(fixture);
@@ -113,7 +113,7 @@ test('ITEM-3-r2: harvest under HOME → audit sees clean baseline (no false-posi
       artifactPath: fixtureInHome,
       sourceKind: 'review-recurring',
       memoryRoot: memRoot,
-      projectId: 'proj_home_test',
+      projectId: 'proj_333333333333',
       skipDistillStepB: true,
     });
 

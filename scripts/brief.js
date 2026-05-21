@@ -17,6 +17,7 @@ const { runRetrieve } = require('./retrieve');
 const { renderJson, renderMarkdown } = require('./lib/brief-format');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { projectId: deriveProjectId } = require('./init');
+const { isValidProjectId } = require('./lib/validate-project-id');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -35,6 +36,13 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
   const cwd = projectDir || process.cwd();
   const resolvedMemoryRoot = resolveMemoryRoot(memoryRoot);
   let profile = loadProjectProfile(cwd);
+
+  // ITEM-2-r4: validate profile.project_id — if invalid format, treat as missing profile
+  let invalidProjectIdWarning = null;
+  if (profile && !isValidProjectId(profile.project_id)) {
+    invalidProjectIdWarning = `project-profile has invalid project_id: ${JSON.stringify(profile.project_id)} — using global-only retrieval`;
+    profile = null;
+  }
 
   // Security guard: re-derive the expected project_id from cwd and reject a
   // profile whose stored project_id does not match — prevents project_id spoofing
@@ -59,6 +67,10 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
     diversityPerType,
   });
 
+  if (invalidProjectIdWarning) {
+    result.warnings = result.warnings || [];
+    result.warnings.push(invalidProjectIdWarning);
+  }
   if (profileMismatchWarning) {
     result.warnings = result.warnings || [];
     result.warnings.push(profileMismatchWarning);

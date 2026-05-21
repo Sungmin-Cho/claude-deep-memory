@@ -15,12 +15,12 @@ const FIXTURE = path.join(__dirname, 'fixtures', 'sample-recurring-findings.json
 test('ITEM-7-r3: re-harvest of globally-promoted card sets FTS row project_id to empty string', async () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-fts-global-pid-'));
   try {
-    // Step 1: harvest as proj_A to get a card with a known memory_id
+    // Step 1: harvest as proj_eeeeeeeeeeee to get a card with a known memory_id
     const cardsA = await harvestArtifact({
       artifactPath: FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmpRoot,
-      projectId: 'proj_A',
+      projectId: 'proj_eeeeeeeeeeee',
       skipDistillStepB: true,
     });
     assert.strictEqual(cardsA.length, 1, 'Fixture should produce 1 card');
@@ -28,7 +28,7 @@ test('ITEM-7-r3: re-harvest of globally-promoted card sets FTS row project_id to
     const memType = cardsA[0].payload.memory_type;
 
     // Step 2: promote the card — move local file to global dir + set privacy_level='global'
-    const localPath = path.join(tmpRoot, 'cards', memType, 'proj_A', memId + '.json');
+    const localPath = path.join(tmpRoot, 'cards', memType, 'proj_eeeeeeeeeeee', memId + '.json');
     const globalDir = path.join(tmpRoot, 'cards', memType, 'global');
     const globalPath = path.join(globalDir, memId + '.json');
     fs.mkdirSync(globalDir, { recursive: true });
@@ -38,13 +38,13 @@ test('ITEM-7-r3: re-harvest of globally-promoted card sets FTS row project_id to
     // Remove local so the only copy is global
     fs.unlinkSync(localPath);
 
-    // Step 3: harvest the same fixture as proj_B — ITEM-1-r2 detects global file,
+    // Step 3: harvest the same fixture as proj_ffffffffffff — ITEM-1-r2 detects global file,
     // writes to global dir with privacy_level preserved. FTS row must get project_id=''.
     const cardsB = await harvestArtifact({
       artifactPath: FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmpRoot,
-      projectId: 'proj_B',
+      projectId: 'proj_ffffffffffff',
       skipDistillStepB: true,
     });
     assert.strictEqual(cardsB.length, 1, 'Re-harvest should produce 1 card');
@@ -73,7 +73,7 @@ test('ITEM-7-r3: local card upsert still gets correct project_id (regression gua
       artifactPath: FIXTURE,
       sourceKind: 'review-recurring',
       memoryRoot: tmpRoot,
-      projectId: 'proj_local',
+      projectId: 'proj_111111111111',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1);
@@ -85,7 +85,7 @@ test('ITEM-7-r3: local card upsert still gets correct project_id (regression gua
       const row = idx.db.prepare('SELECT project_id, privacy_level FROM cards WHERE memory_id = ?').get(memId);
       assert.ok(row, 'FTS row must exist for local card');
       assert.strictEqual(row.privacy_level, 'local', 'Local card must have privacy_level=local');
-      assert.strictEqual(row.project_id, 'proj_local', 'Local card FTS row must have the harvesting project_id');
+      assert.strictEqual(row.project_id, 'proj_111111111111', 'Local card FTS row must have the harvesting project_id');
     } finally {
       idx.db.close();
     }

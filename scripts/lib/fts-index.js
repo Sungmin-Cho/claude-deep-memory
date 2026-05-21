@@ -117,6 +117,15 @@ function search(idx, query, { topN = 8, projectId = null } = {}) {
   const matchQ = sanitizeQuery(query);
   const limit = Math.max(1, topN * 3);
   const pid = projectId === null ? '' : projectId;
+  // ITEM-5-r4: Convert implicit AND to OR so multi-token natural language
+  // tasks don't require every token to appear. FTS5 query syntax: "term1 OR term2".
+  // Documents matching fewer tokens rank lower naturally via BM25.
+  const tokens = matchQ.split(/\s+/).filter((t) => t && t !== '__no_match_sentinel__');
+  const ftsQuery = tokens.length === 0
+    ? '__no_match_sentinel__'
+    : tokens.length === 1
+      ? tokens[0]
+      : tokens.join(' OR ');
   const rows = idx.db
     .prepare(
       `SELECT memory_id, memory_type, privacy_level, project_id, claim,
@@ -128,7 +137,7 @@ function search(idx, query, { topN = 8, projectId = null } = {}) {
        ORDER BY bm25 ASC
        LIMIT ?`
     )
-    .all(matchQ, pid, limit);
+    .all(ftsQuery, pid, limit);
   return rows;
 }
 

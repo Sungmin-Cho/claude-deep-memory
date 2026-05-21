@@ -16,13 +16,13 @@ test('ITEM-4: re-harvest preserves status/status_history/feedback/created_at fro
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1);
     const card = cards[0];
     const memoryId = card.payload.memory_id;
-    const cardPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const cardPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
     assert.ok(fs.existsSync(cardPath));
 
     const firstLastSeen = card.payload.last_seen_at;
@@ -46,7 +46,7 @@ test('ITEM-4: re-harvest preserves status/status_history/feedback/created_at fro
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards2.length, 1);
@@ -95,21 +95,21 @@ test('ITEM-4: re-harvest preserves status/status_history/feedback/created_at fro
 test('ITEM-1-r2: re-harvest after promote does not shadow the global card', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-merge-global-'));
   try {
-    // Step 1: harvest fixture → 1 card under proj_A
+    // Step 1: harvest fixture → 1 card under proj_eeeeeeeeeeee
     const cards = await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_A',
+      projectId: 'proj_eeeeeeeeeeee',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1);
     const memoryId = cards[0].payload.memory_id;
-    const localPath = path.join(tmp, 'cards', 'failure-case', 'proj_A', memoryId + '.json');
+    const localPath = path.join(tmp, 'cards', 'failure-case', 'proj_eeeeeeeeeeee', memoryId + '.json');
     assert.ok(fs.existsSync(localPath), 'local card exists after first harvest');
 
-    // Step 2: promoteCard with projectId:'proj_A' → file moves to cards/failure-case/global/<id>.json
-    await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_A' });
+    // Step 2: promoteCard with projectId:'proj_eeeeeeeeeeee' → file moves to cards/failure-case/global/<id>.json
+    await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_eeeeeeeeeeee' });
     const globalPath = path.join(tmp, 'cards', 'failure-case', 'global', memoryId + '.json');
     assert.ok(fs.existsSync(globalPath), 'global card exists after promote');
     assert.ok(!fs.existsSync(localPath), 'local card removed after promote');
@@ -121,18 +121,18 @@ test('ITEM-1-r2: re-harvest after promote does not shadow the global card', asyn
     // Small delay to ensure last_seen_at will be strictly newer
     await new Promise((r) => setTimeout(r, 10));
 
-    // Step 3: harvest the SAME fixture again under projectId:'proj_B'
+    // Step 3: harvest the SAME fixture again under projectId:'proj_ffffffffffff'
     await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_B',
+      projectId: 'proj_ffffffffffff',
       skipDistillStepB: true,
     });
 
-    // Step 4: Assert NO file at cards/failure-case/proj_B/<id>.json
-    const projBPath = path.join(tmp, 'cards', 'failure-case', 'proj_B', memoryId + '.json');
-    assert.ok(!fs.existsSync(projBPath), 'no shadow file created under proj_B');
+    // Step 4: Assert NO file at cards/failure-case/proj_ffffffffffff/<id>.json
+    const projBPath = path.join(tmp, 'cards', 'failure-case', 'proj_ffffffffffff', memoryId + '.json');
+    assert.ok(!fs.existsSync(projBPath), 'no shadow file created under proj_ffffffffffff');
 
     // The global file STILL exists and was UPDATED (last_seen_at refreshed)
     assert.ok(fs.existsSync(globalPath), 'global file still exists');
@@ -154,7 +154,7 @@ test('ITEM-4: first harvest (no existing card) writes fresh card normally', asyn
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     assert.strictEqual(cards.length, 1);

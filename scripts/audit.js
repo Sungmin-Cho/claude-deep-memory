@@ -24,6 +24,7 @@ const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { acquire, release, isStale: lockIsStale, breakLock } = require('./lib/lock');
 const { hashFile } = require('./lib/source-hash');
+const { validateProjectId } = require('./lib/validate-project-id');
 
 let ftsLib = null;
 try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
@@ -441,6 +442,8 @@ function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFA
 async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manual:promote' } = {}) {
   if (!memoryId) throw new Error('promoteCard requires memoryId');
   if (!memoryRoot) throw new Error('promoteCard requires memoryRoot');
+  // ITEM-2-r4: validate projectId when provided (nullable — only when truthy)
+  if (projectId) validateProjectId(projectId);
 
   const lockPath = path.join(memoryRoot, '.lock');
   const handle = await acquire(lockPath, { operation: 'promote' });
@@ -640,6 +643,15 @@ if (require.main === module) {
       return;
     }
     if (promoteId) {
+      // ITEM-2-r4: validate --project arg before passing to promoteCard
+      if (projectIdArg) {
+        try {
+          validateProjectId(projectIdArg);
+        } catch (e) {
+          console.error(e.message);
+          process.exit(1);
+        }
+      }
       const result = await promoteCard(promoteId, { memoryRoot, projectId: projectIdArg });
       console.log(JSON.stringify(result, null, 2));
       return;

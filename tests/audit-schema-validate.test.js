@@ -22,14 +22,14 @@ test('validateAllCards: 2 freshly harvested cards pass Ajv strict (post envelope
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-evolve-insights.json'),
       sourceKind: 'evolve-insights',
       memoryRoot: tmp,
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
     const result = validateAllCards(tmp);
@@ -46,7 +46,7 @@ test('validateAllCards: hand-planted invalid card surfaces in schema_violations[
   const tmp = mkRoot();
   try {
     // Plant a structurally broken card — missing required 'payload' field
-    const dir = path.join(tmp, 'cards', 'failure-case', 'proj_test');
+    const dir = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'mem_broken.json'),
@@ -64,7 +64,7 @@ test('validateAllCards: hand-planted invalid card surfaces in schema_violations[
 test('validateAllCards: unparseable JSON file → parse_error report', async () => {
   const tmp = mkRoot();
   try {
-    const dir = path.join(tmp, 'cards', 'pattern', 'proj_test');
+    const dir = path.join(tmp, 'cards', 'pattern', 'proj_aaaaaaaaaaaa');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'mem_corrupt.json'), '{ NOT VALID JSON ');
     const result = validateAllCards(tmp);

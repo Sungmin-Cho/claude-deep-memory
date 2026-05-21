@@ -13,16 +13,20 @@ function resolveMemoryRoot(raw) {
   return root.replace(/^~/, os.homedir());
 }
 
-function safeGit(cmd) {
+// ITEM-6-r4: accept cwd so callers in different working directories get the
+// git config from the intended directory, not process.cwd().
+function safeGit(cmd, cwd) {
   try {
-    return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const opts = { stdio: ['ignore', 'pipe', 'ignore'] };
+    if (cwd) opts.cwd = cwd;
+    return execSync(cmd, opts).toString().trim();
   } catch {
     return '';
   }
 }
 
 function projectId(cwd) {
-  const remote = safeGit('git config --get remote.origin.url');
+  const remote = safeGit('git config --get remote.origin.url', cwd);
   const remoteHash = remote
     ? 'sha256:' + createHash('sha256').update(remote).digest('hex')
     : 'sha256:none';
@@ -119,7 +123,9 @@ async function run({ memoryRoot, allowNetworkRoot = false } = {}) {
   }
   const cwd = process.cwd();
   const pid = projectId(cwd);
-  const remote = safeGit('git config --get remote.origin.url');
+  // ITEM-6-r4: pass cwd to all safeGit calls inside run() so remote/head/branch
+  // are read from the project directory, not from a potentially different process.cwd().
+  const remote = safeGit('git config --get remote.origin.url', cwd);
   const profile = {
     project_id: pid,
     repo: {
@@ -127,8 +133,8 @@ async function run({ memoryRoot, allowNetworkRoot = false } = {}) {
         ? 'sha256:' + createHash('sha256').update(remote).digest('hex')
         : 'sha256:none',
       root_path_hash: 'sha256:' + createHash('sha256').update(cwd).digest('hex'),
-      default_branch: safeGit('git symbolic-ref --short HEAD') || 'main',
-      git_head: safeGit('git rev-parse HEAD'),
+      default_branch: safeGit('git symbolic-ref --short HEAD', cwd) || 'main',
+      git_head: safeGit('git rev-parse HEAD', cwd),
     },
     signature: {
       languages: detectLanguages(cwd),

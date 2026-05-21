@@ -28,7 +28,7 @@ test('ITEM-5-r2: lease file is removed even when acquire() throws StaleLockError
       JSON.stringify({ pid: 99999, host: 'ghost', created_at: staleCreatedAt, operation: 'harvest' })
     );
 
-    const leasePath = path.join(tmp, '.leases', 'proj_stale_test.lease');
+    const leasePath = path.join(tmp, '.leases', 'proj_222222222222.lease');
 
     // harvestArtifact should throw due to StaleLockError
     await assert.rejects(
@@ -36,7 +36,7 @@ test('ITEM-5-r2: lease file is removed even when acquire() throws StaleLockError
         artifactPath: FIXTURE,
         sourceKind: 'review-recurring',
         memoryRoot: tmp,
-        projectId: 'proj_stale_test',
+        projectId: 'proj_222222222222',
         skipDistillStepB: true,
       }),
       (e) => {

@@ -20,7 +20,7 @@ async function harvestOne(tmp) {
     artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
     sourceKind: 'review-recurring',
     memoryRoot: tmp,
-    projectId: 'proj_test',
+    projectId: 'proj_aaaaaaaaaaaa',
     skipDistillStepB: true,
   });
   return cards[0];
@@ -31,11 +31,11 @@ test('Task 5.7: promoteCard moves local → global atomically + updates FTS5', a
   try {
     const card = await harvestOne(tmp);
     const memoryId = card.payload.memory_id;
-    const oldPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const oldPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
     assert.ok(fs.existsSync(oldPath));
 
     // Pass explicit projectId per ITEM-5 acceptance criteria
-    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_test' });
+    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.memory_id, memoryId);
     assert.strictEqual(result.previous_privacy_level, 'local');
     assert.strictEqual(result.new_privacy_level, 'global');
@@ -108,7 +108,7 @@ test('ITEM-5: promoteCard with no projectId throws AMBIGUOUS when same memory_id
     const memoryId = card.payload.memory_id;
 
     // Copy the card file into a second project scope to create ambiguity
-    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
     const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
     fs.mkdirSync(altScopeDir, { recursive: true });
     fs.copyFileSync(srcPath, path.join(altScopeDir, memoryId + '.json'));
@@ -135,18 +135,18 @@ test('ITEM-5: promoteCard with projectId promotes only the specified scope, leav
     const memoryId = card.payload.memory_id;
 
     // Create same memory_id under proj_alt as well (simulate two-project collision)
-    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
     const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
     fs.mkdirSync(altScopeDir, { recursive: true });
     const altPath = path.join(altScopeDir, memoryId + '.json');
     fs.copyFileSync(srcPath, altPath);
 
-    // Promote only proj_test copy
-    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_test' });
+    // Promote only proj_aaaaaaaaaaaa copy
+    const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.new_privacy_level, 'global');
 
-    // proj_test local copy removed, global copy created
-    assert.ok(!fs.existsSync(srcPath), 'proj_test local copy removed');
+    // proj_aaaaaaaaaaaa local copy removed, global copy created
+    assert.ok(!fs.existsSync(srcPath), 'proj_aaaaaaaaaaaa local copy removed');
     const globalPath = path.join(tmp, 'cards', 'failure-case', 'global', memoryId + '.json');
     assert.ok(fs.existsSync(globalPath), 'global copy created');
 
@@ -164,7 +164,7 @@ test('Task 5.7: status_history truncates at 10 after promote when already full',
   try {
     const card = await harvestOne(tmp);
     const memoryId = card.payload.memory_id;
-    const cardPath = path.join(tmp, 'cards', 'failure-case', 'proj_test', memoryId + '.json');
+    const cardPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
     const onDisk = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
     // bloat history to 10 entries first
     onDisk.payload.status_history = Array.from({ length: 10 }, (_, i) => ({
