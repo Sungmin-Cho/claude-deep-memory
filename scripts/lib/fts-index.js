@@ -95,9 +95,11 @@ function upsertCard(idx, card, { projectId = null } = {}) {
  * matches nothing (so `search('')` returns [] instead of throwing).
  */
 function sanitizeQuery(q) {
+  // ITEM-7-r2: use Unicode property escapes (\p{L}\p{N}) so CJK/Hangul/etc. are preserved.
+  // The `u` flag enables Unicode property escapes (Node 22 / V8 ≥ 7.0).
   const cleaned = String(q || '')
     .toLowerCase()
-    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned || '__no_match_sentinel__';

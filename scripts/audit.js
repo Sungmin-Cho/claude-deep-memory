@@ -16,6 +16,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const Ajv = require('ajv/dist/2020');
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 
@@ -28,6 +29,17 @@ let ftsLib = null;
 try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
 
 const PROFILE_MAX_AGE_DAYS_DEFAULT = 30;
+
+/**
+ * Expand leading `~/` or bare `~` to os.homedir() so Node fs calls work.
+ * Node's fs module does not expand shell-style `~` references.
+ */
+function expandTilde(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
 
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
@@ -313,7 +325,8 @@ function detectSourceRenames(memoryRoot) {
         });
         continue;
       }
-      const srcPath = sa[idx].path;
+      const srcPathRaw = sa[idx].path;
+      const srcPath = expandTilde(srcPathRaw);
       if (!fs.existsSync(srcPath)) {
         out.unresolved.push({
           path: entry.path,
@@ -322,7 +335,7 @@ function detectSourceRenames(memoryRoot) {
           dp_id: d.id,
           expected_hash: d.content_hash,
           actual_hash: null,
-          source_path: srcPath,
+          source_path: srcPathRaw,  // report the original ~/... form
         });
         continue;
       }
@@ -337,7 +350,7 @@ function detectSourceRenames(memoryRoot) {
           dp_id: d.id,
           expected_hash: d.content_hash,
           actual_hash: actual,
-          source_path: srcPath,
+          source_path: srcPathRaw,  // report the original ~/... form
         });
       }
     }
@@ -534,7 +547,17 @@ async function run({ memoryRoot, projectDir } = {}) {
   if (!memoryRoot) throw new Error('audit.run requires memoryRoot');
   const cwd = projectDir || process.cwd();
   const schema = validateAllCards(memoryRoot);
-  const transitions = applyAutoTransitions(memoryRoot);
+
+  // ITEM-4-r2: acquire global lock around applyAutoTransitions (write-side operation per spec §7.3)
+  const lockPath = path.join(memoryRoot, '.lock');
+  const lockHandle = await acquire(lockPath, { operation: 'audit' });
+  let transitions;
+  try {
+    transitions = applyAutoTransitions(memoryRoot);
+  } finally {
+    release(lockHandle);
+  }
+
   const stale_locks = detectStaleLocks(memoryRoot);
   const dedupe = detectDedupeCollisions(memoryRoot);
   const source_renames = detectSourceRenames(memoryRoot);
@@ -598,6 +621,8 @@ if (require.main === module) {
   const unlock = args.includes('--unlock');
   const promoteIdx = args.indexOf('--promote');
   const promoteId = promoteIdx >= 0 ? args[promoteIdx + 1] : null;
+  const projectIdx = args.indexOf('--project');
+  const projectIdArg = (projectIdx >= 0 && args[projectIdx + 1]) ? args[projectIdx + 1] : null;
   const memoryRoot = resolveMemoryRoot();
 
   (async () => {
@@ -607,7 +632,7 @@ if (require.main === module) {
       return;
     }
     if (promoteId) {
-      const result = await promoteCard(promoteId, { memoryRoot });
+      const result = await promoteCard(promoteId, { memoryRoot, projectId: projectIdArg });
       console.log(JSON.stringify(result, null, 2));
       return;
     }

@@ -114,8 +114,9 @@ test('mergeStepB respects spec §7.2 invariant — does NOT clobber Step A non-e
     search_keywords: ['new'],
   };
   mergeStepB(draft, stepB, { id: 'src_0' });
-  // claim NOT refined: Step A claim was already distinct from title
-  assert.strictEqual(draft.claim, 'Step A claim — different from title');
+  // ITEM-6-r2: claim IS refined by Step B regardless of whether it differs from title.
+  // spec §7.2 — Step B refines ALL claims when claim_refined is non-empty.
+  assert.strictEqual(draft.claim, 'Step B refined claim');
   // non_applicability preserved (Step A had pre-existing values)
   assert.strictEqual(draft.non_applicability[0].value, 'pre-existing');
   assert.strictEqual(draft.recommended_action[0], 'pre-existing action');

@@ -327,7 +327,7 @@ function buildCardFromDraft(draft, sourceMeta) {
  */
 function mergeStepB(draft, stepB, sourceMeta) {
   if (!stepB) return;
-  if (stepB.claim_refined && draft.claim === draft.title) {
+  if (stepB.claim_refined && stepB.claim_refined.length > 0) {
     draft.claim = stepB.claim_refined;
   }
   if (!draft.non_applicability || draft.non_applicability.length === 0) {
@@ -456,31 +456,36 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
   fs.mkdirSync(leaseDir, { recursive: true });
   const leasePath = path.join(leaseDir, projectId + '.lease');
 
-  // 1. lease — claim atomically via wx flag so concurrent callers see EEXIST
-  const leasePayload = JSON.stringify({
-    pid: process.pid,
-    host: os.hostname(),
-    started_at: new Date().toISOString(),
-  });
+  // ITEM-5-r2: track leaseCreated + handle separately so cleanup finally covers acquire() failures
+  let leaseCreated = false;
+  let handle = null;
   try {
-    fs.writeFileSync(leasePath, leasePayload, { flag: 'wx' });
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    const existing = readLeaseSafe(leasePath);
-    if (existing && Date.now() - new Date(existing.started_at).getTime() < LEASE_STALE_MS) {
-      throw new Error(
-        `Another session already harvesting project ${projectId} ` +
-        `(started ${existing.started_at}, pid ${existing.pid}). ` +
-        `Try later or wait ~30min for stale-break.`
-      );
+    // 1. lease — claim atomically via wx flag so concurrent callers see EEXIST
+    const leasePayload = JSON.stringify({
+      pid: process.pid,
+      host: os.hostname(),
+      started_at: new Date().toISOString(),
+    });
+    try {
+      fs.writeFileSync(leasePath, leasePayload, { flag: 'wx' });
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const existingLease = readLeaseSafe(leasePath);
+      if (existingLease && Date.now() - new Date(existingLease.started_at).getTime() < LEASE_STALE_MS) {
+        throw new Error(
+          `Another session already harvesting project ${projectId} ` +
+          `(started ${existingLease.started_at}, pid ${existingLease.pid}). ` +
+          `Try later or wait ~30min for stale-break.`
+        );
+      }
+      // stale lease — overwrite
+      fs.writeFileSync(leasePath, leasePayload);
     }
-    // stale lease — overwrite
-    fs.writeFileSync(leasePath, leasePayload);
-  }
+    leaseCreated = true;
 
-  const lockPath = path.join(memoryRoot, '.lock');
-  const handle = await acquire(lockPath, { operation: 'harvest' });
-  try {
+    const lockPath = path.join(memoryRoot, '.lock');
+    handle = await acquire(lockPath, { operation: 'harvest' });
+
     // 3. idempotent event append
     const yearMonth = new Date().toISOString().slice(0, 7);
     const eventsDir = path.join(memoryRoot, 'events');
@@ -502,13 +507,28 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
 
     // 4. atomic card writes
     // R2 partial fix (Phase 6 dispatch) — full spec §6.4 union-merge deferred to v0.1.x
+    // ITEM-1-r2: check global/ scope first to prevent shadowing promoted cards
     for (const c of cards) {
-      const dir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
-      fs.mkdirSync(dir, { recursive: true });
-      const targetPath = path.join(dir, c.payload.memory_id + '.json');
-      const existing = fs.existsSync(targetPath)
-        ? JSON.parse(fs.readFileSync(targetPath, 'utf8'))
-        : null;
+      const localDir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
+      const globalDir = path.join(memoryRoot, 'cards', c.payload.memory_type, 'global');
+      const localPath = path.join(localDir, c.payload.memory_id + '.json');
+      const globalPath = path.join(globalDir, c.payload.memory_id + '.json');
+
+      let existing = null, writePath = null, writeDir = null;
+      if (fs.existsSync(globalPath)) {
+        existing = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
+        writePath = globalPath;
+        writeDir = globalDir;
+      } else if (fs.existsSync(localPath)) {
+        existing = JSON.parse(fs.readFileSync(localPath, 'utf8'));
+        writePath = localPath;
+        writeDir = localDir;
+      } else {
+        writePath = localPath;
+        writeDir = localDir;
+      }
+      fs.mkdirSync(writeDir, { recursive: true });
+
       if (existing && existing.payload) {
         // Preserve user-accumulated state; refresh source-driven fields + last_seen_at
         c.payload.status = existing.payload.status;
@@ -537,7 +557,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
           c.payload.privacy_level = 'global';
         }
       }
-      writeJsonAtomic(targetPath, c);
+      writeJsonAtomic(writePath, c);
     }
 
     // 5. FTS5 upsert in same lock window (Phase 4 wires ./lib/fts-index)
@@ -554,8 +574,10 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
       }
     }
   } finally {
-    release(handle);
-    try { fs.unlinkSync(leasePath); } catch { /* best-effort */ }
+    if (handle) release(handle);
+    if (leaseCreated) {
+      try { fs.unlinkSync(leasePath); } catch { /* best-effort */ }
+    }
   }
 }
 

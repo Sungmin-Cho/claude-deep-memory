@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { harvestArtifact } = require('../scripts/harvest');
 const { writeJsonAtomic } = require('../scripts/lib/atomic-write');
+const { promoteCard } = require('../scripts/audit');
 
 test('ITEM-4: re-harvest preserves status/status_history/feedback/created_at from existing card', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-merge-'));
@@ -85,6 +86,61 @@ test('ITEM-4: re-harvest preserves status/status_history/feedback/created_at fro
     assert.ok(
       new Date(afterMerge.payload.last_seen_at) > new Date(firstLastSeen),
       `last_seen_at should be updated: got ${afterMerge.payload.last_seen_at}, original was ${firstLastSeen}`
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('ITEM-1-r2: re-harvest after promote does not shadow the global card', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-merge-global-'));
+  try {
+    // Step 1: harvest fixture → 1 card under proj_A
+    const cards = await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
+      sourceKind: 'review-recurring',
+      memoryRoot: tmp,
+      projectId: 'proj_A',
+      skipDistillStepB: true,
+    });
+    assert.strictEqual(cards.length, 1);
+    const memoryId = cards[0].payload.memory_id;
+    const localPath = path.join(tmp, 'cards', 'failure-case', 'proj_A', memoryId + '.json');
+    assert.ok(fs.existsSync(localPath), 'local card exists after first harvest');
+
+    // Step 2: promoteCard with projectId:'proj_A' → file moves to cards/failure-case/global/<id>.json
+    await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_A' });
+    const globalPath = path.join(tmp, 'cards', 'failure-case', 'global', memoryId + '.json');
+    assert.ok(fs.existsSync(globalPath), 'global card exists after promote');
+    assert.ok(!fs.existsSync(localPath), 'local card removed after promote');
+
+    const beforeGlobal = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
+    assert.strictEqual(beforeGlobal.payload.privacy_level, 'global');
+    const beforeLastSeen = beforeGlobal.payload.last_seen_at;
+
+    // Small delay to ensure last_seen_at will be strictly newer
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Step 3: harvest the SAME fixture again under projectId:'proj_B'
+    await harvestArtifact({
+      artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
+      sourceKind: 'review-recurring',
+      memoryRoot: tmp,
+      projectId: 'proj_B',
+      skipDistillStepB: true,
+    });
+
+    // Step 4: Assert NO file at cards/failure-case/proj_B/<id>.json
+    const projBPath = path.join(tmp, 'cards', 'failure-case', 'proj_B', memoryId + '.json');
+    assert.ok(!fs.existsSync(projBPath), 'no shadow file created under proj_B');
+
+    // The global file STILL exists and was UPDATED (last_seen_at refreshed)
+    assert.ok(fs.existsSync(globalPath), 'global file still exists');
+    const afterGlobal = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
+    assert.strictEqual(afterGlobal.payload.privacy_level, 'global', 'privacy_level still global');
+    assert.ok(
+      new Date(afterGlobal.payload.last_seen_at) > new Date(beforeLastSeen),
+      `last_seen_at should be updated: got ${afterGlobal.payload.last_seen_at}, before was ${beforeLastSeen}`
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

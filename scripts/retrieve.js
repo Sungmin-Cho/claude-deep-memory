@@ -179,7 +179,11 @@ async function runRetrieve({
       task_sim_norm: x.row.task_sim_norm,
       confidence: card.payload.confidence,
       evidence_count: card.payload.evidence_summary?.length || 0,
-      feedback: card.payload.feedback || {},
+      feedback: card.payload.feedback ? {
+        accepted: card.payload.feedback.accepted_count || 0,
+        rejected: card.payload.feedback.rejected_count || 0,
+        inaccurate: card.payload.feedback.inaccurate_count || 0,
+      } : {},
       review_after: card.payload.review_after,
     };
     // Pull language hints out of applicability for Stage 4 (project_sim)
