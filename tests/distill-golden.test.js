@@ -23,10 +23,11 @@ test('distill-golden: recurring-findings → failure-case with Step B refinement
     assert.strictEqual(cards.length, 1, '1 valid finding (other is F1-quarantined)');
     const c = cards[0];
     // Step A baselines preserved
-    assert.deepStrictEqual(c.payload.tags, ['codex', 'skill', 'manifest']);
+    assert.deepStrictEqual(c.payload.tags, ['manifest', 'critical']);
     assert.ok(c.payload.evidence_summary.length > 0);
-    assert.strictEqual(c.payload.applicability[0].value, 'manifest');
-    // Step B refined: Step A had claim === title verbatim, so refinement wins
+    assert.strictEqual(c.payload.applicability[0].value, 'category=manifest');
+    // Step A claim is the description verbatim ("Codex skill discovery silently fails …").
+    // Step B refines via the recorded fixture (claim_refined).
     assert.match(c.payload.claim, /validate strictly|skill discovery silently fails/);
     // Step B filled previously-empty slots
     assert.ok(c.payload.search_keywords.length > 0, 'Step B populates search_keywords');
@@ -58,8 +59,11 @@ test('distill: Step B failure (no fixture, no live) → candidate fallback (Step
     });
     assert.strictEqual(cards.length, 1);
     const c = cards[0];
-    // Step A claim survived (no Step B refinement)
-    assert.strictEqual(c.payload.claim, 'Codex skill discovery silently fails on invalid frontmatter');
+    // Step A claim survived (no Step B refinement) — full description verbatim
+    assert.strictEqual(
+      c.payload.claim,
+      'Codex skill discovery silently fails on invalid frontmatter — empty description or trailing colon yields zero-match.'
+    );
     // Step B-derived fields stay empty
     assert.deepStrictEqual(c.payload.search_keywords, []);
     assert.deepStrictEqual(c.payload.recommended_action, []);

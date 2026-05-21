@@ -2,6 +2,53 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] - 2026-05-21
+
+### Fixed
+
+- **Node v26+ first-use blocker — FTS5 graceful degradation** — v0.1.0
+  round-5 ITEM-4 made harvest hard-throw when `better-sqlite3` could not be
+  loaded. That posture was wrong for Node v26+ environments where prebuilt
+  binaries aren't yet available AND the marketplace plugin cache is immutable
+  (no on-the-fly rebuild). v0.1.2 reverses to graceful degradation:
+    - harvest writes cards/events to disk normally; FTS5 upsert is skipped.
+    - An explicit warning is surfaced via `cards.warnings` (CLI summary), and
+      mirrored in `.deep-memory/latest-harvest.json` under `warnings[]`.
+    - `/deep-memory-brief` returns `{ memories: [], warnings: [...] }` with the
+      same actionable message instead of hard-throwing.
+    - `scripts/harvest.js` exports `FTS_DEGRADED_WARNING` + `isFtsAvailable()`
+      for skill harnesses / tests.
+    - sql.js WASM fallback is the proper fix, still deferred to v0.2.0.
+  New tests: `tests/harvest-fts-silent-disable.test.js` (graceful behavior
+  on harvest side) and `tests/retrieve-fts-degraded.test.js` (retrieve side).
+- **Step A mapper shape alignment (silent 0-card harvest blocker)** — 4 of 5
+  Step A mappers in v0.1.0 expected an ideal-shape `payload` that did not match
+  the sibling plugins' actual emit. v0.1.0 produced silent 0-card harvest when
+  consuming real sibling artifacts. Realigned all 4 mappers to sibling-real
+  shapes:
+    - `mapRecurringFindings` — consumes `findings[].{category, severity, occurrences, example_files, description, source_reports}` instead of the missing `findings[].{title, evidence, tags, first_seen}` fields. `description → claim`, `example_files → evidence_summary`, `[category, severity] → tags`.
+    - `mapEvolveInsights` — consumes `payload.insights_for_deep_work[]` + `payload.insights_for_deep_review[]` (union) instead of the missing `payload.insights[]`. Item shape is `{pattern, evidence, source_archive_ids, suggestion}`; `suggestion → claim`, `pattern → title`, tag identifies the target side.
+    - `mapWorkReceipt` — `payload.slices` is an aggregate object `{total, completed, spike}`, NOT an array. Adopted **Option A**: 1 card per session-receipt (summary). Slice-level memory is deferred to a future source-kind.
+    - `mapDocsScan` — `payload.documents[].issues[]` (nested) instead of `payload.drifts[]`. Flatten: 1 issue = 1 card. Severity-mapped confidence (high=0.7, medium=0.5, low=0.3).
+    - `mapWikiIndex` — unchanged (sibling shape already matched).
+- Spec §7.1 mapper rule table rewritten in `docs/superpowers/specs/2026-05-20-deep-memory-design.md` against sibling-real shapes.
+- v0.1.0 ideal-shape local test fixtures replaced with sibling-real shapes (`tests/fixtures/sample-{recurring-findings, evolve-insights, session-receipt-{success,failure}, last-scan}.json`).
+
+### Added
+
+- `tests/sibling-shape-smoke.test.js` — invariant smoke test that reads each
+  sibling repo's actual fixture (`../../deep-{review,evolve,work,docs}/tests/fixtures/`)
+  and asserts ≥1 card per mapper. Future sibling shape drift triggers an immediate
+  red signal instead of a silent regression. Skips gracefully when a sibling
+  repo isn't checked out.
+
+### Breaking
+
+- **Spec §7.1 mapper expectations rewritten.** Consumers that hand-built
+  deep-memory artifacts against the old ideal-shape mapper rules must regenerate.
+  No on-disk card format change; envelope schemas unchanged. Only the mapping
+  rules from sibling source artifacts → memory drafts changed.
+
 ## [0.1.0] - 2026-05-20
 
 ### Added (MVP — Phase 0-3 of design spec)

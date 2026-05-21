@@ -64,9 +64,30 @@ codex plugin install deep-memory
 
 동일한 스킬이 Claude Code(슬래시), Codex(`$deep-memory:...`), Copilot CLI, Gemini CLI, Agent SDK(`Skill({skill:"deep-memory:..."})`)에서 실행됩니다. LLM 증류는 호스트 어댑터(claude-agent / codex-bash / gemini-sdk / stdin-fallback)를 자동 감지합니다.
 
+## 트러블슈팅
+
+### `/deep-memory-harvest` 또는 `/deep-memory-brief` 에 `FTS5 lexical index unavailable` 경고가 뜨면
+
+현재 Node 런타임에서 `better-sqlite3` 가 로드되지 않았다는 뜻입니다. 흔한 원인:
+
+- **Node v26+** — v0.1.2 시점에 Node 26 용 better-sqlite3 prebuilt binary 가
+  아직 배포되지 않았고, 마켓플레이스 플러그인 캐시는 immutable (즉석 재빌드 불가).
+  harvest 는 cards/events 를 디스크에 정상 기록하지만 FTS5 인덱스 갱신은 skip
+  되고 `/deep-memory-brief` 는 빈 결과를 반환합니다.
+- **빌드 툴체인 부재** — 캐시 비우고 source 에서 직접 빌드하려는 경우
+  Python 3, C++ 컴파일러, make 가 필요합니다.
+
+**현재(v0.1.2) 우회 방법**: Node 22 LTS 사용 — `nvm install 22 && nvm use 22`
+— 후 `/deep-memory-harvest` 를 다시 실행하세요.
+
+**근본 해결(v0.2.0)**: sql.js WASM fallback wrapper 가 native module 가용성과
+무관하게 인덱스를 유지하도록 합니다. 추적 위치:
+[`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
+
 ## 문서
 
 - [Phase 4 / 5 / 6 핸드오프 (v0.1.0 이후 로드맵)](docs/handoff-phase-4-6.md)
+- [v0.1.x 즉시 후속 핸드오프](docs/handoff-v0.1.x-immediate.md)
 - [CHANGELOG](CHANGELOG.md)
 - [English README](README.md)
 

@@ -12,18 +12,21 @@
     "provenance": { "source_artifacts": [], "tool_versions": {} }
   },
   "payload": {
-    "insights": [
+    "updated_at": "2026-05-19T00:00:00Z",
+    "insights_for_deep_work": [
       {
-        "strategy": "start with manifest drift tests before behavior tests",
-        "q_delta": 0.18,
-        "project_signature": { "language": "typescript", "topology": "plugin" },
-        "outcome": "caught Codex compatibility regressions early"
-      },
+        "pattern": "early_termination_on_diverging_loss",
+        "evidence": "keep_rate 0.45 across 3 sessions; Q(v) +0.32 improvement",
+        "source_archive_ids": ["arch-2026-05-01-A", "arch-2026-05-04-B"],
+        "suggestion": "Add early termination guard in Phase 3 implement when loss diverges > 2σ within 3 epochs"
+      }
+    ],
+    "insights_for_deep_review": [
       {
-        "strategy": "saturated high q_delta strategy",
-        "q_delta": 0.92,
-        "project_signature": { "language": "javascript" },
-        "outcome": "broad improvement"
+        "pattern": "missing_boundary_checks_in_loop_init",
+        "evidence": "experiments crashed at boundary indices in 2/12 sessions",
+        "source_archive_ids": ["arch-2026-05-04-B"],
+        "suggestion": "Add boundary-init review criterion to deep-review checklist"
       }
     ]
   }

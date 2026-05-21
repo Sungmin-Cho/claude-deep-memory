@@ -22,7 +22,21 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { openIndex, search, closeIndex } = require('./lib/fts-index');
+// v0.1.2 — FTS5 graceful degradation. If better-sqlite3 native binding is
+// unavailable (Node v26+ with immutable plugin cache), retrieve returns an
+// empty result + explicit warning instead of hard-throwing at require-time.
+// Symmetric with harvest.js — same Node environment must support both paths.
+let _fts = null;
+let _ftsLoadError = null;
+try {
+  _fts = require('./lib/fts-index');
+} catch (e) {
+  _ftsLoadError = e && e.message ? e.message : String(e);
+}
+const FTS_DEGRADED_WARNING_RETRIEVE =
+  'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
+  'environment). brief returns empty — re-run with Node 22 LTS, or wait for ' +
+  'v0.2.0 sql.js fallback. See README.md > Troubleshooting.';
 const { bm25MinMax, scoreCard, jaccard } = require('./lib/score');
 
 const DEFAULT_TOP_N = 8;
@@ -127,6 +141,16 @@ async function runRetrieve({
   if (!projectProfile) {
     warnings.push('missing project-profile — w_project_sim forced to 0');
   }
+  // v0.1.2 — degraded mode: fts-index module failed to load (better-sqlite3
+  // native binding unavailable). Return empty result + explicit warning so the
+  // brief renderer surfaces the actionable message to the user.
+  if (!_fts) {
+    warnings.push(
+      FTS_DEGRADED_WARNING_RETRIEVE +
+        (_ftsLoadError ? ` (cause: ${_ftsLoadError})` : '')
+    );
+    return { task, memories: [], warnings };
+  }
   const projectId = projectProfile?.project_id || null;
   const dbPath = path.join(memoryRoot, 'indexes', 'lexical.sqlite');
   if (!fs.existsSync(dbPath)) {
@@ -134,13 +158,13 @@ async function runRetrieve({
     return { task, memories: [], warnings };
   }
 
-  const idx = openIndex(dbPath);
+  const idx = _fts.openIndex(dbPath);
   let rows = [];
   try {
     // Stage 0 — BM25 overfetch + privacy filter (in SQL)
-    rows = search(idx, task, { topN, projectId });
+    rows = _fts.search(idx, task, { topN, projectId });
   } finally {
-    closeIndex(idx);
+    _fts.closeIndex(idx);
   }
   if (rows.length === 0) {
     return { task, memories: [], warnings };

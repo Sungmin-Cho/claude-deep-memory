@@ -12,21 +12,32 @@
     "provenance": { "source_artifacts": [], "tool_versions": {} }
   },
   "payload": {
-    "slices": [
-      {
-        "id": "SLICE-002",
-        "title": "FTS5 upsert lock window",
-        "outcome": "failure",
-        "outcome_summary": null,
-        "failure_reason": "lock acquired but FTS5 commit timed out"
-      },
-      {
-        "id": "SLICE-003",
-        "title": "irrelevant slice",
-        "outcome": "skipped",
-        "outcome_summary": null,
-        "failure_reason": null
-      }
-    ]
+    "schema_version": "1.0",
+    "canonical": false,
+    "derived_from": "receipts/SLICE-*.json",
+    "session_id": "dw-2026-05-19T14-00-00-000Z",
+    "task_description": "FTS5 upsert lock window experiment",
+    "started_at": "2026-05-19T14:00:00.000Z",
+    "finished_at": "2026-05-19T14:31:00.000Z",
+    "worktree_branch": "exp/fts5-lock",
+    "worktree_base_commit": "def5678",
+    "outcome": "discard",
+    "outcome_ref": null,
+    "slices": {
+      "total": 3,
+      "completed": 1,
+      "spike": 2
+    },
+    "tdd_compliance": {
+      "strict": 1,
+      "relaxed": 0,
+      "override": 0,
+      "spike": 2
+    },
+    "quality_score": 2.1,
+    "quality_breakdown": {
+      "tdd_compliance": 0.33,
+      "sensor_clean": 0.0
+    }
   }
 }
