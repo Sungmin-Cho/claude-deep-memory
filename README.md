@@ -6,7 +6,7 @@ Harvests artifacts emitted by sibling deep-suite plugins, distills them into reu
 
 ## Status
 
-**v0.1.0 MVP** — Phase 0-3 of the [design spec](docs/superpowers/specs/2026-05-20-deep-memory-design.md). Skeleton + harvest + distill + brief + audit. Phase 4-6 (writer integration / reasoning graph / dashboard telemetry) tracked in [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
+**v0.1.0 MVP** — Skeleton + harvest + distill + brief + audit. 244 tests passing. Phase 4-6 (writer integration / reasoning graph / dashboard telemetry) tracked in [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
 
 ## Install
 
@@ -66,8 +66,7 @@ Same skills run from Claude Code (slash), Codex (`$deep-memory:...`), Copilot CL
 
 ## Documentation
 
-- [Design spec](docs/superpowers/specs/2026-05-20-deep-memory-design.md)
-- [Implementation plan](docs/superpowers/plans/2026-05-20-deep-memory-v0.1.0.md)
+- [Handoff for Phases 4 / 5 / 6 (post-v0.1.0 roadmap)](docs/handoff-phase-4-6.md)
 - [CHANGELOG](CHANGELOG.md)
 - [한국어 README](README.ko.md)
 

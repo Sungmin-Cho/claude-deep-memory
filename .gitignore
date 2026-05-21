@@ -4,8 +4,17 @@
 # Node dependencies
 node_modules/
 
-# Project-local runtime state (not part of spec)
+# Project-local runtime state for deep-memory + sibling deep-suite plugins
 .deep-memory/
+.deep-review/
+.deep-work/
+.deep-evolve/
+.deep-docs/
+.deep-wiki/
+
+# Dev-only docs (spec / plan / proposal — NOT shipped with the plugin)
+docs/superpowers/
+docs/deep-suite-cross-project-semantic-operational-memory-proposal.md
 
 # Test artifacts
 coverage/
@@ -16,3 +25,8 @@ coverage/
 .vscode/
 .idea/
 *.swp
+
+# Scratch / temp
+*.tmp
+*.log
+*.bak

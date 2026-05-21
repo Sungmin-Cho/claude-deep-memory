@@ -6,7 +6,7 @@ deep-suite 형제 플러그인이 생성한 산출물을 수집하여, 재사용
 
 ## 상태
 
-**v0.1.0 MVP** — [설계 명세](docs/superpowers/specs/2026-05-20-deep-memory-design.md)의 Phase 0-3. 스켈레톤 + harvest + distill + brief + audit. Phase 4-6(writer 통합 / reasoning graph / dashboard 텔레메트리)은 [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md)에서 추적됩니다.
+**v0.1.0 MVP** — 스켈레톤 + harvest + distill + brief + audit. 244 테스트 통과. Phase 4-6(writer 통합 / reasoning graph / dashboard 텔레메트리)은 [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md)에서 추적됩니다.
 
 ## 설치
 
@@ -66,8 +66,7 @@ codex plugin install deep-memory
 
 ## 문서
 
-- [설계 명세](docs/superpowers/specs/2026-05-20-deep-memory-design.md)
-- [구현 계획](docs/superpowers/plans/2026-05-20-deep-memory-v0.1.0.md)
+- [Phase 4 / 5 / 6 핸드오프 (v0.1.0 이후 로드맵)](docs/handoff-phase-4-6.md)
 - [CHANGELOG](CHANGELOG.md)
 - [English README](README.md)
 
