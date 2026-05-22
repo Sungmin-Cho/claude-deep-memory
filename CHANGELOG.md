@@ -2,6 +2,29 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-05-22
+
+### Fixed
+
+- **`.mcp.json` env-block interpolation crash** (Sonnet R1 W-1 finding;
+  surfaced at install time). Claude Code `.mcp.json` only supports
+  `${VAR}` env interpolation, not bash-style `${VAR:-default}`. The
+  literal string `${DEEP_MEMORY_ROOT:-${HOME}/.deep-memory}` was passed
+  unchanged to the spawned MCP server, crashing it before stdio handshake.
+  `/reload-plugins` reported `Failed to reconnect to deep-memory: -32000`.
+  Fix: remove the redundant env block from both `.mcp.json` and
+  `.claude-plugin/plugin.json#mcpServers`. `scripts/mcp-server.mjs` already
+  has the correct `process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(),
+  '.deep-memory')` fallback.
+
+- **Version bump 0.3.0 → 0.3.1** (release plumbing). Plugin manager keys
+  its "already at latest version" check on the version string in
+  `.claude-plugin/plugin.json`, not the git SHA. v0.3.0 users who tried
+  `/plugin update` after the env-block fix landed on main saw the manager
+  report "already at latest" because the cached 0.3.0 directory existed,
+  even though the cached `.mcp.json` still had the broken env block. The
+  0.3.1 patch forces a fresh fetch.
+
 ## [0.3.0] - 2026-05-22
 
 agentmemory-style overhaul: cross-runtime hook capture + 3-layer memory model

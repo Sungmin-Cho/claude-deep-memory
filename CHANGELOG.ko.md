@@ -2,6 +2,27 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 따릅니다.
 
+## [0.3.1] - 2026-05-22
+
+### Fixed (수정)
+
+- **`.mcp.json` env-block interpolation 충돌** (Sonnet R1 W-1 finding;
+  설치 시점에 노출). Claude Code `.mcp.json`은 `${VAR}` env 보간만 지원,
+  bash 스타일 `${VAR:-default}`는 미지원. 리터럴 문자열
+  `${DEEP_MEMORY_ROOT:-${HOME}/.deep-memory}`이 spawned MCP 서버에
+  그대로 전달되어 stdio 핸드셰이크 전 크래시. `/reload-plugins`가
+  `Failed to reconnect to deep-memory: -32000` 보고. Fix: `.mcp.json` +
+  `.claude-plugin/plugin.json#mcpServers` 양쪽에서 redundant env 블록
+  제거. `scripts/mcp-server.mjs`가 이미 `process.env.DEEP_MEMORY_ROOT ||
+  path.join(os.homedir(), '.deep-memory')` fallback 보유.
+
+- **Version bump 0.3.0 → 0.3.1** (릴리즈 플러밍). Plugin manager는
+  "already at latest version" 체크를 `.claude-plugin/plugin.json`의
+  version string으로 함 (git SHA 아님). env-block fix가 main에 land한
+  후 `/plugin update` 시도한 v0.3.0 사용자는 0.3.0 cache directory가
+  존재하므로 "already at latest" 보고 받음 — cached `.mcp.json`이 여전히
+  깨진 env 블록 가짐에도 불구하고. 0.3.1 patch가 fresh fetch 강제.
+
 ## [0.3.0] - 2026-05-22
 
 agentmemory-style 대규모 개편: 크로스 런타임 hook capture + 3-계층 메모리 모델
