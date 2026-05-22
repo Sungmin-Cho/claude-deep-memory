@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "0.1.3",
+  "version": "0.3.0",
   "description": "Cross-project semantic operational memory",
   "author": { "name": "sungmin" },
   "repository": "https://github.com/Sungmin-Cho/claude-deep-memory.git",
