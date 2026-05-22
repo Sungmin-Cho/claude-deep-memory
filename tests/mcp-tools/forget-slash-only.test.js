@@ -10,13 +10,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const MUTATION_TOOLS = [
-  'deep_memory_forget',
-  'deep_memory_audit_unlock',
-  'deep_memory_audit_promote',
-  'deep_memory_audit_rebuild_index',
-  'deep_memory_audit_rebuild_vectors',
-  'deep_memory_export_cards'
+// IMPL-R1-A — tool names aligned with spec §6.3 enumeration.
+// Mutation calls now use unified `deep_memory_audit` with mode != 'check',
+// `deep_memory_export` with scope='all', and `deep_memory_forget`.
+const MUTATION_CALLS = [
+  { name: 'deep_memory_forget',  args: { memory_id: 'mem_x', reason: 'test' } },
+  { name: 'deep_memory_audit',   args: { mode: 'unlock' } },
+  { name: 'deep_memory_audit',   args: { mode: 'promote', memory_id: 'mem_x' } },
+  { name: 'deep_memory_audit',   args: { mode: 'rebuild-index' } },
+  { name: 'deep_memory_audit',   args: { mode: 'rebuild-vectors' } },
+  { name: 'deep_memory_export',  args: { scope: 'all', target_path: '/tmp/x.json' } }
 ];
 
 function callMcpTool(toolName, args = {}) {
@@ -68,17 +71,42 @@ function callMcpTool(toolName, args = {}) {
   });
 }
 
-for (const tool of MUTATION_TOOLS) {
-  test(`R4-A: ${tool} returns slash_only_in_v030 (Gate 2)`, async () => {
-    const resp = await callMcpTool(tool, { memory_id: 'mem_test', reason: 'test' });
+for (const call of MUTATION_CALLS) {
+  const label = call.args.mode ? `${call.name}(mode=${call.args.mode})`
+              : call.args.scope ? `${call.name}(scope=${call.args.scope})`
+              : call.name;
+  test(`R4-A: ${label} returns slash_only_in_v030 (Gate 2/3)`, async () => {
+    const resp = await callMcpTool(call.name, call.args);
     assert.ok(resp.result, `expected result, got: ${JSON.stringify(resp)}`);
-    assert.strictEqual(resp.result.isError, true, `${tool} should report isError`);
+    assert.strictEqual(resp.result.isError, true, `${label} should report isError`);
     const content = resp.result.content[0].text;
     const parsed = JSON.parse(content);
     assert.strictEqual(parsed.error, 'slash_only_in_v030',
-      `${tool} should return slash_only_in_v030; got: ${parsed.error}`);
+      `${label} should return slash_only_in_v030; got: ${parsed.error}`);
   });
 }
+
+test('IMPL-R1-A: deep_memory_audit(mode=check) is autonomous-allowed', async () => {
+  const resp = await callMcpTool('deep_memory_audit', { mode: 'check' });
+  assert.ok(resp.result, `expected result, got: ${JSON.stringify(resp)}`);
+  // mode=check should NOT trigger slash_only_in_v030
+  if (resp.result.isError) {
+    const content = JSON.parse(resp.result.content[0].text);
+    assert.notStrictEqual(content.error, 'slash_only_in_v030',
+      'audit mode=check should be autonomous-readable per Gate 2 carve-out');
+  }
+});
+
+test('IMPL-R1-A: deep_memory_export(scope=current-project) is autonomous-allowed', async () => {
+  const resp = await callMcpTool('deep_memory_export', { scope: 'current-project', target_path: '/tmp/y.json' });
+  assert.ok(resp.result);
+  // scope=current-project bypasses Gate 3 (only scope=all is gated)
+  if (resp.result.isError) {
+    const content = JSON.parse(resp.result.content[0].text);
+    assert.notStrictEqual(content.error, 'slash_only_in_v030',
+      'export scope=current-project should be autonomous-allowed');
+  }
+});
 
 test('R4-F: deep_memory_save is NOT slash-blocked (additive + local, no consent gate)', async () => {
   const resp = await callMcpTool('deep_memory_save', {
@@ -95,7 +123,7 @@ test('R4-F: deep_memory_save is NOT slash-blocked (additive + local, no consent 
   }
 });
 
-test('R4-F: tools/list exposes all 10 tools (recall/search/smart_search/save + 6 mutation stubs)', () => {
+test('R4-F: tools/list exposes all 10 tools per spec §6.3 (IMPL-R1-A rename)', () => {
   return new Promise((resolve, reject) => {
     const child = spawn('node', ['scripts/mcp-server.mjs'], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';

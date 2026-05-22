@@ -20,10 +20,16 @@ const { mapHookSession } = require('./distill-hook-session');
 const { refineBatch } = require('./llm-bridge');
 
 /**
- * Read pending events from events.jsonl past the project's cursor.
- * Returns { events: [...], lastByteOffset, file }.
- * Implements §4.5 Stage 1a (cursor snapshot — short lock-protected) +
- * Stage 1b (lockless tail read; append-only invariant makes this race-free).
+ * Read pending events from events past the project's cursor.
+ * Implements §4.5 Stage 1a + Stage 1b WITH:
+ *   - IMPL-R1-F (Opus 🔴 #4): cross-month rollover — scans all month files
+ *     lex-≥ cursor.file forward through to current month.
+ *   - IMPL-R1-E (Opus 🔴 #3): per-event `_line_start_offset` so deferred-line
+ *     cursor advance lands BEFORE (not after) the deferred line.
+ *
+ * Returns { events: [...], lastByteOffset, file } where (file, lastByteOffset)
+ * is the cursor-target after the read (EOF of last scanned file or current
+ * cursor location if no events read).
  */
 function readPendingEvents(root, projectId) {
   const cursor = readCursor(root, projectId);
@@ -31,56 +37,78 @@ function readPendingEvents(root, projectId) {
   const currentMonthFile = `${ym}.jsonl`;
   const eventsDir = path.join(root, 'events');
 
-  // Determine the cursor's anchor file. If no cursor, start at the earliest
-  // available month with content; if cursor is on a past month, read it
-  // forward + all intervening months + current month.
-  const file = cursor ? cursor.file : currentMonthFile;
-  const offset = cursor ? cursor.offset : 0;
-  const eventsFile = path.join(eventsDir, file);
+  const startFile = cursor ? cursor.file : currentMonthFile;
+  const startOffset = cursor ? cursor.offset : 0;
 
-  if (!fs.existsSync(eventsFile)) {
-    return { events: [], lastByteOffset: offset, file };
-  }
-  const stat = fs.statSync(eventsFile);
-  if (offset >= stat.size) {
-    return { events: [], lastByteOffset: offset, file };
+  if (!fs.existsSync(eventsDir)) {
+    return { events: [], lastByteOffset: startOffset, file: startFile };
   }
 
-  // Lockless tail read past cursor (append-only file is safe).
-  const buf = fs.readFileSync(eventsFile);
-  const tail = buf.slice(offset).toString('utf8');
-  const lines = tail.split('\n').filter(Boolean);
+  // IMPL-R1-F: enumerate month files lex-≥ startFile (filenames are
+  // YYYY-MM.jsonl so lex order == chronological order).
+  const allFiles = fs.readdirSync(eventsDir)
+    .filter(f => /^\d{4}-\d{2}\.jsonl$/.test(f))
+    .sort();
+  const targetFiles = allFiles.filter(f => f >= startFile);
 
-  // Compute the per-line byte offset so cursor advance can land exactly after
-  // the last fully-processed line (R4-B fix).
-  const lineOffsets = [];
-  let cumulative = offset;
-  for (const line of lines) {
-    cumulative += Buffer.byteLength(line, 'utf8') + 1;  // +1 for \n
-    lineOffsets.push(cumulative);
+  if (targetFiles.length === 0) {
+    return { events: [], lastByteOffset: startOffset, file: startFile };
   }
 
   const events = [];
-  for (let i = 0; i < lines.length; i++) {
-    const r = dispatch(lines[i]);
-    if (r.routed === 'memory-hook-event' && r.valid) {
-      // Extract the payload + project_id from envelope
-      const obj = JSON.parse(lines[i]);
-      events.push({
-        ...obj.payload,
-        session_id: obj.envelope.session_id,
-        project_id: obj.envelope.project_id,
-        host: obj.envelope.host,
-        // byte offset AFTER this line — for R4-B cursor advance
-        _line_end_offset: lineOffsets[i]
-      });
+  let lastFile = startFile;
+  let lastOffset = startOffset;
+
+  for (const file of targetFiles) {
+    const filePath = path.join(eventsDir, file);
+    const stat = fs.statSync(filePath);
+    const fileStartOffset = (file === startFile) ? startOffset : 0;
+    if (fileStartOffset >= stat.size) {
+      lastFile = file;
+      lastOffset = fileStartOffset;
+      continue;
     }
-    // Non-hook-event lines (memory-event, legacy-wrapped, quarantine) — skip
-    // for hook-distill purposes; the regular sibling-artifact pipeline handles
-    // those separately.
+    const buf = fs.readFileSync(filePath);
+    const tail = buf.slice(fileStartOffset).toString('utf8');
+    // Keep empty trailing entries to preserve offset math; filter by
+    // line.trim() emptiness instead of split.filter(Boolean) which collapses.
+    const rawLines = tail.split('\n');
+    let cumulative = fileStartOffset;
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i];
+      const isLastSegment = (i === rawLines.length - 1);
+      if (line.length === 0) {
+        if (!isLastSegment) cumulative += 1;  // empty line followed by \n
+        continue;
+      }
+      const lineStart = cumulative;
+      // If this is the last segment AND the original tail did not end with \n,
+      // the line is a partial write — do NOT consume it (concurrent appender
+      // may be mid-write).
+      const hasTrailingNewline = !isLastSegment || tail.endsWith('\n');
+      const lineEnd = cumulative + Buffer.byteLength(line, 'utf8') + (hasTrailingNewline ? 1 : 0);
+      if (!hasTrailingNewline) break;  // partial line — stop, don't advance cursor past it
+      cumulative = lineEnd;
+      const r = dispatch(line);
+      if (r.routed === 'memory-hook-event' && r.valid) {
+        const obj = JSON.parse(line);
+        events.push({
+          ...obj.payload,
+          session_id: obj.envelope.session_id,
+          project_id: obj.envelope.project_id,
+          host: obj.envelope.host,
+          // IMPL-R1-E: BOTH start + end offsets for correct R4-B deferral.
+          _file: file,
+          _line_start_offset: lineStart,
+          _line_end_offset: lineEnd
+        });
+      }
+    }
+    lastFile = file;
+    lastOffset = cumulative;
   }
 
-  return { events, lastByteOffset: stat.size, file };
+  return { events, lastByteOffset: lastOffset, file: lastFile };
 }
 
 /**
@@ -187,34 +215,26 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
     }
   }
 
-  // β.7 + R4-B — Stage 6 cursor advance "processed" semantics:
-  //   A line is "processed" iff its drafts were either committed OR explicitly
-  //   zero-draft. Token-cap deferred drafts do NOT count — cursor stays
-  //   before them.
-  // We identify deferred drafts by inspection of refined[i].deferred:
+  // β.7 + R4-B + IMPL-R1-E — Stage 6 cursor advance "processed" semantics.
+  // A line is "processed" iff its drafts were either committed OR explicitly
+  // zero-draft. Token-cap-deferred drafts hold the cursor BEFORE them.
   const deferredCount = refined.filter(r => r.deferred === true).length;
 
-  // Map drafts back to their source line offsets. A draft's source line is
-  // implicit — we tagged each event with `_line_end_offset`. If ANY event in a
-  // session group produced a deferred draft, cursor stops AT or BEFORE that
-  // event's start (lastFullyProcessedLineEnd).
-  // Simplification for β.5 baseline: identify the earliest deferred-draft
-  // session group's first event; cursor advances to that event's start.
-  let lastFullyProcessedLineEnd = lastByteOffset;  // optimistic default
+  let lastFullyProcessedLineEnd = lastByteOffset;
   if (deferredCount > 0) {
-    // Find the earliest event whose session has any deferred draft.
     const deferredSessions = new Set();
     for (const r of refined) {
       if (r.deferred && r.session_id) deferredSessions.add(r.session_id);
     }
-    // Earliest event in those sessions = the latest safe cursor advance point.
-    const earliestDeferredEventOffset = Math.min(
-      ...ourEvents
-        .filter(e => deferredSessions.has(e.session_id))
-        .map(e => e._line_end_offset - 1),  // line START, not end
-      lastByteOffset
-    );
-    lastFullyProcessedLineEnd = earliestDeferredEventOffset;
+    // IMPL-R1-E: use `_line_start_offset` (the byte BEFORE the deferred line's
+    // first char) so cursor lands strictly upstream of the deferred line.
+    // Next run's readPendingEvents re-reads the same line.
+    const deferredStarts = ourEvents
+      .filter(e => deferredSessions.has(e.session_id))
+      .map(e => e._line_start_offset);
+    if (deferredStarts.length > 0) {
+      lastFullyProcessedLineEnd = Math.min(...deferredStarts, lastByteOffset);
+    }
   }
 
   // Stage 6 — commit drafts (callback-driven for testability)

@@ -50,19 +50,11 @@ export function isEagerDistillEnabled() {
   }
 }
 
-// ---- project resolution (PR1-C) --------------------------------------------
-
-export function resolveCurrentProject() {
-  const cwd = process.env.PROJECT_CWD || process.cwd();
-  const profilePath = path.join(cwd, '.deep-memory', 'project-profile.json');
-  try {
-    const profile = JSON.parse(fs.readFileSync(profilePath, 'utf8'));
-    if (profile.project_id) return profile.project_id;
-  } catch {
-    // fall through to derived id
-  }
-  return 'proj_' + crypto.createHash('sha256').update(cwd).digest('hex').slice(0, 16);
-}
+// ---- project resolution (PR1-C + IMPL-R1-B lift) ---------------------------
+// Delegate to scripts/lib/project-resolver.js so the MCP server can share
+// the same logic without duplicating it (IMPL-R1-B fix per Opus 🔴 #7).
+const { resolveCurrentProject: _resolveCurrentProject } = require('../lib/project-resolver.js');
+export const resolveCurrentProject = _resolveCurrentProject;
 
 // ---- tool input/output summarization (PR1-J + Codex adv MED-2) -------------
 
@@ -140,7 +132,9 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
   const essence = `${sourceKind}|${redactedPayload.session_id}|${redactedPayload.tool_name}|${redactedIn}|${redactedOut}`;
   const dedupeKey = crypto.createHash('sha256').update(essence).digest('hex');
 
-  // 5-min sliding window dedup.
+  // IMPL-R1-I — initial dedupe check OUTSIDE lock for the optimistic fast-path.
+  // A re-check INSIDE the lock (below) closes the TOCTOU race. The fast-path
+  // saves lock acquisition cost when the dedupe is obvious.
   if (checkDedupeWindow(dedupeKey, projectId)) {
     return { skipped: true, reason: 'duplicate-within-5min', dedupe_window_key: dedupeKey };
   }
@@ -185,6 +179,12 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
   const lockDir = path.join(DEEP_MEMORY_ROOT, '.lock');
   const lockHandle = await acquire(lockDir);
   try {
+    // IMPL-R1-I — TOCTOU close: re-check dedupe INSIDE the lock. If a
+    // concurrent hook beat us in between the optimistic check and lock
+    // acquire, drop our write and return skipped.
+    if (checkDedupeWindow(dedupeKey, projectId)) {
+      return { skipped: true, reason: 'duplicate-within-5min-lock-race', dedupe_window_key: dedupeKey };
+    }
     // PR1-W4 fix: open/write/fsync/close — no fd leak.
     const fd = fs.openSync(eventsFile, 'a');
     try {
