@@ -12,6 +12,15 @@
     "reasoning-graph",
     "deep-suite"
   ],
+  "mcpServers": {
+    "deep-memory": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"],
+      "env": {
+        "DEEP_MEMORY_ROOT": "${DEEP_MEMORY_ROOT:-${HOME}/.deep-memory}"
+      }
+    }
+  },
   "hooks": {
     "SessionStart":       [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"}]}],
     "UserPromptSubmit":   [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"}]}],

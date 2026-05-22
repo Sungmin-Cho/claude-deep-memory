@@ -7,6 +7,7 @@
   "license": "MIT",
   "keywords": ["memory", "cross-project", "deep-suite"],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "hooks": {
     "SessionStart":    [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"}],
     "UserPromptSubmit":[{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"}],
