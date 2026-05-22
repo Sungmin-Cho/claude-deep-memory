@@ -77,6 +77,94 @@ test('memory-hook-event schema rejects record without required envelope.host', (
   assert.strictEqual(validate(rec), false, 'should reject record without envelope.host');
 });
 
+// -----------------------------------------------------------------------
+// Dispatcher tests (α.11)
+// -----------------------------------------------------------------------
+
+const { dispatch } = require('../scripts/lib/event-dispatcher');
+
+test('dispatcher: envelope-shaped memory-hook-event routes to hook validator', () => {
+  const line = JSON.stringify({
+    schema_version: '1.0',
+    envelope: {
+      producer: 'deep-memory',
+      producer_version: '0.3.0',
+      artifact_kind: 'memory-hook-event',
+      run_id: '01H',
+      generated_at: '2026-05-01T00:00:00Z',
+      schema: { name: 'memory-hook-event', version: '1.0' },
+      git: { head: 'a'.repeat(40), branch: 'main', dirty: 'false' },
+      provenance: { source_artifacts: [{ path: 'host-stdin://claude-code/x' }] },
+      host: 'claude-code',
+      session_id: 's',
+      project_id: 'p'
+    },
+    payload: {
+      source_kind: 'hook-post-tool-use',
+      event_key: 'a'.repeat(64),
+      dedupe_window_key: 'b'.repeat(64),
+      captured_at: '2026-05-01T00:00:00Z',
+      raw_chars_in: 0,
+      raw_chars_out: 0,
+      redaction: { rules_matched: 0, chars_masked: 0, passes: ['pass0'] }
+    }
+  });
+  const r = dispatch(line);
+  assert.strictEqual(r.routed, 'memory-hook-event');
+  assert.strictEqual(r.valid, true, JSON.stringify(r.errors));
+});
+
+test('dispatcher: legacy flat event wraps via adapter (R4-H)', () => {
+  const flat = JSON.stringify({
+    event_key: 'abc123',
+    source: 'recurring-findings',
+    run_id: '01HX',
+    at: '2026-04-01T00:00:00Z',
+    cards_count: 3,
+    project_id: 'p1'
+  });
+  const r = dispatch(flat);
+  assert.strictEqual(r.routed, 'memory-event-legacy-wrapped');
+  assert.strictEqual(r.valid, true, JSON.stringify(r.errors));
+});
+
+test('dispatcher: unknown shape quarantines', () => {
+  const r = dispatch('{"random":"junk"}');
+  assert.strictEqual(r.routed, 'quarantine');
+});
+
+test('dispatcher: unparseable line quarantines', () => {
+  const r = dispatch('not json at all');
+  assert.strictEqual(r.routed, 'quarantine');
+  assert.strictEqual(r.reason, 'unparseable');
+});
+
+test('dispatcher: envelope-shaped memory-event routes to event validator', () => {
+  const line = JSON.stringify({
+    schema_version: '1.0',
+    envelope: {
+      producer: 'deep-memory',
+      producer_version: '0.1.3',
+      artifact_kind: 'memory-event',
+      run_id: '01H',
+      generated_at: '2026-05-01T00:00:00Z',
+      schema: { name: 'memory-event', version: '1.0' },
+      git: { head: '', branch: '', dirty: 'unknown' },
+      provenance: { source_artifacts: [{ path: 'x' }] }
+    },
+    payload: {
+      event_key: 'a'.repeat(64),
+      source_artifact_id: 'src_1',
+      event_kind: 'harvested',
+      cards_count: 1,
+      at: '2026-05-01T00:00:00Z'
+    }
+  });
+  const r = dispatch(line);
+  assert.strictEqual(r.routed, 'memory-event');
+  assert.strictEqual(r.valid, true, JSON.stringify(r.errors));
+});
+
 test('memory-hook-event schema rejects unknown source_kind', () => {
   const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
   const ajv = new Ajv({ strict: true, allErrors: true });
