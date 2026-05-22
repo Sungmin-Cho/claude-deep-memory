@@ -12,15 +12,18 @@ node_modules/
 .deep-docs/
 .deep-wiki/
 
-# Dev-only docs (plan / proposal — NOT shipped with the plugin)
-# specs/ is the exception: tracked so external reviewers (deep-review-loop,
-# PR reviewers) can see the design contract. plans/ stays untracked.
-# NOTE: pattern is `docs/superpowers/*` (not `docs/superpowers/`) so the
-# specs/ negate below actually works — git ignores files inside an excluded
-# directory regardless of subsequent !negate rules.
+# Dev-only docs (proposal — NOT shipped with the plugin)
+# specs/ and plans/ are exceptions: visible-but-untracked so external reviewers
+# (deep-review-loop, PR reviewers) can see both the design contract (specs/)
+# and the implementation roadmap (plans/). Both stay uncommitted by default
+# (developer choice whether to git-add). NOTE: pattern is `docs/superpowers/*`
+# (not `docs/superpowers/`) so the negate rules below actually work — git
+# ignores files inside an excluded directory regardless of subsequent !negate.
 docs/superpowers/*
 !docs/superpowers/specs/
 !docs/superpowers/specs/**
+!docs/superpowers/plans/
+!docs/superpowers/plans/**
 docs/deep-suite-cross-project-semantic-operational-memory-proposal.md
 
 # Test artifacts
