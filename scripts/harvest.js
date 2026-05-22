@@ -788,8 +788,39 @@ if (require.main === module) {
   const artifactPath = remainingArgs[0] || null;
   const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
 
+  // IMPL-R1-G — `--rebuild-from-events --session <id>` flag for eager-distill
+  // child spawned from pre-compact.mjs / session-end.mjs (per spec §3.2.1
+  // fire-and-forget). Runs runLazyDistill on the session-filtered event tail.
+  const rebuildFromEvents = args.includes('--rebuild-from-events');
+  let sessionFilter = null;
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '--session') { sessionFilter = args[i + 1]; break; }
+  }
+  if (rebuildFromEvents) {
+    const { runLazyDistill } = require('./lib/distill-pipeline.js');
+    const { resolveCurrentProject } = require('./lib/project-resolver.js');
+    const projectIdForDistill = projectId || resolveCurrentProject(process.cwd());
+    runLazyDistill({
+      root: memoryRoot,
+      projectId: projectIdForDistill,
+      config: {
+        skip_llm: true,
+        distill: { detectors: { session_summary: { always_emit: false } } },
+        sessionFilter
+      }
+    }).then((result) => {
+      console.log(JSON.stringify({ status: 'rebuild_from_events_completed', ...result }));
+      process.exit(0);
+    }).catch((e) => {
+      console.error(`rebuild-from-events failed: ${e.message}`);
+      process.exit(2);
+    });
+    return;
+  }
+
   if (!artifactPath || !sourceKind) {
     console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
+    console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
     console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
     console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
     process.exit(1);

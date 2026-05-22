@@ -1,0 +1,2 @@
+{"event_key":"abc123","source":"recurring-findings","run_id":"01HX","at":"2026-04-01T00:00:00Z","cards_count":3,"project_id":"p1"}
+{"event_key":"def456","source":{"adapter_id":"adp_review","path":"/tmp/foo.json","content_hash":"sha256:xyz","captured_at":"2026-04-02T00:00:00Z"},"run_id":"01HY","at":"2026-04-02T00:00:00Z","cards_count":1,"project_id":"p1"}

@@ -76,4 +76,41 @@ async function refine(
   return out;
 }
 
-module.exports = { refine, ADAPTER_NAMES: Object.keys(ADAPTERS) };
+/**
+ * β.3 — Batched refine for hook-distill drafts.
+ * Bundles up to opts.batchSize drafts (default 5) per Lazy distill run.
+ * Per-draft failures fall back to candidate status. Token budget respected
+ * via opts.maxTokens with opts.tokenPerDraft estimate; over-budget drafts
+ * are returned as candidates with deferred:true so Stage 6 can hold the
+ * cursor before them (R4-B token-cap deferral protection).
+ */
+async function refineBatch(drafts, opts = {}) {
+  const batchSize = Math.max(1, Math.min(opts.batchSize || 5, drafts.length));
+  const out = [];
+  let tokensConsumed = 0;
+  const tokenPerDraft = opts.tokenPerDraft || 2000;
+  for (let i = 0; i < drafts.length; i++) {
+    if (i >= batchSize) {
+      out.push({ ...drafts[i], status: 'candidate', deferred: true, deferred_reason: 'batch_size_exceeded' });
+      continue;
+    }
+    if (opts.maxTokens && tokensConsumed + tokenPerDraft > opts.maxTokens) {
+      out.push({ ...drafts[i], status: 'candidate', deferred: true, deferred_reason: 'token_cap_exceeded' });
+      continue;
+    }
+    try {
+      const refined = await refine(drafts[i], opts);
+      out.push(refined);
+      tokensConsumed += tokenPerDraft;
+    } catch (e) {
+      out.push({
+        ...drafts[i],
+        status: 'candidate',
+        refine_error: e && e.message ? e.message : String(e)
+      });
+    }
+  }
+  return out;
+}
+
+module.exports = { refine, refineBatch, ADAPTER_NAMES: Object.keys(ADAPTERS) };

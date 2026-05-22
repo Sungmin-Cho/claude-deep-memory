@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/audit-log-entry.schema.json",
+  "title": "Audit Log Entry",
+  "type": "object",
+  "required": ["at", "id", "kind", "by", "host", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "at": { "type": "string", "format": "date-time" },
+    "id": { "type": "string", "minLength": 1 },
+    "kind": {
+      "enum": [
+        "capture-toggle",
+        "cross-project-read",
+        "mutation-consent",
+        "gate-violation",
+        "save",
+        "forget",
+        "cross-project-export",
+        "promote",
+        "rebuild",
+        "unlock"
+      ]
+    },
+    "by": {
+      "enum": [
+        "slash-direct",
+        "mcp-autonomous",
+        "hook-script",
+        "init-migration",
+        "cli-flag"
+      ]
+    },
+    "host": { "type": "string" },
+    "payload": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "capture-toggle" },
+        "payload": {
+          "type": "object",
+          "required": ["from", "to", "method"],
+          "additionalProperties": false,
+          "properties": {
+            "from": { "type": "boolean" },
+            "to": { "type": "boolean" },
+            "method": { "enum": ["prompted", "cli-flag", "non-interactive-default"] }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "cross-project-read" },
+        "payload": {
+          "type": "object",
+          "required": ["scope", "projects_read", "tool"],
+          "additionalProperties": false,
+          "properties": {
+            "scope": { "const": "all" },
+            "projects_read": { "type": "array", "items": { "type": "string" } },
+            "tool": { "enum": ["brief", "smart_search", "recall"] }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "mutation-consent" },
+        "payload": {
+          "type": "object",
+          "required": ["tool", "args"],
+          "additionalProperties": false,
+          "properties": {
+            "tool": {
+              "enum": ["audit", "promote", "forget", "rebuild-index", "rebuild-vectors", "unlock"]
+            },
+            "args": { "type": "object" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "gate-violation" },
+        "payload": {
+          "type": "object",
+          "required": ["tool", "requested_scope", "denial_reason", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "tool": { "type": "string" },
+            "requested_scope": { "type": "string" },
+            "denial_reason": { "enum": ["gate1", "gate2", "gate3"] },
+            "error": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "save" },
+        "payload": {
+          "type": "object",
+          "required": ["memory_id", "memory_type", "privacy"],
+          "additionalProperties": false,
+          "properties": {
+            "memory_id": { "type": "string" },
+            "memory_type": { "type": "string" },
+            "privacy": { "const": "local" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "forget" },
+        "payload": {
+          "type": "object",
+          "required": ["memory_id", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "memory_id": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "cross-project-export" },
+        "payload": {
+          "type": "object",
+          "required": ["scope", "exported_count", "target_path"],
+          "additionalProperties": false,
+          "properties": {
+            "scope": { "type": "string" },
+            "exported_count": { "type": "integer", "minimum": 0 },
+            "target_path": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "promote" },
+        "payload": {
+          "type": "object",
+          "required": ["memory_id", "from_privacy", "to_privacy"],
+          "additionalProperties": false,
+          "properties": {
+            "memory_id": { "type": "string" },
+            "from_privacy": { "const": "local" },
+            "to_privacy": { "const": "global" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "rebuild" },
+        "payload": {
+          "type": "object",
+          "required": ["index", "cards_processed", "duration_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "index": { "enum": ["lexical", "vector"] },
+            "cards_processed": { "type": "integer", "minimum": 0 },
+            "duration_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "unlock" },
+        "payload": {
+          "type": "object",
+          "required": ["lock_holder_pid", "stale_for_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "lock_holder_pid": { "type": "integer" },
+            "stale_for_seconds": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  ]
+}

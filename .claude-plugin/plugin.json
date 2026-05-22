@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "0.1.3",
+  "version": "0.3.0",
   "description": "Cross-project semantic operational memory — harvests deep-suite artifacts, distills reusable patterns/failures/decisions/experiment outcomes (Hybrid: rule-based + sub-agent LLM), and injects task-specific memory briefs into future work. Skill-based entry surfaces (Claude Code slash + Codex/Copilot CLI/Gemini CLI/SDK via Skill()).",
   "author": { "name": "sungmin" },
   "license": "MIT",
@@ -11,5 +11,22 @@
     "operational-memory",
     "reasoning-graph",
     "deep-suite"
-  ]
+  ],
+  "mcpServers": {
+    "deep-memory": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"],
+      "env": {
+        "DEEP_MEMORY_ROOT": "${DEEP_MEMORY_ROOT:-${HOME}/.deep-memory}"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart":       [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"}]}],
+    "UserPromptSubmit":   [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"}]}],
+    "PostToolUse":        [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-use.mjs"}]}],
+    "PostToolUseFailure": [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-failure.mjs"}]}],
+    "PreCompact":         [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.mjs"}]}],
+    "SessionEnd":         [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-end.mjs"}]}]
+  }
 }

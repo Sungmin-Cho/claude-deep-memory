@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-hook-event.schema.json",
+  "title": "Memory Hook Event",
+  "type": "object",
+  "required": ["schema_version", "envelope", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "envelope": {
+      "type": "object",
+      "required": [
+        "producer",
+        "producer_version",
+        "artifact_kind",
+        "run_id",
+        "generated_at",
+        "schema",
+        "git",
+        "provenance",
+        "host",
+        "session_id",
+        "project_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "producer": { "const": "deep-memory" },
+        "producer_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "artifact_kind": { "const": "memory-hook-event" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "schema": {
+          "type": "object",
+          "required": ["name", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "const": "memory-hook-event" },
+            "version": { "type": "string" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "head": { "type": "string" },
+            "branch": { "type": "string" },
+            "dirty": { "type": "string" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["source_artifacts"],
+          "additionalProperties": false,
+          "properties": {
+            "source_artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "run_id": { "type": "string" }
+                }
+              }
+            },
+            "tool_versions": { "type": "object" }
+          }
+        },
+        "host": {
+          "enum": ["claude-code", "codex", "cursor", "gemini-cli", "cline", "(other)"]
+        },
+        "session_id": { "type": "string", "minLength": 1 },
+        "project_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "source_kind",
+        "event_key",
+        "dedupe_window_key",
+        "captured_at",
+        "raw_chars_in",
+        "raw_chars_out",
+        "redaction"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_kind": {
+          "enum": [
+            "hook-session-start",
+            "hook-user-prompt",
+            "hook-post-tool-use",
+            "hook-tool-failure",
+            "hook-pre-compact",
+            "hook-session-end"
+          ]
+        },
+        "event_key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "sha256 hex (no prefix) of (essence + captured_at) per spec §3.4 / PR1-J."
+        },
+        "dedupe_window_key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "sha256 hex (no prefix) of essence WITHOUT timestamp — used for 5-min sliding dedup."
+        },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "tool_name": { "type": "string" },
+        "tool_input_summary": { "type": "string" },
+        "tool_output_summary": { "type": "string" },
+        "raw_chars_in": { "type": "integer", "minimum": 0 },
+        "raw_chars_out": { "type": "integer", "minimum": 0 },
+        "redaction": {
+          "type": "object",
+          "required": ["rules_matched", "chars_masked", "passes"],
+          "additionalProperties": false,
+          "properties": {
+            "rules_matched": { "type": "integer", "minimum": 0 },
+            "chars_masked": { "type": "integer", "minimum": 0 },
+            "passes": {
+              "type": "array",
+              "items": { "enum": ["pass0", "pass1", "pass2", "pass3"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

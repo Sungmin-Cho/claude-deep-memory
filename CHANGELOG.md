@@ -2,6 +2,93 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-05-22
+
+agentmemory-style overhaul: cross-runtime hook capture + 3-layer memory model
+(Events → Cards → Briefs) + MCP server with slash-only mutation gate.
+This is a major version (skipping 0.2.x — sql.js fallback delivered separately).
+
+Implementation followed a 4-round spec deep-review-loop (24 → 11 findings) +
+2-round plan deep-review-loop (graduated CONCERN), then 6-phase TDD execution.
+6-phase plan executed; final phase 4-way deep-review-loop scheduled separately.
+
+### Added
+
+- **6 Tier-1 hook scripts** (`scripts/hooks/*.mjs`) capturing
+  SessionStart / UserPromptSubmit / PostToolUse / PostToolUseFailure /
+  PreCompact / SessionEnd events from Claude Code + Codex (4-hook subset
+  on Codex per spec §3.5). All hooks gated on `config.capture.enabled`
+  BEFORE stdin read (PR1-D / R4-D privacy invariant).
+- **New `memory-hook-event` artifact_kind** (schemas/memory-hook-event.schema.json)
+  with 11-field envelope + strict `additionalProperties: false` at every level.
+  Co-exists with v0.1.x `memory-event` schema (untouched, byte-stable).
+- **3-layer memory model**: Events → Cards → Briefs per agentmemory pattern.
+  - Layer 1 (Events): per-month `events/YYYY-MM.jsonl` append-only.
+  - Layer 2 (Cards): existing v0.1.x cards/ directory, now keyed by
+    composite (memory_id, project_id) in the vector index.
+  - Layer 3 (Briefs): hybrid retrieve (FTS5 + vector) + session diversification.
+- **5 deterministic detectors** (`scripts/lib/distill-hook-session.js`):
+  pattern, failure-case, decision, coding-style, session-summary fallback.
+  Zero-LLM Step A mappers per spec §4.2.
+- **Vector index** (`scripts/lib/vector-index.js`) with COMPOSITE
+  (memory_id, project_id) PRIMARY KEY closing C-R1 vector-side.
+  Brute-force cosine; better-sqlite3 graceful-fallback.
+- **@xenova/transformers lazy loader** (`scripts/lib/embed-model.js`)
+  with widened catch (R4-I + PR2-E): any load-time error → graceful
+  FTS5-only fallback. Model version mismatch check via
+  `.embed-model-version` file (R3-G + R4-I).
+- **RRF fusion** (`scripts/lib/rrf-fusion.js`) with composite key per PR2-F.
+- **Hybrid retrieval orchestrator** (`scripts/lib/retrieve-hybrid.js`)
+  combining FTS5 + vector with session diversification (γ.6) +
+  graceful-matrix probe (γ.7).
+- **MCP server** (`scripts/mcp-server.mjs`) with 10 tools + 5 resources
+  + 2 prompts. Spawned automatically by host via `.mcp.json` (no manual
+  setup). Mutation tools enforced as slash-only per Gate 2.
+- **3 new slash skills** for mutation paths: deep-memory-forget,
+  deep-memory-promote, deep-memory-export. Each emits dual audit-log
+  entries (mutation-consent + kind-specific) per R4-K.
+- **Audit-log envelope writer** (`scripts/lib/audit-log.js`) with 10 kinds
+  and oneOf payload validation per R3-J / R4-E.
+
+### Changed
+
+- **4-pass uniform redaction**: 3 promoted rules (generic homedir,
+  env-var, stack-trace homedir) now live in `scripts/lib/redact.js`
+  shared pipeline. PR1-E / W2 / W3 fixes integrated.
+- **Byte-offset cursor** (`scripts/lib/cursor.js`) replaces ISO-timestamp
+  cursor per R3-A. Format: `<YYYY-MM>.jsonl:<byte_offset>` with
+  forward-only monotonic + cross-file rollover allowed.
+
+### Performance
+
+- **G-α latency** (single PostToolUse): p95 = 72ms (target ≤400ms, 82% headroom)
+- **G-β latency** (with concurrent distill): p95 = 66ms (target ≤500ms, 87% headroom)
+- Lock-split invariant: distill-pipeline.js does NOT require `./lock` —
+  LLM + embedding run outside critical sections.
+
+### Deferred to v0.3.x
+
+- γ.1 full FTS5 widening to composite key (v0.1.x carry; vector-side
+  already composite, so retrieval is C-R1-safe in mixed mode).
+- ε.3-ε.4 init.js multi-marker detection + migration cursor init.
+- δ.16 audit skill SKILL.md Gate 2 awareness modification.
+- δ.19 Gate 1 cross-project read scope flag in MCP server.
+- hooks-stats.json per-hook counter telemetry.
+- Full §3.2.1 fire-and-forget invariants (lease heartbeat, back-to-back
+  coalesce) beyond detached+unref.
+
+See `docs/handoff-v0.3.0-postrelease.md` for the full deferral list.
+
+### Migration
+
+- v0.1.x→v0.3.0: storage layout adds `events/`, `audit-log/`,
+  `.last-distill-cursor/`, `indexes/vector.sqlite`, `.embed-model-version`.
+- v0.1.x reader compatibility: legacy flat-event records continue to be
+  read via `scripts/lib/event-dispatcher.js` legacy adapter (R4-H) with
+  schema-compliant envelope synthesis.
+- Capture default: OFF on non-interactive init (per spec §3.6 + R4-D).
+  User must explicitly opt in via prompt or `/deep-memory-init --capture`.
+
 ## [0.1.3] - 2026-05-21
 
 Round 1 deep-review-loop response (review report `2026-05-21-151916-review.md`,

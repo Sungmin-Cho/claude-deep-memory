@@ -23,6 +23,8 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { acquire, release, isStale: lockIsStale, breakLock } = require('./lib/lock');
+// IMPL-R2-Δ1 — wire audit-log mutation emission for --unlock + --promote.
+const { writeMutationPair } = require('./lib/audit-log');
 const { hashFile } = require('./lib/source-hash');
 const { validateProjectId } = require('./lib/validate-project-id');
 
@@ -639,6 +641,26 @@ if (require.main === module) {
   (async () => {
     if (unlock) {
       const result = detectStaleLocks(memoryRoot, { unlock: true });
+      // IMPL-R2-Δ1 — emit mutation-consent + unlock audit-log pair for every
+      // successful unlock invocation. SKILL.md body promises this; audit.js
+      // owns it now (Opus R2 🔴 #1).
+      if (result.broken && result.broken.length > 0) {
+        try {
+          const first = result.locks && result.locks[0] ? result.locks[0] : {};
+          const pid = (first.meta && typeof first.meta.pid === 'number') ? first.meta.pid : 0;
+          const ageMs = first.age_ms || 0;
+          writeMutationPair(memoryRoot, {
+            tool: 'unlock', args: {},
+            by: 'slash-direct',
+            host: process.env.DEEP_MEMORY_HOST || 'claude-code',
+            kind: 'unlock',
+            payload: { lock_holder_pid: pid, stale_for_seconds: Math.floor(ageMs / 1000) }
+          });
+        } catch (e) {
+          // Best-effort: audit-log failure should not block the unlock result.
+          if (process.env.DEBUG_AUDIT) console.error(`audit-log emit failed: ${e.message}`);
+        }
+      }
       console.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -653,6 +675,25 @@ if (require.main === module) {
         }
       }
       const result = await promoteCard(promoteId, { memoryRoot, projectId: projectIdArg });
+      // IMPL-R2-Δ1 — emit mutation-consent + promote audit-log pair when
+      // promotion succeeds (Opus R2 🔴 #1).
+      if (result && (result.status === 'ok' || result.promoted === true || result.from_privacy)) {
+        try {
+          writeMutationPair(memoryRoot, {
+            tool: 'promote', args: { memory_id: promoteId, project_id: projectIdArg || null },
+            by: 'slash-direct',
+            host: process.env.DEEP_MEMORY_HOST || 'claude-code',
+            kind: 'promote',
+            payload: {
+              memory_id: promoteId,
+              from_privacy: 'local',
+              to_privacy: 'global'
+            }
+          });
+        } catch (e) {
+          if (process.env.DEBUG_AUDIT) console.error(`audit-log emit failed: ${e.message}`);
+        }
+      }
       console.log(JSON.stringify(result, null, 2));
       return;
     }
