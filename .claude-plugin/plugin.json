@@ -11,5 +11,13 @@
     "operational-memory",
     "reasoning-graph",
     "deep-suite"
-  ]
+  ],
+  "hooks": {
+    "SessionStart":       [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"}]}],
+    "UserPromptSubmit":   [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"}]}],
+    "PostToolUse":        [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-use.mjs"}]}],
+    "PostToolUseFailure": [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-failure.mjs"}]}],
+    "PreCompact":         [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.mjs"}]}],
+    "SessionEnd":         [{"matcher": "*", "hooks": [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-end.mjs"}]}]
+  }
 }

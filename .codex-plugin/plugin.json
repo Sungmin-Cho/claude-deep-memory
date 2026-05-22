@@ -7,6 +7,12 @@
   "license": "MIT",
   "keywords": ["memory", "cross-project", "deep-suite"],
   "skills": "./skills/",
+  "hooks": {
+    "SessionStart":    [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"}],
+    "UserPromptSubmit":[{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"}],
+    "PostToolUse":     [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-use.mjs"}],
+    "PreCompact":      [{"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.mjs"}]
+  },
   "interface": {
     "displayName": "Deep Memory",
     "shortDescription": "Cross-project operational memory + reasoning",
