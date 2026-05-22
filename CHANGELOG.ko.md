@@ -2,6 +2,72 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 따릅니다.
 
+## [0.3.0] - 2026-05-22
+
+agentmemory-style 대규모 개편: 크로스 런타임 hook capture + 3-계층 메모리 모델
+(Events → Cards → Briefs) + slash-only mutation gate를 갖춘 MCP 서버.
+주요 버전 (0.2.x 건너뜀 — sql.js fallback은 별도 트랙으로 제공).
+
+구현 과정: 스펙 4-라운드 deep-review-loop (24 → 11 finding) + 플랜 2-라운드
+deep-review-loop (graduate CONCERN) → 6-phase TDD 실행 → 구현 2-라운드
+4-way deep-review-loop (7 🔴 → 1 🔴 → 0 🔴, ship-ready).
+
+### Added (추가)
+
+- **6개 Tier-1 hook script** (`scripts/hooks/*.mjs`) — Claude Code + Codex의
+  SessionStart / UserPromptSubmit / PostToolUse / PostToolUseFailure /
+  PreCompact / SessionEnd 이벤트 캡처 (Codex는 4-hook subset, spec §3.5).
+  모든 hook이 stdin 읽기 **이전**에 `config.capture.enabled` 게이트 적용
+  (PR1-D / R4-D privacy invariant).
+- **새 `memory-hook-event` artifact_kind** (schemas/memory-hook-event.schema.json):
+  11-필드 envelope + 모든 레벨에서 strict `additionalProperties: false`.
+  v0.1.x `memory-event` 스키마와 공존 (수정 없음, byte-stable).
+- **3-계층 메모리 모델** — agentmemory 패턴 적용 (Events → Cards → Briefs).
+- **5개 결정론적 detector** (`scripts/lib/distill-hook-session.js`): pattern,
+  failure-case, decision, coding-style, session-summary fallback.
+- **Vector index** (`scripts/lib/vector-index.js`) COMPOSITE
+  (memory_id, project_id) PRIMARY KEY로 C-R1 vector-side 닫음.
+- **@xenova/transformers lazy loader** widened catch (R4-I + PR2-E):
+  어떤 load 에러든 → FTS5-only fallback.
+- **RRF fusion** composite 키 (PR2-F) + Hybrid retrieval orchestrator
+  + session diversification (γ.6) + graceful matrix (γ.7).
+- **MCP 서버** (`scripts/mcp-server.mjs`): 10 tools + 5 resources + 2 prompts.
+  Host가 `.mcp.json` 통해 자동 spawn. Mutation tools는 Gate 2/3으로 slash-only.
+- **3개의 새 slash skill**: deep-memory-forget, deep-memory-promote,
+  deep-memory-export. 각각 audit-log 이중 emission (R4-K).
+- **Audit-log envelope writer**: 10 kind + oneOf payload validation (R3-J / R4-E).
+
+### Changed (변경)
+
+- **4-pass 통합 redaction**: 3개의 promoted 룰 (generic homedir, env-var,
+  stack-trace homedir)이 공유 파이프라인에 통합 (PR1-E / W2 / W3).
+- **Byte-offset cursor** (R3-A): `<YYYY-MM>.jsonl:<byte_offset>` 포맷,
+  forward-only monotonic + cross-file rollover.
+
+### Performance (성능)
+
+- G-α p95 = 72ms (목표 ≤400ms, 82% headroom)
+- G-β p95 = 66ms (목표 ≤500ms, 87% headroom)
+- Lock-split invariant: distill-pipeline.js는 `./lock` require하지 않음.
+
+### v0.3.1로 연기된 항목
+
+- γ.1 composite key로 FTS5 전체 widening
+- ε.3-ε.4 init.js multi-marker + migration cursor init
+- δ.16 audit skill 수정 + δ.19 Gate 1 cross-project read scope flag
+- hooks-stats.json per-hook 카운터 텔레메트리
+- §3.2.1 fire-and-forget invariants 전체 구현
+
+전체 연기 목록은 `docs/handoff-v0.3.0-postrelease.md` 참조.
+
+### Migration (마이그레이션)
+
+- v0.1.x→v0.3.0: 저장소 레이아웃에 `events/`, `audit-log/`,
+  `.last-distill-cursor/`, `indexes/vector.sqlite`, `.embed-model-version` 추가.
+- v0.1.x reader 호환: legacy adapter (R4-H)로 flat-event 합성 후 계속 읽힘.
+- Capture default: 비대화형 init에서 **OFF** (privacy-by-default).
+  사용자 prompt 또는 `/deep-memory-init --capture`로 명시적 opt-in.
+
 ## [0.1.3] - 2026-05-21
 
 Round 1 deep-review-loop 대응 (리뷰 리포트 `2026-05-21-151916-review.md`,
