@@ -2,10 +2,7 @@
   "mcpServers": {
     "deep-memory": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"],
-      "env": {
-        "DEEP_MEMORY_ROOT": "${DEEP_MEMORY_ROOT:-${HOME}/.deep-memory}"
-      }
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"]
     }
   }
 }
