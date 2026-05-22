@@ -37,9 +37,11 @@ function rrfFuse(streams, k = 60) {
     .sort((a, b) => b[1] - a[1])
     .map(([key, score]) => {
       const c = cardByKey.get(key);
+      // Pass through ALL representative-card fields so downstream stages
+      // (session diversification, score, projection) have what they need.
+      // Override score with the fused RRF score; sources records stream indices.
       return {
-        memory_id: c.memory_id,
-        project_id: c.project_id,
+        ...c,
         score,
         sources: [...sourcesByKey.get(key)]
       };
