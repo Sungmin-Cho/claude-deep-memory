@@ -40,6 +40,16 @@ export function isCaptureEnabled() {
   return readConfig().capture.enabled === true;
 }
 
+export function isEagerDistillEnabled() {
+  const cfgPath = path.join(DEEP_MEMORY_ROOT, 'config.yaml');
+  try {
+    const text = fs.readFileSync(cfgPath, 'utf8');
+    return /capture:[\s\S]*?eager_distill:\s*true/.test(text);
+  } catch {
+    return false;
+  }
+}
+
 // ---- project resolution (PR1-C) --------------------------------------------
 
 export function resolveCurrentProject() {
