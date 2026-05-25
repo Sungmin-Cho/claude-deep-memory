@@ -2,6 +2,42 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 따릅니다.
 
+## [0.3.2] - 2026-05-25
+
+### Fixed (수정)
+
+- **capture 토글 플래그가 구현되지 않았던 문제.** v0.3.0 스펙(§3.6)은
+  자동 capture 옵트인 토글을 설계했지만 `init.js`에는 빠져 있었음:
+  `defaultConfigYaml()`에 `capture:` 블록이 없고, CLI 파서가 capture 플래그를
+  무시했으며, 기존 `config.yaml`은 덮어쓰지 않으므로 — capture를 켜는 유일한
+  방법이 YAML 수동 편집이었음. CHANGELOG/README도 존재하지 않는 `--capture`
+  플래그를 언급해 문서/코드 불일치가 있었음.
+
+### Added (추가)
+
+- **`--enable-capture` / `--disable-capture`** 플래그 (`/deep-memory-init`,
+  상호 배타 → 동시 지정 시 exit 1). 스펙 §3.6 line 644 명명을 따른 불리언
+  플래그. `config.yaml#capture.enabled` 기록 — 단일 `config.yaml` 전역 설정으로
+  모든 워크스페이스에 적용.
+- **`scripts/lib/capture-toggle.js`** — `setCaptureEnabled(root, target, opts)`:
+  타깃 텍스트 편집(`common.mjs` 훅 리더 정규식과 바이트 호환), 멱등
+  (실제 상태 전이 시에만 `capture-toggle` audit-log `{from, to, method}` 1건
+  기록, no-op은 무기록).
+- **`scripts/lib/default-config.js`** — `defaultConfigYaml()`을 독립 모듈로
+  추출(단일 진실원천; init↔capture-toggle require 순환 방지) +
+  `capture: {enabled: false, eager_distill: false}` 블록 추가 (capture 기본
+  OFF, 프라이버시 불변식).
+- **`writeTextAtomic`** (`scripts/lib/atomic-write.js`) — `config.yaml` 같은
+  원본 텍스트(비-JSON) atomic write.
+
+### Tests (테스트)
+
+- `tests/capture-toggle.test.js` (10 케이스): default-config 블록, enable /
+  disable / 멱등 no-op 전이, 전이당 audit 1건, legacy-config append 경로,
+  init `run({capture})` 연동, CLI 상호 배타, 그리고 writer 출력이
+  `post-tool-use` 훅 리더에 enabled로 인식되는지 검증하는 hook-contract
+  회귀 테스트. 전체 스위트: 357 pass / 0 fail.
+
 ## [0.3.1] - 2026-05-22
 
 ### Fixed (수정)

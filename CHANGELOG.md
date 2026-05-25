@@ -2,6 +2,42 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.2] - 2026-05-25
+
+### Fixed
+
+- **Capture toggle flag was never implemented.** The v0.3.0 spec (§3.6)
+  designed an auto-capture opt-in toggle, but `init.js` shipped without it:
+  `defaultConfigYaml()` had no `capture:` block, the CLI parser ignored any
+  capture flag, and an existing `config.yaml` is never overwritten — so the
+  only way to enable capture was to hand-edit the YAML. The CHANGELOG/README
+  also referenced a `--capture` flag that did not exist (doc/code drift).
+
+### Added
+
+- **`--enable-capture` / `--disable-capture`** flags on `/deep-memory-init`
+  (mutually exclusive → exit 1). Boolean flags matching spec §3.6 line 644.
+  Writes `config.yaml#capture.enabled`; toggle is a global setting (single
+  `config.yaml`) applying across all workspaces.
+- **`scripts/lib/capture-toggle.js`** — `setCaptureEnabled(root, target, opts)`:
+  targeted text edit (byte-compatible with the `common.mjs` hook reader regex),
+  idempotent (a `capture-toggle` audit-log entry `{from, to, method}` is emitted
+  only on a real transition, never on a no-op).
+- **`scripts/lib/default-config.js`** — extracted `defaultConfigYaml()` into a
+  standalone module (single source of truth; avoids an init↔capture-toggle
+  require cycle) and added the `capture: {enabled: false, eager_distill: false}`
+  block (capture default OFF per privacy invariant).
+- **`writeTextAtomic`** in `scripts/lib/atomic-write.js` for raw-text
+  (non-JSON) atomic writes of `config.yaml`.
+
+### Tests
+
+- `tests/capture-toggle.test.js` (10 cases): default-config block, enable /
+  disable / idempotent no-op transitions, single audit entry per transition,
+  legacy-config append path, init `run({capture})` wiring, CLI mutual-exclusion,
+  and a hook-contract regression proving the writer output is recognized as
+  enabled by the `post-tool-use` hook reader. Full suite: 357 pass / 0 fail.
+
 ## [0.3.1] - 2026-05-22
 
 ### Fixed

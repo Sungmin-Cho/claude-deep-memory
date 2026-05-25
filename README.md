@@ -28,6 +28,9 @@ Or directly from this repo with `--source url` pointed at the GitHub URL.
 # 1. Initialize memory root (~/.deep-memory/ by default; override with DEEP_MEMORY_ROOT)
 /deep-memory-init
 
+#    Optional: opt into automatic hook capture (default OFF — global toggle)
+/deep-memory-init --enable-capture     # ...or --disable-capture to turn it back off
+
 # 2. Harvest the current project's sibling-plugin artifacts
 /deep-memory-harvest
 
@@ -37,6 +40,14 @@ Or directly from this repo with `--source url` pointed at the GitHub URL.
 # 4. Periodic audit (stale memory, schema drift, lock recovery)
 /deep-memory-audit
 ```
+
+Automatic hook capture is **OFF by default** (it records tool I/O to
+`~/.deep-memory/events/`, so it requires an explicit opt-in). `--enable-capture`
+writes `capture.enabled: true` to the single global `config.yaml`, so the toggle
+applies across **all** workspaces — but captured events/cards are tagged with the
+working project's `project_id` and default to `privacy_level: local`, keeping
+memory isolated per project. Manual paths (`/deep-memory-harvest`,
+`/deep-memory-brief`) work with capture left off.
 
 ## Three-layer model
 
@@ -58,6 +69,7 @@ Or directly from this repo with `--source url` pointed at the GitHub URL.
 
 - 3-pass rule-based redaction (Step A input / Step B input / envelope wrap)
 - `privacy_level: local` per-card default; `--promote <id>` is the only path to global memory
+- Automatic hook capture is **OFF by default**; opt in with `/deep-memory-init --enable-capture` (revert with `--disable-capture`). Every actual toggle is recorded as a `capture-toggle` audit-log entry.
 - `suppressions.yaml` for user-defined deny patterns
 
 ## Cross-runtime

@@ -28,6 +28,9 @@ codex plugin install deep-memory
 # 1. 메모리 루트 초기화 (기본값 ~/.deep-memory/; DEEP_MEMORY_ROOT 환경변수로 재정의 가능)
 /deep-memory-init
 
+#    선택: 자동 hook capture 옵트인 (기본 OFF — 전역 토글)
+/deep-memory-init --enable-capture     # ...다시 끄려면 --disable-capture
+
 # 2. 현재 프로젝트의 형제 플러그인 산출물을 수집
 /deep-memory-harvest
 
@@ -37,6 +40,13 @@ codex plugin install deep-memory
 # 4. 주기적 감사 (오래된 메모리, 스키마 드리프트, 잠금 복구)
 /deep-memory-audit
 ```
+
+자동 hook capture 는 **기본 OFF** 입니다 (도구 입출력을 `~/.deep-memory/events/` 에
+기록하므로 명시적 옵트인 필요). `--enable-capture` 는 전역 단일 `config.yaml` 에
+`capture.enabled: true` 를 기록하므로 토글은 **모든 워크스페이스에 적용**됩니다 — 단
+기록된 이벤트·카드는 작업 중인 `project_id` 로 태깅되고 `privacy_level: local` 이
+기본이라 프로젝트별로 격리됩니다. 수동 경로(`/deep-memory-harvest`,
+`/deep-memory-brief`)는 capture 를 꺼둔 채로도 동작합니다.
 
 ## 3계층 모델
 
@@ -58,6 +68,7 @@ codex plugin install deep-memory
 
 - 3패스 규칙 기반 리댁션 (Step A 입력 / Step B 입력 / envelope 래핑)
 - 카드별 기본값 `privacy_level: local`; `--promote <id>`는 전역 메모리로 가는 유일한 경로
+- 자동 hook capture 는 **기본 OFF**; `/deep-memory-init --enable-capture` 로 옵트인(`--disable-capture` 로 해제). 실제 토글이 일어날 때마다 `capture-toggle` audit-log 1건 기록
 - 사용자 정의 거부 패턴을 위한 `suppressions.yaml`
 
 ## 크로스 런타임

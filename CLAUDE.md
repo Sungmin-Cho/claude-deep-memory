@@ -47,7 +47,7 @@ Every release: bump version in `.claude-plugin/plugin.json` + `.codex-plugin/plu
 
 ## Privacy invariant
 
-3-pass rule-based redaction (Step A input / Step B input / envelope wrap). `privacy_level: local` default — `--promote <id>` is the only path to `global`.
+3-pass rule-based redaction (Step A input / Step B input / envelope wrap). `privacy_level: local` default — `--promote <id>` is the only path to `global`. Auto hook capture defaults **OFF** (`config.yaml#capture.enabled: false`); `/deep-memory-init --enable-capture` / `--disable-capture` toggles it (global config, all workspaces) via `scripts/lib/capture-toggle.js`, emitting a `capture-toggle` audit-log entry on each real transition.
 
 ## Pointers
 
