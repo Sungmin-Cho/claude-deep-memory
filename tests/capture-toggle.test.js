@@ -292,15 +292,75 @@ test('F3: legacy config (no capture block) + disable is a true no-op (no write, 
   }
 });
 
-test('F2: audit-log write failure is non-fatal — config still toggled, warning surfaced', () => {
+test('N5: ENABLE fails closed when the audit entry cannot be persisted (rollback, throw)', () => {
   const root = mkRoot();
   try {
     fs.writeFileSync(configPath(root), defaultConfigYaml());
     // Force writeEntry to throw via a schema-invalid method (not in the enum).
-    const r = setCaptureEnabled(root, true, { by: 'cli-flag', method: 'not-a-valid-method' });
-    assert.strictEqual(r.changed, true, 'transition must still complete');
-    assert.match(readConfig(root), /capture:\s*\n\s*enabled:\s*true/, 'config must be written despite audit failure');
-    assert.ok(Array.isArray(r.warnings) && r.warnings.length >= 1, 'an audit-failure warning must be surfaced');
+    assert.throws(
+      () => setCaptureEnabled(root, true, { by: 'cli-flag', method: 'not-a-valid-method' }),
+      /audit/i,
+      'enabling capture without a durable audit entry must fail closed'
+    );
+    // Config must be rolled back — capture stays OFF, never silently enabled.
+    assert.doesNotMatch(readConfig(root), /capture:\s*\n\s*enabled:\s*true/, 'enable must roll back on audit failure');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('N5: DISABLE stays non-fatal on audit failure (privacy-safe direction, warning surfaced)', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(configPath(root), defaultConfigYaml());
+    setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' }); // now enabled (audit ok)
+    const r = setCaptureEnabled(root, false, { by: 'cli-flag', method: 'not-a-valid-method' });
+    assert.strictEqual(r.changed, true, 'disable transition still completes');
+    assert.doesNotMatch(readConfig(root), /capture:\s*\n\s*enabled:\s*true/, 'capture must be disabled');
+    assert.ok(Array.isArray(r.warnings) && r.warnings.length >= 1, 'an audit-failure warning must be surfaced on disable');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('N4: an unrelated *_capture key does not false-positive the capture-enabled probe', () => {
+  const root = mkRoot();
+  try {
+    // real capture is OFF; a sibling `other_capture` is ON — must not be read as capture-enabled
+    fs.writeFileSync(
+      configPath(root),
+      'version: "0.1.0"\nother_capture:\n  enabled: true\ncapture:\n  enabled: false\n'
+    );
+    // enabling must be a REAL transition (from=false), not a no-op misread as already-on
+    const r = setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    assert.strictEqual(r.changed, true, 'must detect real capture=false and transition to true');
+    assert.deepStrictEqual({ from: r.from, to: r.to }, { from: false, to: true });
+    assert.match(readConfig(root), /\ncapture:\s*\n\s*enabled:\s*true/, 'real capture block now enabled');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('N4 (hook contract): post-tool-use does NOT capture when only an unrelated *_capture is enabled', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(
+      configPath(root),
+      'other_capture:\n  enabled: true\ncapture:\n  enabled: false\n'
+    );
+    const r = spawnSync('node', ['scripts/hooks/post-tool-use.mjs'], {
+      cwd: REPO,
+      input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: '/tmp/x' }, session_id: 's-n4' }),
+      env: { ...process.env, DEEP_MEMORY_ROOT: root, PROJECT_CWD: root },
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    assert.strictEqual(r.status, 0, `hook exit !=0; stderr=${r.stderr}`);
+    const monthFile = path.join(root, 'events', new Date().toISOString().slice(0, 7) + '.jsonl');
+    if (fs.existsSync(monthFile)) {
+      const sz = fs.statSync(monthFile).size;
+      assert.strictEqual(sz, 0, 'hook must NOT capture — real capture.enabled is false');
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -11,13 +11,14 @@ const { writeTextAtomic } = require('./atomic-write');
 const { writeEntry } = require('./audit-log');
 const { defaultConfigYaml } = require('./default-config');
 
-// Contract with the hook reader (scripts/hooks/common.mjs):
-// /capture:\s*\n\s*enabled:\s*true/ — `enabled:` must be the FIRST child line
-// of `capture:`. readCurrentEnabled uses the identical regex so the toggle and
-// the hook never disagree about the current state. applyToggle guarantees its
-// output is canonical (enabled first), so a non-canonical hand-edited config is
-// repaired on the next real transition.
-const ENABLED_RE = /capture:\s*\n\s*enabled:\s*true/;
+// Contract with the hook reader (scripts/hooks/common.mjs) + MCP status probe:
+// `enabled:` must be the FIRST child line of a TOP-LEVEL `capture:` key. The
+// `^[ \t]*` anchor (+ /m) is essential — without it the probe also matches an
+// unrelated sibling key like `other_capture:` (deep-review R4 N4 false-positive).
+// readCurrentEnabled uses the identical regex so the toggle and the hook never
+// disagree. applyToggle guarantees canonical (enabled-first) output, so a
+// non-canonical hand-edited config is repaired on the next real transition.
+const ENABLED_RE = /^[ \t]*capture:\s*\n\s*enabled:\s*true/m;
 
 function readCurrentEnabled(text) {
   return ENABLED_RE.test(text);
@@ -178,8 +179,16 @@ function setCaptureEnabled(root, target, opts = {}) {
     try {
       writeEntry(root, { kind: 'capture-toggle', by, host, payload: { from, to, method } });
     } catch (e) {
+      if (to === true) {
+        // ENABLE is privacy-increasing — never leave capture on without a
+        // durable audit entry. Roll back to the pre-toggle config (still under
+        // the lock) and fail closed so the caller exits non-zero.
+        writeTextAtomic(configPath, text);
+        throw new Error(`capture enable aborted — audit-log entry failed and config was rolled back: ${e.message}`);
+      }
+      // DISABLE is privacy-safe; a missing audit entry is non-fatal (spec §3.6).
       result.warnings = [
-        `capture.enabled was set to ${to} but the capture-toggle audit-log entry failed: ${e.message}`,
+        `capture.enabled was set to false but the capture-toggle audit-log entry failed: ${e.message}`,
       ];
     }
     return result;

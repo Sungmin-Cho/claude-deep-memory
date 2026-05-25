@@ -28,7 +28,9 @@ function readConfig() {
     const stat = fs.statSync(cfgPath);
     if (configCache && configCache.mtime === stat.mtimeMs) return configCache.value;
     const text = fs.readFileSync(cfgPath, 'utf8');
-    const enabled = /capture:\s*\n\s*enabled:\s*true/.test(text);  // simple YAML probe
+    // Anchored to a TOP-LEVEL capture: key (^[ \t]* + /m) so an unrelated
+    // sibling like `other_capture:` cannot false-positive (deep-review R4 N4).
+    const enabled = /^[ \t]*capture:\s*\n\s*enabled:\s*true/m.test(text);
     configCache = { mtime: stat.mtimeMs, value: { capture: { enabled } } };
     return configCache.value;
   } catch (e) {
@@ -44,7 +46,9 @@ export function isEagerDistillEnabled() {
   const cfgPath = path.join(DEEP_MEMORY_ROOT, 'config.yaml');
   try {
     const text = fs.readFileSync(cfgPath, 'utf8');
-    return /capture:[\s\S]*?eager_distill:\s*true/.test(text);
+    // Anchored to a top-level capture: key (same R4 N4 rationale as the
+    // capture-enabled probe) — an unrelated `other_capture:` must not match.
+    return /^[ \t]*capture:[\s\S]*?eager_distill:\s*true/m.test(text);
   } catch {
     return false;
   }
