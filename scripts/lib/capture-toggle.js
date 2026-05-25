@@ -23,6 +23,49 @@ function readCurrentEnabled(text) {
   return ENABLED_RE.test(text);
 }
 
+// Serialize the read-compare-write-audit critical section with a mkdir-atomic
+// lock (kept synchronous so the public API stays sync — capture toggles are
+// rare CLI ops). Without it, two concurrent toggles of this GLOBAL privacy
+// setting could interleave into a lost update / out-of-order audit history.
+const LOCK_STALE_MS = 30000;
+const LOCK_DEADLINE_MS = 10000;
+const LOCK_SPIN_MS = 25;
+
+function syncSleep(ms) {
+  // Block this thread without busy-spinning the CPU.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withConfigLock(root, fn) {
+  const lockDir = path.join(root, '.capture.lock');
+  const deadline = Date.now() + LOCK_DEADLINE_MS;
+  let held = false;
+  while (!held) {
+    try {
+      fs.mkdirSync(lockDir);
+      held = true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // Break a stale lock left by a crashed process.
+      try {
+        if (Date.now() - fs.statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
+          fs.rmdirSync(lockDir);
+          continue;
+        }
+      } catch { /* lock vanished between stat and rmdir — retry */ }
+      if (Date.now() >= deadline) {
+        throw new Error(`could not acquire capture config lock at ${lockDir} within ${LOCK_DEADLINE_MS}ms`);
+      }
+      syncSleep(LOCK_SPIN_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.rmdirSync(lockDir); } catch { /* best-effort release */ }
+  }
+}
+
 // Rebuild the `capture:` block so `enabled: <value>` is its first child line,
 // preserving the `capture:` line (incl. any trailing comment), all other child
 // keys (e.g. eager_distill), the file's indentation, and its EOL style. The
@@ -68,10 +111,16 @@ function applyToggle(text, target) {
     .find((l) => l.trim() && !l.trim().startsWith('#'));
   const childIndent = existingChild ? existingChild.match(/^[ \t]*/)[0] : parentIndent + '  ';
 
-  // Keep every existing child line except any `enabled:` (re-emitted first).
+  // Keep every existing child line except the DIRECT-child `enabled:` (which we
+  // re-emit first). Only strip an `enabled:` at the direct-child indent depth —
+  // a deeper-nested `enabled:` (e.g. a per-filter flag under capture.filters)
+  // belongs to another mapping and must be preserved (no data loss).
   const childBody = [];
   for (let i = capIdx + 1; i < end; i++) {
-    if (/^[ \t]*enabled:\s*(?:true|false)\b/.test(lines[i])) continue;
+    const lineIndent = lines[i].match(/^[ \t]*/)[0];
+    if (lineIndent.length <= childIndent.length && /^[ \t]*enabled:\s*(?:true|false)\b/.test(lines[i])) {
+      continue;
+    }
     childBody.push(lines[i]);
   }
 
@@ -97,38 +146,44 @@ function applyToggle(text, target) {
 function setCaptureEnabled(root, target, opts = {}) {
   const { by = 'cli-flag', method = 'cli-flag', host } = opts;
   const configPath = path.join(root, 'config.yaml');
-
-  let text;
-  if (fs.existsSync(configPath)) {
-    text = fs.readFileSync(configPath, 'utf8');
-  } else {
-    text = defaultConfigYaml();
-    fs.mkdirSync(root, { recursive: true });
-    writeTextAtomic(configPath, text);
-  }
-
-  const from = readCurrentEnabled(text);
   const to = Boolean(target);
-  // Semantic no-op: only a real state transition writes or audits. (A config
-  // that is non-canonical but reads the same is left untouched — repairing it
-  // would emit a misleading {from:X,to:X} transition audit.)
-  if (from === to) {
-    return { from, to, changed: false };
-  }
 
-  // Config is the source of truth — write it first. The audit-log is a
-  // secondary trail: per spec §3.6 an audit-write failure must NOT crash init
-  // or abort the (already-applied) transition, so it is surfaced as a warning.
-  writeTextAtomic(configPath, applyToggle(text, to));
-  const result = { from, to, changed: true };
-  try {
-    writeEntry(root, { kind: 'capture-toggle', by, host, payload: { from, to, method } });
-  } catch (e) {
-    result.warnings = [
-      `capture.enabled was set to ${to} but the capture-toggle audit-log entry failed: ${e.message}`,
-    ];
-  }
-  return result;
+  fs.mkdirSync(root, { recursive: true }); // lock dir needs root to exist
+
+  // The whole read → compare → write → audit sequence runs under one lock so a
+  // concurrent toggle of this global setting cannot interleave (lost update) or
+  // produce an audit history out of order with the config state.
+  return withConfigLock(root, () => {
+    let text;
+    if (fs.existsSync(configPath)) {
+      text = fs.readFileSync(configPath, 'utf8');
+    } else {
+      text = defaultConfigYaml();
+      writeTextAtomic(configPath, text);
+    }
+
+    const from = readCurrentEnabled(text);
+    // Semantic no-op: only a real state transition writes or audits. (A config
+    // that is non-canonical but reads the same is left untouched — repairing it
+    // would emit a misleading {from:X,to:X} transition audit.)
+    if (from === to) {
+      return { from, to, changed: false };
+    }
+
+    // Config is the source of truth — write it first. The audit-log is a
+    // secondary trail: per spec §3.6 an audit-write failure must NOT crash init
+    // or abort the (already-applied) transition, so it is surfaced as a warning.
+    writeTextAtomic(configPath, applyToggle(text, to));
+    const result = { from, to, changed: true };
+    try {
+      writeEntry(root, { kind: 'capture-toggle', by, host, payload: { from, to, method } });
+    } catch (e) {
+      result.warnings = [
+        `capture.enabled was set to ${to} but the capture-toggle audit-log entry failed: ${e.message}`,
+      ];
+    }
+    return result;
+  });
 }
 
 module.exports = { setCaptureEnabled };

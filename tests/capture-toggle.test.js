@@ -396,3 +396,37 @@ test('F4/F9: concurrent toggles never lose, corrupt, or quarantine config.yaml',
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Round-3 deep-review regression tests (N3 nested-enabled data loss,
+// F4 lock hygiene).
+// ---------------------------------------------------------------------------
+
+test('N3: toggling the top-level capture.enabled never strips a nested enabled: (no data loss)', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(
+      configPath(root),
+      'version: "0.1.0"\ncapture:\n  enabled: false\n  filters:\n    - host: x\n      enabled: true\n'
+    );
+    const r = setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    assert.strictEqual(r.changed, true);
+    const out = readConfig(root);
+    assert.match(out, /capture:\s*\n\s*enabled:\s*true/, 'top-level enabled must toggle to true');
+    assert.match(out, /- host: x\n {6}enabled: true/, 'a deeper-nested enabled: must be preserved');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('F4: a completed toggle leaves no stale lock directory', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(configPath(root), defaultConfigYaml());
+    setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    const leftovers = fs.readdirSync(root).filter((f) => f.includes('.lock'));
+    assert.deepStrictEqual(leftovers, [], 'the config lock must be released after the toggle');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
