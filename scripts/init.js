@@ -7,6 +7,8 @@ const { createHash } = require('node:crypto');
 const { execSync } = require('node:child_process');
 const { preflight } = require('./lib/preflight');
 const { writeJsonAtomic } = require('./lib/atomic-write');
+const { defaultConfigYaml } = require('./lib/default-config');
+const { setCaptureEnabled } = require('./lib/capture-toggle');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -48,67 +50,7 @@ function detectLanguages(cwd) {
   return [...languages];
 }
 
-function defaultConfigYaml() {
-  return `version: "0.1.0"
-memory_root: ~/.deep-memory
-privacy:
-  default_scope: local
-  allow_export: false
-sources:
-  - kind: review-recurring
-    path: ".deep-review/recurring-findings.json"
-    memory_type: failure-case
-    producer: deep-review
-    artifact_kind: recurring-findings
-    supported_schema_versions: ["1.0"]
-  - kind: evolve-insights
-    path: ".deep-evolve/*/evolve-insights.json"
-    memory_type: experiment-outcome
-    producer: deep-evolve
-    artifact_kind: evolve-insights
-    supported_schema_versions: ["1.0"]
-  - kind: work-receipt
-    path: ".deep-work/*/session-receipt.json"
-    memory_type: pattern
-    producer: deep-work
-    artifact_kind: session-receipt
-    supported_schema_versions: ["1.0"]
-  - kind: docs-scan
-    path: ".deep-docs/last-scan.json"
-    memory_type: coding-style
-    producer: deep-docs
-    artifact_kind: last-scan
-    supported_schema_versions: ["1.0"]
-  - kind: wiki-index
-    path: "<wiki_root>/.wiki-meta/index.json"
-    memory_type: architecture-decision
-    producer: deep-wiki
-    artifact_kind: wiki-index
-    supported_schema_versions: ["1.0"]
-distill:
-  mode: hybrid
-  llm:
-    adapter: auto
-    timeout_ms: 30000
-    max_input_bytes: 4096
-    on_failure: candidate
-retrieve:
-  top_n: 8
-  diversity_per_type: 2
-  scoring:
-    w_project_sim: 0.2
-    w_task_sim: 0.5
-    w_evidence: 0.3
-    w_stale_penalty: 0.1
-audit:
-  stale_grace_days: 90
-  profile_max_age_days: 30
-  high_redaction_chars: 200
-suppressions_file: ~/.deep-memory/suppressions.yaml
-`;
-}
-
-async function run({ memoryRoot, allowNetworkRoot = false } = {}) {
+async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   const resolved = resolveMemoryRoot(memoryRoot);
   const pre = preflight(resolved, { allowNetworkRoot });
   if (!pre.ok) {
@@ -154,7 +96,15 @@ async function run({ memoryRoot, allowNetworkRoot = false } = {}) {
   writeJsonAtomic(path.join(localProfileDir, 'project-profile.json'), profile);
   writeJsonAtomic(path.join(pre.resolved, 'projects', pid + '.json'), profile);
 
-  return { memoryRoot: pre.resolved, projectId: pid, warnings: pre.warnings };
+  const result = { memoryRoot: pre.resolved, projectId: pid, warnings: pre.warnings };
+  // config.yaml exists by now (created above), so the toggle only edits it.
+  if (capture !== undefined) {
+    result.capture = setCaptureEnabled(pre.resolved, capture, {
+      by: 'cli-flag',
+      method: 'cli-flag',
+    });
+  }
+  return result;
 }
 
 module.exports = { run, resolveMemoryRoot, projectId };
@@ -163,7 +113,14 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const memoryRoot = args.find((a) => !a.startsWith('--'));
   const allowNetworkRoot = args.includes('--allow-network-root');
-  run({ memoryRoot, allowNetworkRoot })
+  const enable = args.includes('--enable-capture');
+  const disable = args.includes('--disable-capture');
+  if (enable && disable) {
+    console.error('--enable-capture and --disable-capture are mutually exclusive');
+    process.exit(1);
+  }
+  const capture = enable ? true : disable ? false : undefined;
+  run({ memoryRoot, allowNetworkRoot, capture })
     .then((r) => console.log(JSON.stringify(r, null, 2)))
     .catch((e) => { console.error(e.message); process.exit(1); });
 }

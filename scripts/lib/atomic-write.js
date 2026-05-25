@@ -23,4 +23,20 @@ function writeJsonAtomic(target, data) {
   }
 }
 
-module.exports = { writeJsonAtomic };
+// Atomic write for raw text (e.g. config.yaml). Same tmp+fsync+rename+dir-fsync
+// durability as writeJsonAtomic, minus the JSON readback (content is not JSON).
+function writeTextAtomic(target, text) {
+  const tmp = target + '.tmp';
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, target);
+  const dirFd = fs.openSync(path.dirname(target), 'r');
+  try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+}
+
+module.exports = { writeJsonAtomic, writeTextAtomic };
