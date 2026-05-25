@@ -224,7 +224,7 @@ function readResource(uri) {
     const captureEnabled = (() => {
       try {
         const cfg = fs.readFileSync(path.join(DEEP_MEMORY_ROOT, 'config.yaml'), 'utf8');
-        return /^[ \t]*capture:\s*\n\s*enabled:\s*true/m.test(cfg); // anchored: no *_capture false-positive (R4 N4)
+        return /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m.test(cfg); // column-0 top-level only (R4 N4 + R5 N6)
       } catch { return false; }
     })();
     const status = { capture_enabled: captureEnabled, root: DEEP_MEMORY_ROOT };

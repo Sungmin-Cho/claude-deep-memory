@@ -366,6 +366,55 @@ test('N4 (hook contract): post-tool-use does NOT capture when only an unrelated 
   }
 });
 
+// ---------------------------------------------------------------------------
+// Round-5 deep-review regression tests (N6 — capture: is a TOP-LEVEL key only;
+// an indented/nested capture: must neither be read nor edited as the global one).
+// ---------------------------------------------------------------------------
+
+test('N6: a nested capture: block does not false-positive and is not edited by the toggle', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(
+      configPath(root),
+      'profile:\n  capture:\n    enabled: true\ncapture:\n  enabled: false\n'
+    );
+    const r = setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    // real (top-level) capture was false → enabling is a real transition
+    assert.deepStrictEqual({ from: r.from, to: r.to, changed: r.changed }, { from: false, to: true, changed: true });
+    const out = readConfig(root);
+    // top-level capture is now enabled...
+    assert.match(out, /\ncapture:\n {2}enabled: true/, 'top-level capture must be enabled');
+    // ...and the unrelated nested profile.capture is untouched
+    assert.match(out, /profile:\n {2}capture:\n {4}enabled: true/, 'nested capture must be preserved verbatim');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('N6 (hook contract): nested capture.enabled=true does not enable global capture', () => {
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(
+      configPath(root),
+      'profile:\n  capture:\n    enabled: true\ncapture:\n  enabled: false\n'
+    );
+    const r = spawnSync('node', ['scripts/hooks/post-tool-use.mjs'], {
+      cwd: REPO,
+      input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: '/tmp/x' }, session_id: 's-n6' }),
+      env: { ...process.env, DEEP_MEMORY_ROOT: root, PROJECT_CWD: root },
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    assert.strictEqual(r.status, 0, `hook exit !=0; stderr=${r.stderr}`);
+    const monthFile = path.join(root, 'events', new Date().toISOString().slice(0, 7) + '.jsonl');
+    if (fs.existsSync(monthFile)) {
+      assert.strictEqual(fs.statSync(monthFile).size, 0, 'hook must NOT capture — only a nested capture is enabled');
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('F5: CLI rejects an unknown --flag with exit 1', () => {
   const root = mkRoot();
   try {

@@ -12,13 +12,14 @@ const { writeEntry } = require('./audit-log');
 const { defaultConfigYaml } = require('./default-config');
 
 // Contract with the hook reader (scripts/hooks/common.mjs) + MCP status probe:
-// `enabled:` must be the FIRST child line of a TOP-LEVEL `capture:` key. The
-// `^[ \t]*` anchor (+ /m) is essential — without it the probe also matches an
-// unrelated sibling key like `other_capture:` (deep-review R4 N4 false-positive).
+// `enabled:` must be the FIRST (indented) child line of a COLUMN-0 top-level
+// `capture:` key. Anchoring to `^capture:` (no leading whitespace, + /m) scopes
+// the probe to the real global key: it excludes a sibling like `other_capture:`
+// (R4 N4) AND an indented/nested `capture:` under another mapping (R5 N6).
 // readCurrentEnabled uses the identical regex so the toggle and the hook never
-// disagree. applyToggle guarantees canonical (enabled-first) output, so a
-// non-canonical hand-edited config is repaired on the next real transition.
-const ENABLED_RE = /^[ \t]*capture:\s*\n\s*enabled:\s*true/m;
+// disagree. applyToggle guarantees canonical (enabled-first, column-0) output,
+// so a non-canonical hand-edited config is repaired on the next real transition.
+const ENABLED_RE = /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m;
 
 function readCurrentEnabled(text) {
   return ENABLED_RE.test(text);
@@ -81,16 +82,17 @@ function applyToggle(text, target) {
   const lines = text.split(/\r?\n/);
   if (hadTrailingNl) lines.pop(); // drop the empty element from the trailing newline
 
-  // Locate the capture: line (any indentation, optional trailing comment).
+  // Locate the COLUMN-0 (top-level) capture: line only — an indented/nested
+  // `capture:` under another mapping is a different key and must not be edited
+  // as the global toggle (R5 N6). parentIndent is therefore always empty.
+  const parentIndent = '';
   let capIdx = -1;
-  let parentIndent = '';
   for (let i = 0; i < lines.length; i++) {
-    const mm = lines[i].match(/^([ \t]*)capture:[ \t]*(?:#.*)?$/);
-    if (mm) { capIdx = i; parentIndent = mm[1]; break; }
+    if (/^capture:[ \t]*(?:#.*)?$/.test(lines[i])) { capIdx = i; break; }
   }
 
   if (capIdx === -1) {
-    const block = [`${parentIndent}capture:`, '  enabled: ' + value, '  eager_distill: false'];
+    const block = ['capture:', '  enabled: ' + value, '  eager_distill: false'];
     return lines.concat(block).join(nl) + nl;
   }
 

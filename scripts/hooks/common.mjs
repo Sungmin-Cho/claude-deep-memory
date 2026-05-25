@@ -28,9 +28,10 @@ function readConfig() {
     const stat = fs.statSync(cfgPath);
     if (configCache && configCache.mtime === stat.mtimeMs) return configCache.value;
     const text = fs.readFileSync(cfgPath, 'utf8');
-    // Anchored to a TOP-LEVEL capture: key (^[ \t]* + /m) so an unrelated
-    // sibling like `other_capture:` cannot false-positive (deep-review R4 N4).
-    const enabled = /^[ \t]*capture:\s*\n\s*enabled:\s*true/m.test(text);
+    // Anchored to a COLUMN-0 top-level capture: key so neither a sibling like
+    // `other_capture:` (R4 N4) nor an indented/nested `capture:` (R5 N6) can
+    // false-positive. `enabled:` must be the first indented child line.
+    const enabled = /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m.test(text);
     configCache = { mtime: stat.mtimeMs, value: { capture: { enabled } } };
     return configCache.value;
   } catch (e) {
@@ -46,9 +47,10 @@ export function isEagerDistillEnabled() {
   const cfgPath = path.join(DEEP_MEMORY_ROOT, 'config.yaml');
   try {
     const text = fs.readFileSync(cfgPath, 'utf8');
-    // Anchored to a top-level capture: key (same R4 N4 rationale as the
-    // capture-enabled probe) — an unrelated `other_capture:` must not match.
-    return /^[ \t]*capture:[\s\S]*?eager_distill:\s*true/m.test(text);
+    // Column-0 top-level capture: (R4 N4 + R5 N6), block-scoped: only indented
+    // child lines may sit between `capture:` and `eager_distill:` so a later
+    // top-level section's eager_distill cannot match.
+    return /^capture:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+eager_distill:[ \t]*true\b/m.test(text);
   } catch {
     return false;
   }
