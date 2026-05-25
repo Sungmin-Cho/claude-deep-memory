@@ -11,29 +11,71 @@ const { writeTextAtomic } = require('./atomic-write');
 const { writeEntry } = require('./audit-log');
 const { defaultConfigYaml } = require('./default-config');
 
-// Same probe the hook reader uses — `enabled: true` anywhere inside the
-// capture block means ON. Absence / `false` / no block means OFF.
+// Contract with the hook reader (scripts/hooks/common.mjs):
+// /capture:\s*\n\s*enabled:\s*true/ — `enabled:` must be the FIRST child line
+// of `capture:`. readCurrentEnabled uses the identical regex so the toggle and
+// the hook never disagree about the current state. applyToggle guarantees its
+// output is canonical (enabled first), so a non-canonical hand-edited config is
+// repaired on the next real transition.
 const ENABLED_RE = /capture:\s*\n\s*enabled:\s*true/;
 
 function readCurrentEnabled(text) {
   return ENABLED_RE.test(text);
 }
 
-// Replace the first `enabled:` line that follows the `capture:` marker. The
-// default template has no other `enabled:` key, so anchoring on `capture:`
-// keeps the edit confined to the capture block.
+// Rebuild the `capture:` block so `enabled: <value>` is its first child line,
+// preserving the `capture:` line (incl. any trailing comment), all other child
+// keys (e.g. eager_distill), the file's indentation, and its EOL style. The
+// edit is scoped strictly to the block — it never touches an `enabled:` key
+// that belongs to a later section (sources, etc.). If no `capture:` block
+// exists, a canonical one is appended.
 function applyToggle(text, target) {
-  const captureIdx = text.search(/^capture:[ \t]*$/m);
   const value = target ? 'true' : 'false';
-  if (captureIdx === -1) {
-    // No capture block (legacy / hand-trimmed config) — append one.
-    const sep = text.endsWith('\n') ? '' : '\n';
-    return `${text}${sep}capture:\n  enabled: ${value}\n  eager_distill: false\n`;
+  const nl = text.includes('\r\n') ? '\r\n' : '\n';
+  const hadTrailingNl = /\r?\n$/.test(text);
+
+  const lines = text.split(/\r?\n/);
+  if (hadTrailingNl) lines.pop(); // drop the empty element from the trailing newline
+
+  // Locate the capture: line (any indentation, optional trailing comment).
+  let capIdx = -1;
+  let parentIndent = '';
+  for (let i = 0; i < lines.length; i++) {
+    const mm = lines[i].match(/^([ \t]*)capture:[ \t]*(?:#.*)?$/);
+    if (mm) { capIdx = i; parentIndent = mm[1]; break; }
   }
-  const before = text.slice(0, captureIdx);
-  const rest = text.slice(captureIdx);
-  const newRest = rest.replace(/enabled:\s*(?:true|false)/, `enabled: ${value}`);
-  return before + newRest;
+
+  if (capIdx === -1) {
+    const block = [`${parentIndent}capture:`, '  enabled: ' + value, '  eager_distill: false'];
+    return lines.concat(block).join(nl) + nl;
+  }
+
+  const childIndent = parentIndent + '  ';
+  // Block ends at the first non-blank, non-comment line indented <= parent.
+  let end = capIdx + 1;
+  while (end < lines.length) {
+    const t = lines[end].trim();
+    if (t === '' || t.startsWith('#')) { end++; continue; }
+    const indent = lines[end].match(/^[ \t]*/)[0];
+    if (indent.length <= parentIndent.length) break;
+    end++;
+  }
+
+  // Keep every existing child line except any `enabled:` (re-emitted first).
+  const childBody = [];
+  for (let i = capIdx + 1; i < end; i++) {
+    if (/^[ \t]*enabled:\s*(?:true|false)\b/.test(lines[i])) continue;
+    childBody.push(lines[i]);
+  }
+
+  // Normalize the `capture:` line to bare `capture:` (drop any inline comment
+  // on the key line). The hook reader requires `enabled:` to immediately follow
+  // `capture:` with only whitespace between, so an inline comment on the key
+  // line is fundamentally unreadable — normalizing it is the only reader-safe
+  // layout. Child-line comments below are preserved in childBody.
+  const rebuilt = [`${parentIndent}capture:`, `${childIndent}enabled: ${value}`, ...childBody];
+  const out = [...lines.slice(0, capIdx), ...rebuilt, ...lines.slice(end)];
+  return out.join(nl) + (hadTrailingNl ? nl : '');
 }
 
 /**
@@ -43,7 +85,7 @@ function applyToggle(text, target) {
  * @param {string} root - $DEEP_MEMORY_ROOT (config.yaml lives directly under it)
  * @param {boolean} target - desired capture.enabled state
  * @param {object} opts - { by='cli-flag', method='cli-flag', host }
- * @returns {{from: boolean, to: boolean, changed: boolean}}
+ * @returns {{from: boolean, to: boolean, changed: boolean, warnings?: string[]}}
  */
 function setCaptureEnabled(root, target, opts = {}) {
   const { by = 'cli-flag', method = 'cli-flag', host } = opts;
@@ -60,18 +102,26 @@ function setCaptureEnabled(root, target, opts = {}) {
 
   const from = readCurrentEnabled(text);
   const to = Boolean(target);
+  // Semantic no-op: only a real state transition writes or audits. (A config
+  // that is non-canonical but reads the same is left untouched — repairing it
+  // would emit a misleading {from:X,to:X} transition audit.)
   if (from === to) {
     return { from, to, changed: false };
   }
 
+  // Config is the source of truth — write it first. The audit-log is a
+  // secondary trail: per spec §3.6 an audit-write failure must NOT crash init
+  // or abort the (already-applied) transition, so it is surfaced as a warning.
   writeTextAtomic(configPath, applyToggle(text, to));
-  writeEntry(root, {
-    kind: 'capture-toggle',
-    by,
-    host,
-    payload: { from, to, method }
-  });
-  return { from, to, changed: true };
+  const result = { from, to, changed: true };
+  try {
+    writeEntry(root, { kind: 'capture-toggle', by, host, payload: { from, to, method } });
+  } catch (e) {
+    result.warnings = [
+      `capture.enabled was set to ${to} but the capture-toggle audit-log entry failed: ${e.message}`,
+    ];
+  }
+  return result;
 }
 
 module.exports = { setCaptureEnabled };

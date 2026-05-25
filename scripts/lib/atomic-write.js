@@ -24,7 +24,9 @@ function writeJsonAtomic(target, data) {
 }
 
 // Atomic write for raw text (e.g. config.yaml). Same tmp+fsync+rename+dir-fsync
-// durability as writeJsonAtomic, minus the JSON readback (content is not JSON).
+// durability as writeJsonAtomic, with a byte-exact readback in place of the
+// JSON re-parse (content is not JSON). A mismatch quarantines the file and
+// throws, so a corrupt/partial write can never masquerade as success.
 function writeTextAtomic(target, text) {
   const tmp = target + '.tmp';
   const fd = fs.openSync(tmp, 'w');
@@ -37,6 +39,11 @@ function writeTextAtomic(target, text) {
   fs.renameSync(tmp, target);
   const dirFd = fs.openSync(path.dirname(target), 'r');
   try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  if (fs.readFileSync(target, 'utf8') !== text) {
+    const quarantine = target + '.corrupt-' + Date.now();
+    try { fs.renameSync(target, quarantine); } catch { /* best-effort */ }
+    throw new Error(`atomic text write readback mismatch; quarantined to ${quarantine}`);
+  }
 }
 
 module.exports = { writeJsonAtomic, writeTextAtomic };

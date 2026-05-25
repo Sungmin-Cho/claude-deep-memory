@@ -6,7 +6,7 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { execSync } = require('node:child_process');
 const { preflight } = require('./lib/preflight');
-const { writeJsonAtomic } = require('./lib/atomic-write');
+const { writeJsonAtomic, writeTextAtomic } = require('./lib/atomic-write');
 const { defaultConfigYaml } = require('./lib/default-config');
 const { setCaptureEnabled } = require('./lib/capture-toggle');
 
@@ -61,7 +61,7 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   }
   const configPath = path.join(pre.resolved, 'config.yaml');
   if (!fs.existsSync(configPath)) {
-    fs.writeFileSync(configPath, defaultConfigYaml());
+    writeTextAtomic(configPath, defaultConfigYaml());
   }
   const cwd = process.cwd();
   const pid = projectId(cwd);
@@ -102,7 +102,12 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
     result.capture = setCaptureEnabled(pre.resolved, capture, {
       by: 'cli-flag',
       method: 'cli-flag',
+      host: process.env.DEEP_MEMORY_HOST || 'unknown',
     });
+    // Surface an audit-write warning (non-fatal) up to the top-level result.
+    if (result.capture.warnings) {
+      result.warnings = [...(result.warnings || []), ...result.capture.warnings];
+    }
   }
   return result;
 }
@@ -111,7 +116,22 @@ module.exports = { run, resolveMemoryRoot, projectId };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const memoryRoot = args.find((a) => !a.startsWith('--'));
+
+  // Reject unknown --flags so a typo (e.g. --enable-captur) fails loudly
+  // instead of silently leaving capture unchanged.
+  const KNOWN_FLAGS = ['--allow-network-root', '--enable-capture', '--disable-capture'];
+  const unknown = args.find((a) => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+  if (unknown) {
+    console.error(`unknown option: ${unknown}`);
+    process.exit(1);
+  }
+  // At most one positional (the memory_root).
+  const positionals = args.filter((a) => !a.startsWith('--'));
+  if (positionals.length > 1) {
+    console.error(`expected at most one memory_root argument, got ${positionals.length}: ${positionals.join(' ')}`);
+    process.exit(1);
+  }
+  const memoryRoot = positionals[0];
   const allowNetworkRoot = args.includes('--allow-network-root');
   const enable = args.includes('--enable-capture');
   const disable = args.includes('--disable-capture');
