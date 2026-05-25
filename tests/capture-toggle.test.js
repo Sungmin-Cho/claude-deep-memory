@@ -330,3 +330,69 @@ test('F5: CLI rejects more than one positional memory_root with exit 1', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Round-2 deep-review regression tests (N1 tab-indent, N2 single-dash flag,
+// concurrency-safe atomic write).
+// ---------------------------------------------------------------------------
+
+test('N1: a tab-indented capture block stays uniformly tab-indented (no mixed indentation)', () => {
+  const root = mkRoot();
+  try {
+    // hand-edited config using a TAB for the child indent
+    fs.writeFileSync(configPath(root), 'version: "0.1.0"\ncapture:\n\teager_distill: false\n');
+    const r = setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    assert.strictEqual(r.changed, true);
+    const out = readConfig(root);
+    assert.match(out, /\n\tenabled: true/, 'enabled must adopt the existing tab indent');
+    assert.match(out, /\n\teager_distill: false/, 'sibling tab indent preserved');
+    assert.doesNotMatch(out, /\n {2}enabled: true/, 'must not emit a 2-space enabled beside tab siblings');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('N2: a single-dash unknown flag is rejected as an unknown option (exit 1)', () => {
+  const root = mkRoot();
+  try {
+    const r = spawnSync('node', ['scripts/init.js', root, '-x'], {
+      cwd: REPO, encoding: 'utf8', timeout: 10000
+    });
+    assert.strictEqual(r.status, 1, `expected exit 1; stderr=${r.stderr}`);
+    assert.match(r.stderr, /unknown|invalid|unrecognized/i, 'should report -x as an unknown option');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('F4/F9: concurrent toggles never lose, corrupt, or quarantine config.yaml', async () => {
+  const { spawn } = require('node:child_process');
+  const root = mkRoot();
+  try {
+    fs.writeFileSync(configPath(root), defaultConfigYaml());
+    const mod = path.join(REPO, 'scripts/lib/capture-toggle.js');
+    const runners = [];
+    for (let i = 0; i < 12; i++) {
+      const target = i % 2 === 0; // alternate enable/disable
+      const code =
+        `require(${JSON.stringify(mod)})` +
+        `.setCaptureEnabled(${JSON.stringify(root)}, ${target}, {by:'cli-flag',method:'cli-flag'})`;
+      runners.push(
+        new Promise((resolve) => {
+          spawn(process.execPath, ['-e', code], { stdio: 'ignore' }).on('exit', resolve);
+        })
+      );
+    }
+    await Promise.all(runners);
+    assert.ok(fs.existsSync(configPath(root)), 'config.yaml must survive concurrent toggles');
+    assert.match(
+      readConfig(root),
+      /capture:\s*\n\s*enabled:\s*(?:true|false)/,
+      'config must remain reader-parseable after the race'
+    );
+    const quarantined = fs.readdirSync(root).filter((f) => f.includes('.corrupt-'));
+    assert.deepStrictEqual(quarantined, [], 'no valid config should be quarantined by a concurrent write');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

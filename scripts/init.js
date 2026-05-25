@@ -120,13 +120,15 @@ if (require.main === module) {
   // Reject unknown --flags so a typo (e.g. --enable-captur) fails loudly
   // instead of silently leaving capture unchanged.
   const KNOWN_FLAGS = ['--allow-network-root', '--enable-capture', '--disable-capture'];
-  const unknown = args.find((a) => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+  // Any leading-dash token (single or double) that isn't a known flag is an
+  // unknown option — a bare `-x` must not slip through as a positional.
+  const unknown = args.find((a) => a.startsWith('-') && !KNOWN_FLAGS.includes(a));
   if (unknown) {
     console.error(`unknown option: ${unknown}`);
     process.exit(1);
   }
   // At most one positional (the memory_root).
-  const positionals = args.filter((a) => !a.startsWith('--'));
+  const positionals = args.filter((a) => !a.startsWith('-'));
   if (positionals.length > 1) {
     console.error(`expected at most one memory_root argument, got ${positionals.length}: ${positionals.join(' ')}`);
     process.exit(1);

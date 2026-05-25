@@ -50,7 +50,6 @@ function applyToggle(text, target) {
     return lines.concat(block).join(nl) + nl;
   }
 
-  const childIndent = parentIndent + '  ';
   // Block ends at the first non-blank, non-comment line indented <= parent.
   let end = capIdx + 1;
   while (end < lines.length) {
@@ -60,6 +59,14 @@ function applyToggle(text, target) {
     if (indent.length <= parentIndent.length) break;
     end++;
   }
+
+  // Match the re-emitted `enabled:` line to the block's existing child indent
+  // (tabs or spaces) so we never mix indentation styles under one mapping;
+  // fall back to two spaces when the block has no other child.
+  const existingChild = lines
+    .slice(capIdx + 1, end)
+    .find((l) => l.trim() && !l.trim().startsWith('#'));
+  const childIndent = existingChild ? existingChild.match(/^[ \t]*/)[0] : parentIndent + '  ';
 
   // Keep every existing child line except any `enabled:` (re-emitted first).
   const childBody = [];
