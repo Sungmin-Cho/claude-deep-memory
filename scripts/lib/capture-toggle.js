@@ -173,22 +173,27 @@ function setCaptureEnabled(root, target, opts = {}) {
       return { from, to, changed: false };
     }
 
-    // Config is the source of truth — write it first. The audit-log is a
-    // secondary trail: per spec §3.6 an audit-write failure must NOT crash init
-    // or abort the (already-applied) transition, so it is surfaced as a warning.
-    writeTextAtomic(configPath, applyToggle(text, to));
+    const newText = applyToggle(text, to);
+    const entry = { kind: 'capture-toggle', by, host, payload: { from, to, method } };
+
+    if (to === true) {
+      // ENABLE is privacy-increasing: persist the audit entry FIRST, then
+      // publish capture.enabled:true. capture is therefore never ON without a
+      // durable audit record — if writeEntry throws the config is left
+      // untouched (fail closed → caller exits non-zero), and a crash between the
+      // audit append and the config publish leaves capture OFF (privacy-safe).
+      writeEntry(root, entry);
+      writeTextAtomic(configPath, newText);
+      return { from, to, changed: true };
+    }
+
+    // DISABLE is privacy-safe: publish the disabled config first; a missing
+    // audit entry is non-fatal (spec §3.6) and surfaced as a warning.
+    writeTextAtomic(configPath, newText);
     const result = { from, to, changed: true };
     try {
-      writeEntry(root, { kind: 'capture-toggle', by, host, payload: { from, to, method } });
+      writeEntry(root, entry);
     } catch (e) {
-      if (to === true) {
-        // ENABLE is privacy-increasing — never leave capture on without a
-        // durable audit entry. Roll back to the pre-toggle config (still under
-        // the lock) and fail closed so the caller exits non-zero.
-        writeTextAtomic(configPath, text);
-        throw new Error(`capture enable aborted — audit-log entry failed and config was rolled back: ${e.message}`);
-      }
-      // DISABLE is privacy-safe; a missing audit entry is non-fatal (spec §3.6).
       result.warnings = [
         `capture.enabled was set to false but the capture-toggle audit-log entry failed: ${e.message}`,
       ];
@@ -197,4 +202,21 @@ function setCaptureEnabled(root, target, opts = {}) {
   });
 }
 
-module.exports = { setCaptureEnabled };
+/**
+ * Create config.yaml with the default template if absent — UNDER the same lock
+ * as setCaptureEnabled, re-checking existence inside the critical section. This
+ * lets a plain `/deep-memory-init` (no capture flag) materialize the config
+ * without racing a concurrent `--enable-capture`: the locked re-check means the
+ * default (disabled) config can never overwrite a config another process just
+ * created/enabled (deep-review R6 N9).
+ * @param {string} root - $DEEP_MEMORY_ROOT
+ */
+function ensureConfig(root) {
+  const configPath = path.join(root, 'config.yaml');
+  fs.mkdirSync(root, { recursive: true });
+  withConfigLock(root, () => {
+    if (!fs.existsSync(configPath)) writeTextAtomic(configPath, defaultConfigYaml());
+  });
+}
+
+module.exports = { setCaptureEnabled, ensureConfig };

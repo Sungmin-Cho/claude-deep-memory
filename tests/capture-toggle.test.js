@@ -391,6 +391,27 @@ test('N6: a nested capture: block does not false-positive and is not edited by t
   }
 });
 
+test('N9: a plain init (no capture flag) never resets an already-enabled config', async () => {
+  const root = mkRoot();
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-proj-'));
+  const cwd = process.cwd();
+  process.chdir(projectDir);
+  try {
+    // pre-existing config with capture ON
+    fs.writeFileSync(configPath(root), defaultConfigYaml());
+    setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    assert.match(readConfig(root), /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m);
+    // a plain init must materialize-if-absent only — never overwrite the enabled config
+    const r = await run({ memoryRoot: root });
+    assert.strictEqual(r.capture, undefined, 'plain init does not toggle');
+    assert.match(readConfig(root), /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m, 'capture must stay enabled after a plain init');
+  } finally {
+    process.chdir(cwd);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('N6 (hook contract): nested capture.enabled=true does not enable global capture', () => {
   const root = mkRoot();
   try {

@@ -6,9 +6,8 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { execSync } = require('node:child_process');
 const { preflight } = require('./lib/preflight');
-const { writeJsonAtomic, writeTextAtomic } = require('./lib/atomic-write');
-const { defaultConfigYaml } = require('./lib/default-config');
-const { setCaptureEnabled } = require('./lib/capture-toggle');
+const { writeJsonAtomic } = require('./lib/atomic-write');
+const { setCaptureEnabled, ensureConfig } = require('./lib/capture-toggle');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -59,10 +58,9 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   for (const sub of ['cards', 'events', 'indexes', 'projects', '.leases']) {
     fs.mkdirSync(path.join(pre.resolved, sub), { recursive: true });
   }
-  const configPath = path.join(pre.resolved, 'config.yaml');
-  if (!fs.existsSync(configPath)) {
-    writeTextAtomic(configPath, defaultConfigYaml());
-  }
+  // Create config.yaml (if absent) under the capture lock so a plain init can
+  // never race-overwrite a concurrent --enable-capture's config (R6 N9).
+  ensureConfig(pre.resolved);
   const cwd = process.cwd();
   const pid = projectId(cwd);
   // ITEM-6-r4: pass cwd to all safeGit calls inside run() so remote/head/branch
