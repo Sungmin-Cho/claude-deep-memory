@@ -11,20 +11,16 @@ node_modules/
 .deep-evolve/
 .deep-docs/
 .deep-wiki/
+.deep-dashboard/
 
-# Dev-only docs (proposal — NOT shipped with the plugin)
-# specs/ and plans/ are exceptions: visible-but-untracked so external reviewers
-# (deep-review-loop, PR reviewers) can see both the design contract (specs/)
-# and the implementation roadmap (plans/). Both stay uncommitted by default
-# (developer choice whether to git-add). NOTE: pattern is `docs/superpowers/*`
-# (not `docs/superpowers/`) so the negate rules below actually work — git
-# ignores files inside an excluded directory regardless of subsequent !negate.
-docs/superpowers/*
-!docs/superpowers/specs/
-!docs/superpowers/specs/**
-!docs/superpowers/plans/
-!docs/superpowers/plans/**
-docs/deep-suite-cross-project-semantic-operational-memory-proposal.md
+# Internal development docs — specs, plans, handoffs, proposals, backlog.
+# These are design/dev artifacts, NOT shipped with the plugin; marketplace
+# users get README + CHANGELOG. Excluded wholesale, matching the sibling
+# deep-suite plugins (deep-review / deep-wiki / deep-evolve / deep-docs).
+# ⚠️ Never blanket-unignore `docs/` — internal backlog has leaked publicly
+#    before when the whole tree was tracked. If a doc must ship, link it
+#    from README or relocate it out of docs/.
+docs/
 
 # Test artifacts
 coverage/

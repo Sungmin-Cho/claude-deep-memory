@@ -1,3 +1,5 @@
+**English** | [한국어](./README.ko.md)
+
 # deep-memory
 
 > Cross-project semantic operational memory for the [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
@@ -6,7 +8,7 @@ Harvests artifacts emitted by sibling deep-suite plugins, distills them into reu
 
 ## Status
 
-**v0.1.0 MVP** — Skeleton + harvest + distill + brief + audit. 244 tests passing. Phase 4-6 (writer integration / reasoning graph / dashboard telemetry) tracked in [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
+**v0.3.2** — 3-layer memory model (Events → Cards → Briefs), cross-runtime hook capture (opt-in), hybrid retrieval (FTS5 + vector), and an MCP server with a slash-only mutation gate. See the [CHANGELOG](CHANGELOG.md) for release history.
 
 ## Install
 
@@ -83,26 +85,19 @@ Same skills run from Claude Code (slash), Codex (`$deep-memory:...`), Copilot CL
 This message means `better-sqlite3` could not be loaded in your current Node
 runtime. Common causes:
 
-- **Node v26+** — prebuilt better-sqlite3 binaries are not yet published for
-  Node 26 at the time of v0.1.2, and the marketplace plugin cache is immutable
+- **Node v26+** — prebuilt better-sqlite3 binaries may not yet be published for
+  the newest Node releases, and the marketplace plugin cache is immutable
   (no on-the-fly rebuild). harvest still writes cards/events to disk, but the
   FTS5 index is skipped and `/deep-memory-brief` returns empty results.
 - **Missing build toolchain** — if you've cleared the cache and tried to
   rebuild from source, you need Python 3, a C++ compiler, and make.
 
-**Workaround for now (v0.1.2)**: use Node 22 LTS — `nvm install 22 && nvm use 22`
-— and re-run `/deep-memory-harvest`.
+`better-sqlite3` is the primary SQLite driver; `sql.js` (WASM) ships as an
+optional fallback dependency, so retrieval degrades gracefully rather than
+crashing when the native module is unavailable.
 
-**Future fix (v0.2.0)**: a sql.js WASM fallback wrapper will keep the index
-functional regardless of native-module availability. Tracked in
-[`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
-
-## Documentation
-
-- [Handoff for Phases 4 / 5 / 6 (post-v0.1.0 roadmap)](docs/handoff-phase-4-6.md)
-- [v0.1.x immediate follow-up handoff](docs/handoff-v0.1.x-immediate.md)
-- [CHANGELOG](CHANGELOG.md)
-- [한국어 README](README.ko.md)
+**Workaround**: use Node 22 LTS — `nvm install 22 && nvm use 22` — and re-run
+`/deep-memory-harvest`.
 
 ## License
 

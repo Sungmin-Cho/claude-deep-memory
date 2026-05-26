@@ -1,3 +1,5 @@
+[English](./README.md) | **한국어**
+
 # deep-memory
 
 > [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)를 위한 크로스 프로젝트 시맨틱 운영 메모리.
@@ -6,7 +8,7 @@ deep-suite 형제 플러그인이 생성한 산출물을 수집하여, 재사용
 
 ## 상태
 
-**v0.1.0 MVP** — 스켈레톤 + harvest + distill + brief + audit. 244 테스트 통과. Phase 4-6(writer 통합 / reasoning graph / dashboard 텔레메트리)은 [`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md)에서 추적됩니다.
+**v0.3.2** — 3계층 메모리 모델(Events → Cards → Briefs), 크로스 런타임 hook capture(옵트인), 하이브리드 검색(FTS5 + 벡터), slash 전용 mutation 게이트를 가진 MCP 서버. 릴리스 이력은 [CHANGELOG](CHANGELOG.md)를 참고하세요.
 
 ## 설치
 
@@ -81,26 +83,19 @@ codex plugin install deep-memory
 
 현재 Node 런타임에서 `better-sqlite3` 가 로드되지 않았다는 뜻입니다. 흔한 원인:
 
-- **Node v26+** — v0.1.2 시점에 Node 26 용 better-sqlite3 prebuilt binary 가
-  아직 배포되지 않았고, 마켓플레이스 플러그인 캐시는 immutable (즉석 재빌드 불가).
+- **Node v26+** — 최신 Node 릴리스용 better-sqlite3 prebuilt binary 가 아직
+  배포되지 않았을 수 있고, 마켓플레이스 플러그인 캐시는 immutable (즉석 재빌드 불가).
   harvest 는 cards/events 를 디스크에 정상 기록하지만 FTS5 인덱스 갱신은 skip
   되고 `/deep-memory-brief` 는 빈 결과를 반환합니다.
 - **빌드 툴체인 부재** — 캐시 비우고 source 에서 직접 빌드하려는 경우
   Python 3, C++ 컴파일러, make 가 필요합니다.
 
-**현재(v0.1.2) 우회 방법**: Node 22 LTS 사용 — `nvm install 22 && nvm use 22`
-— 후 `/deep-memory-harvest` 를 다시 실행하세요.
+`better-sqlite3` 가 기본 SQLite 드라이버이며, `sql.js`(WASM)가 선택적 fallback
+의존성으로 함께 제공됩니다. 따라서 native module 이 없을 때 크래시 대신 검색이
+graceful 하게 degrade 됩니다.
 
-**근본 해결(v0.2.0)**: sql.js WASM fallback wrapper 가 native module 가용성과
-무관하게 인덱스를 유지하도록 합니다. 추적 위치:
-[`docs/handoff-phase-4-6.md`](docs/handoff-phase-4-6.md).
-
-## 문서
-
-- [Phase 4 / 5 / 6 핸드오프 (v0.1.0 이후 로드맵)](docs/handoff-phase-4-6.md)
-- [v0.1.x 즉시 후속 핸드오프](docs/handoff-v0.1.x-immediate.md)
-- [CHANGELOG](CHANGELOG.md)
-- [English README](README.md)
+**우회 방법**: Node 22 LTS 사용 — `nvm install 22 && nvm use 22` — 후
+`/deep-memory-harvest` 를 다시 실행하세요.
 
 ## 라이선스
 

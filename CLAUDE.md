@@ -51,7 +51,5 @@ Every release: bump version in `.claude-plugin/plugin.json` + `.codex-plugin/plu
 
 ## Pointers
 
-- Spec: `docs/superpowers/specs/2026-05-20-deep-memory-design.md`
-- Plan: `docs/superpowers/plans/2026-05-20-deep-memory-v0.1.0.md`
-- Handoff (Phase 4-6): `docs/handoff-phase-4-6.md`
-- CHANGELOG: `CHANGELOG.md` / `CHANGELOG.ko.md`
+- `docs/` — author-local design artifacts (specs, plans, handoffs, proposals). **`.gitignore` excludes `docs/` entirely**, matching sibling plugins; these are not committed and won't exist in a fresh clone. Latest specs under `docs/superpowers/specs/`, plans under `docs/superpowers/plans/`.
+- CHANGELOG: `CHANGELOG.md` / `CHANGELOG.ko.md` — the shipped release history (the source of truth for users).
