@@ -2,13 +2,13 @@
 
 # deep-memory
 
+![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/claude-deep-memory?label=version)
+![license](https://img.shields.io/github/license/Sungmin-Cho/claude-deep-memory)
+[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/claude-deep-suite)
+
 > Cross-project semantic operational memory for the [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
 
-Harvests artifacts emitted by sibling deep-suite plugins, distills them into reusable memory cards (Hybrid: rule-based + LLM sub-agent), and surfaces task-specific memory briefs that future work can recall.
-
-## Status
-
-**v0.3.2** — 3-layer memory model (Events → Cards → Briefs), cross-runtime hook capture (opt-in), hybrid retrieval (FTS5 + vector), and an MCP server with a slash-only mutation gate. See the [CHANGELOG](CHANGELOG.md) for release history.
+Harvests artifacts emitted by sibling deep-suite plugins, distills them into reusable memory cards (Hybrid: rule-based + LLM sub-agent), and surfaces task-specific memory briefs that future work can recall: a 3-layer memory model (Events → Cards → Briefs), cross-runtime hook capture (opt-in), hybrid retrieval (FTS5 + vector), and an MCP server with a slash-only mutation gate. See the [CHANGELOG](CHANGELOG.md) for release history.
 
 ## Install
 

@@ -2,7 +2,9 @@
 
 Cross-project semantic operational memory. The plugin keeps Claude Code slash-command surfaces and exposes Codex-native skills and manifest metadata.
 
-Current version: 0.3.2.
+To check the current version: `jq -r .version .codex-plugin/plugin.json`
+
+> 📄 **Docs maintenance**: this repo's documentation follows `docs/DOCS_RULE.md` (local maintainer guide — single-source-of-truth rules for README / CHANGELOG / this file).
 
 ## Runtime Surfaces
 

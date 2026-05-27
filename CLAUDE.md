@@ -2,6 +2,10 @@
 
 **Auto-loaded for plugin developers running Claude Code in this repo clone** (marketplace-installed users see README + skills entry surfaces). Project overview + drift-resistant structural notes only. Version-by-version notes belong in `CHANGELOG.md`.
 
+To check the current version: `jq -r .version .claude-plugin/plugin.json`
+
+> 📄 **Docs maintenance**: this repo's documentation follows `docs/DOCS_RULE.md` (local maintainer guide — single-source-of-truth rules for README / CHANGELOG / this file).
+
 ## Project Overview
 
 **deep-memory** is the 7th plugin in the [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite) marketplace. It harvests artifacts emitted by sibling plugins (`deep-work`, `deep-review`, `deep-evolve`, `deep-docs`, `deep-wiki`, `deep-dashboard`) and distills them into reusable **memory cards** — patterns, failures, architecture decisions, experiment outcomes, coding-style rules — that future work can recall via task-specific memory briefs.

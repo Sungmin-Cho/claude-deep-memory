@@ -2,13 +2,13 @@
 
 # deep-memory
 
+![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/claude-deep-memory?label=version)
+![license](https://img.shields.io/github/license/Sungmin-Cho/claude-deep-memory)
+[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/claude-deep-suite)
+
 > [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)를 위한 크로스 프로젝트 시맨틱 운영 메모리.
 
-deep-suite 형제 플러그인이 생성한 산출물을 수집하여, 재사용 가능한 메모리 카드(하이브리드: 규칙 기반 + LLM 서브에이전트)로 증류하고, 이후 작업이 회상할 수 있도록 작업별 메모리 브리프를 제공합니다.
-
-## 상태
-
-**v0.3.2** — 3계층 메모리 모델(Events → Cards → Briefs), 크로스 런타임 hook capture(옵트인), 하이브리드 검색(FTS5 + 벡터), slash 전용 mutation 게이트를 가진 MCP 서버. 릴리스 이력은 [CHANGELOG](CHANGELOG.md)를 참고하세요.
+deep-suite 형제 플러그인이 생성한 산출물을 수집하여, 재사용 가능한 메모리 카드(하이브리드: 규칙 기반 + LLM 서브에이전트)로 증류하고, 이후 작업이 회상할 수 있도록 작업별 메모리 브리프를 제공합니다: 3계층 메모리 모델(Events → Cards → Briefs), 크로스 런타임 hook capture(옵트인), 하이브리드 검색(FTS5 + 벡터), slash 전용 mutation 게이트를 가진 MCP 서버. 릴리스 이력은 [CHANGELOG](CHANGELOG.md)를 참고하세요.
 
 ## 설치
 
