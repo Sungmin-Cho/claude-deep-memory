@@ -9,9 +9,11 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { redactString } = require('./redact');
 
 /**
  * @param {string} root - $DEEP_MEMORY_ROOT
+ * @param {object} [deps] - test seam; `loadFts` overrides the fts-index require
  * @returns {Function} ftsSearch: ({query, currentProjectId, topK}) => rows[]
  *
  * The callback is returned unconditionally (never null) so runHybridRetrieve
@@ -20,15 +22,19 @@ const path = require('node:path');
  *   - index file absent  → the callback returns [] → honest empty result
  *     (no cards harvested yet), without creating an empty sqlite file
  */
-function makeFtsSearch(root) {
+function makeFtsSearch(root, { loadFts = () => require('./fts-index') } = {}) {
   let fts = null;
   let loadError = null;
   try {
     // fts-index treats better-sqlite3 as a hard require (throws at load time
     // when the native binding is unavailable), so guard the require here.
-    fts = require('./fts-index');
+    fts = loadFts();
   } catch (e) {
-    loadError = e && e.message ? e.message : String(e);
+    // The native loader error may embed absolute paths (e.g. `Cannot find
+    // module '/Users/.../better_sqlite3.node'`). runHybridRetrieve copies the
+    // thrown message into MCP-visible warnings, so redact at capture time —
+    // same privacy invariant as harvest.js's ftsLoadError handling.
+    loadError = redactString(e && e.message ? e.message : String(e));
   }
   const dbPath = path.join(root, 'indexes', 'lexical.sqlite');
 
