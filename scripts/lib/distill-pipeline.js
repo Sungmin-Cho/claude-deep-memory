@@ -220,20 +220,35 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
   // zero-draft. Token-cap-deferred drafts hold the cursor BEFORE them.
   const deferredCount = refined.filter(r => r.deferred === true).length;
 
+  let cursorFile = file;
   let lastFullyProcessedLineEnd = lastByteOffset;
   if (deferredCount > 0) {
     const deferredSessions = new Set();
     for (const r of refined) {
       if (r.deferred && r.session_id) deferredSessions.add(r.session_id);
     }
-    // IMPL-R1-E: use `_line_start_offset` (the byte BEFORE the deferred line's
-    // first char) so cursor lands strictly upstream of the deferred line.
-    // Next run's readPendingEvents re-reads the same line.
-    const deferredStarts = ourEvents
-      .filter(e => deferredSessions.has(e.session_id))
-      .map(e => e._line_start_offset);
-    if (deferredStarts.length > 0) {
-      lastFullyProcessedLineEnd = Math.min(...deferredStarts, lastByteOffset);
+    // IMPL-R1-E + R4 #1: the hold point is a (file, offset) PAIR — offsets are
+    // per-file, so comparing raw offsets across month files corrupts the cursor
+    // on rollover (an old-file offset written under the newest filename skips
+    // the old file's deferred events entirely). Track the EARLIEST deferred
+    // event by (file lex ≡ chronological, then _line_start_offset — the byte
+    // BEFORE the deferred line) so the cursor lands strictly upstream of it
+    // and the next readPendingEvents re-reads that line.
+    let earliest = null;
+    for (const e of ourEvents) {
+      if (!deferredSessions.has(e.session_id)) continue;
+      if (!earliest || e._file < earliest._file ||
+          (e._file === earliest._file && e._line_start_offset < earliest._line_start_offset)) {
+        earliest = e;
+      }
+    }
+    if (earliest) {
+      if (earliest._file === cursorFile) {
+        lastFullyProcessedLineEnd = Math.min(earliest._line_start_offset, lastByteOffset);
+      } else {
+        cursorFile = earliest._file;
+        lastFullyProcessedLineEnd = earliest._line_start_offset;
+      }
     }
   }
 
@@ -259,8 +274,8 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
   const cursorSafeToAdvance = cardsCommitted >= draftsEmitted;
   let cursorAdvancedTo = null;
   if (cursorSafeToAdvance) {
-    advanceTo(root, projectId, file, lastFullyProcessedLineEnd);
-    cursorAdvancedTo = `${file}:${lastFullyProcessedLineEnd}`;
+    advanceTo(root, projectId, cursorFile, lastFullyProcessedLineEnd);
+    cursorAdvancedTo = `${cursorFile}:${lastFullyProcessedLineEnd}`;
   } else {
     warnings.push(
       `cursor_held: ${draftsEmitted} draft(s) emitted but only ${cardsCommitted} durably accounted ` +

@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { runLazyDistill, filterByProject, groupBySession, readPendingEvents } = require('../scripts/lib/distill-pipeline');
-const { readCursor } = require('../scripts/lib/cursor');
+const { readCursor, advanceTo } = require('../scripts/lib/cursor');
 
 function mkTmpRoot() {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-distill-pipe-'));
@@ -234,4 +234,39 @@ test('P0 lossless invariant (R2 #2): partial commit (accounted < emitted) holds 
     `expected a cursor_held warning, got ${JSON.stringify(result.warnings)}`
   );
   assert.strictEqual(readCursor(root, 'proj_a'), null, 'cursor must remain unset (lossless)');
+});
+
+test('P0 lossless invariant (R4 #1): deferred cursor keeps (file, offset) across month-file rollover', async () => {
+  // Cursor starts in an OLD month file; a deferred draft lives there while a
+  // NEWER month file is also pending. The cursor must land strictly upstream
+  // of the OLD file's deferred line — not pair an old-file offset (or a
+  // new-file offset) with the newest filename, which skips the old events.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const oldFile = '2000-01.jsonl';  // lex < any current month
+  const evA = mkHookEvent('proj_a', 'sA');
+  const evB = mkHookEvent('proj_a', 'sB');
+  const evC = mkHookEvent('proj_a', 'sC');
+  const oldLines = JSON.stringify(evA) + '\n' + JSON.stringify(evB) + '\n';
+  fs.writeFileSync(path.join(root, 'events', oldFile), oldLines);
+  fs.writeFileSync(path.join(root, 'events', `${ym}.jsonl`), JSON.stringify(evC) + '\n');
+  const sBstart = Buffer.byteLength(JSON.stringify(evA), 'utf8') + 1;
+  advanceTo(root, 'proj_a', oldFile, 0);  // cursor begins in the old month
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    // skip_llm:false + batch_size:1 → draft[0] (sA) refined-or-candidate,
+    // drafts for sB (old file) and sC (new file) deferred.
+    config: { skip_llm: false, batch_size: 1, distill: { detectors: { session_summary: { always_emit: true } } } },
+    commitDrafts: async (drafts) => drafts.length  // fully account non-deferred
+  });
+
+  assert.strictEqual(result.deferred_count, 2, `sanity: sB+sC deferred, got ${result.deferred_count}`);
+  const cursor = readCursor(root, 'proj_a');
+  assert.ok(cursor, 'cursor must be set');
+  assert.strictEqual(cursor.file, oldFile,
+    `cursor must stay in the old month file, got ${JSON.stringify(cursor)}`);
+  assert.strictEqual(cursor.offset, sBstart,
+    `cursor must land before the deferred sB line, got ${JSON.stringify(cursor)}`);
 });
