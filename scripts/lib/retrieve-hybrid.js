@@ -120,15 +120,24 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
   // Card-state filter parity with scripts/retrieve.js (R2 #3): index rows say
   // nothing about card status, so load each fused candidate's payload and apply
   // the Stage 1 hard filter (status !== 'deprecated') + Stage 6 applicability
-  // guard. A row whose card file cannot be located passes through unchanged —
-  // there is no payload evidence to drop it on, and stubbed/stale-index rows
-  // must keep degrading gracefully rather than vanish.
+  // guard. A row whose card cannot be located is DROPPED (fail-closed, R3 #1):
+  // its state is unverifiable and index rows carry claim text — after a
+  // forget/audit deletion with a stale index, passing it through would surface
+  // memory content the user removed. The skew is surfaced as ONE bounded
+  // warning (no card content echoed) pointing at the audit repair path.
   const taskTokens = tokenize(query);
+  let unlocatable = 0;
   const filtered = fused.filter((row) => {
     const card = locateCard(root, row);
-    if (!card) return true;
+    if (!card) { unlocatable += 1; return false; }
     return isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens);
   });
+  if (unlocatable > 0) {
+    warnings.push(
+      `card_filter_dropped: ${unlocatable} index row(s) with no loadable card payload ` +
+      `(index/card skew?) — run /deep-memory-audit`
+    );
+  }
 
   // Stage 8 — session diversification (γ.6)
   const maxPerSession = (config.brief && config.brief.max_per_session) || 3;

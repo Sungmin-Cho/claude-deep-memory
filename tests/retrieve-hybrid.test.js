@@ -49,12 +49,14 @@ test('γ.7 probeStreams: returns valid status + warnings array', () => {
 
 test('γ.5 runHybridRetrieve: FTS5-only path (no vector) returns FTS5 stream', async () => {
   const root = mkTmpRoot();
-  // Stub FTS5 search returning 3 cards from current project
+  // Stub FTS5 search returning 3 cards from current project (card files on
+  // disk — R3 #1 fail-closed drops rows whose card cannot be located)
   const ftsCards = [
     { memory_id: 'm1', project_id: 'p1', session_id: 'sA' },
     { memory_id: 'm2', project_id: 'p1', session_id: 'sA' },
     { memory_id: 'm3', project_id: 'p1', session_id: 'sB' }
   ];
+  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: c.memory_id });
   const result = await runHybridRetrieve({
     query: 'test query',
     currentProjectId: 'p1',
@@ -82,10 +84,11 @@ test('γ.5 + γ.7: empty FTS5 + vector unavailable → empty memories with warni
 
 test('γ.5 + γ.6: hybrid fuse + session diversification combined', async () => {
   const root = mkTmpRoot();
-  // Stub FTS5: 5 cards, all session sA
+  // Stub FTS5: 5 cards, all session sA (card files on disk per R3 #1)
   const ftsCards = Array.from({length: 5}, (_, i) => ({
     memory_id: `m${i}`, project_id: 'p1', session_id: 'sA'
   }));
+  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: c.memory_id });
   const result = await runHybridRetrieve({
     query: 'test',
     currentProjectId: 'p1',
@@ -150,12 +153,22 @@ test('R2 #3: deprecated filter also applies to rows lacking memory_type (vector 
   assert.strictEqual(result.memories.length, 0, 'deprecated card must be dropped even without memory_type on the row');
 });
 
-test('R2 #3: rows whose card file is missing pass through unchanged (graceful degradation preserved)', async () => {
+test('R3 #1: rows whose card file is missing are DROPPED with one bounded skew warning (fail-closed)', async () => {
+  // A stale FTS/vector row whose card was deleted (forget/audit) must not
+  // surface its claim text through MCP — card state is unverifiable, so the
+  // row is dropped and the index/card skew is surfaced once, boundedly.
   const root = mkTmpRoot();
   const result = await runHybridRetrieve({
     query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [{ memory_id: 'm_ghost', project_id: 'p1', memory_type: 'pattern' }],
+    ftsSearch: async () => [
+      { memory_id: 'm_ghost1', project_id: 'p1', memory_type: 'pattern', claim: 'forgotten secret claim' },
+      { memory_id: 'm_ghost2', project_id: 'p1', memory_type: 'pattern' },
+    ],
     topN: 5,
   });
-  assert.strictEqual(result.memories.length, 1, 'missing card payload must not drop the row (fail-open)');
+  assert.strictEqual(result.memories.length, 0, 'unverifiable rows must be dropped (fail-closed)');
+  const skew = result.warnings.filter(w => w.startsWith('card_filter_dropped:'));
+  assert.strictEqual(skew.length, 1, `expected ONE aggregate skew warning, got: ${JSON.stringify(result.warnings)}`);
+  assert.match(skew[0], /\b2\b/, 'warning should carry the dropped-row count');
+  assert.ok(!skew[0].includes('forgotten secret claim'), 'warning must not echo card content');
 });
