@@ -2,6 +2,26 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-07
+
+### Fixed
+
+- **MCP tools reported fake success.** Several `deep-memory` MCP tools returned a
+  success shape even when the underlying store lookup found nothing or could not
+  resolve a card payload. They now fail closed — a fused row whose card payload
+  cannot be located surfaces an honest error instead of an empty "success", and
+  recall/lookup is scope-strict (global-privacy rows resolve only from the global
+  scope; deprecated / non-applicable cards are filtered on the hybrid path).
+- **Lossless distill cursor.** The deferred distill cursor is now held as a
+  `(file, offset)` pair, so it survives a month rollover without losing or
+  re-emitting drafts; the cursor advances only once every emitted draft is
+  durably accounted for.
+- **Session hooks are no longer destructive.** The capture hooks no longer mutate
+  or discard live session state as a side effect.
+- **Harvest envelope guard.** Envelope-guard warnings are redacted and bounded,
+  the harvest wrapper validates `schema_version` before emit, and native-loader
+  errors are redacted before they reach MCP warnings.
+
 ## [0.3.2] - 2026-05-25
 
 ### Added
