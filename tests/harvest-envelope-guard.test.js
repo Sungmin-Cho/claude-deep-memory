@@ -105,3 +105,35 @@ test('harvestArtifact: matching envelope → cards produced (guard is transparen
   assert.ok(cards.length >= 1, `expected >=1 card from valid artifact, got ${cards.length}`);
   assert.notStrictEqual(cards.skipped, true);
 });
+
+test('checkEnvelopeContract (R2 #1): mismatch warning redacts absolute paths from header values', () => {
+  const raw = { envelope: envelope({ producer: '/Users/jane/secret-tool', artifact_kind: 'recurring-findings', version: '1.0' }) };
+  const r = checkEnvelopeContract(raw, 'review-recurring');
+  assert.strictEqual(r.ok, false);
+  assert.ok(!r.warning.includes('/Users/'), `warning must not leak absolute paths, got: ${r.warning}`);
+});
+
+test('checkEnvelopeContract (R2 #1): oversized header value is bounded in the warning', () => {
+  const raw = { envelope: envelope({ producer: 'x'.repeat(5000), artifact_kind: 'recurring-findings', version: '1.0' }) };
+  const r = checkEnvelopeContract(raw, 'review-recurring');
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.warning.length < 1000, `warning must be bounded, got length ${r.warning.length}`);
+});
+
+test('checkEnvelopeContract (R2 #4): unsupported top-level wrapper schema_version is rejected', () => {
+  const raw = {
+    schema_version: '2.0',
+    envelope: envelope({ producer: 'deep-review', artifact_kind: 'recurring-findings', version: '1.0' }),
+  };
+  const r = checkEnvelopeContract(raw, 'review-recurring');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.warning, /schema_version '2\.0'/);
+});
+
+test('checkEnvelopeContract (R2 #4): wrapper schema_version 1.x passes (independent of payload schema version)', () => {
+  const raw = {
+    schema_version: '1.0',
+    envelope: envelope({ producer: 'deep-review', artifact_kind: 'recurring-findings', version: '1.0' }),
+  };
+  assert.deepStrictEqual(checkEnvelopeContract(raw, 'review-recurring'), { ok: true });
+});
