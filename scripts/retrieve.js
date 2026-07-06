@@ -37,8 +37,17 @@ const FTS_DEGRADED_WARNING_RETRIEVE =
   'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
   'environment). brief returns empty — re-run with Node 22 LTS, or wait for ' +
   'v0.2.0 sql.js fallback. See README.md > Troubleshooting.';
-const { bm25MinMax, scoreCard, jaccard } = require('./lib/score');
+const { bm25MinMax, scoreCard } = require('./lib/score');
 const { redactString } = require('./lib/redact');
+// Card-state filters live in lib/card-filters.js so the MCP hybrid path
+// (retrieve-hybrid.js) enforces the same Stage 1 / Stage 6 contract (R2 #3).
+const {
+  tokenize,
+  loadCard,
+  isNotDeprecated,
+  passesApplicabilityGuard,
+  APPLICABILITY_GUARD_THRESHOLD,
+} = require('./lib/card-filters');
 
 const DEFAULT_TOP_N = 8;
 const DEFAULT_DIVERSITY_PER_TYPE = 2;
@@ -49,60 +58,6 @@ const DEFAULT_WEIGHTS = {
   w_stale_penalty: 0.1,
 };
 const DEFAULT_AUDIT = { stale_grace_days: 90 };
-const APPLICABILITY_GUARD_THRESHOLD = 0.5;
-
-function tokenize(text) {
-  return String(text || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')  // ITEM-3-r3: Unicode-aware (was /[^a-z0-9\s]+/g)
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/**
- * Stage 3 — read the full card payload from disk. Cards live at
- * `cards/<memory_type>/{global|<project_id>}/<memory_id>.json`. We try the
- * project_id scope first, then global; the FTS5 row already tells us the
- * memory_type so we don't have to walk the whole tree.
- */
-function loadCard(memoryRoot, row) {
-  const typeDir = path.join(memoryRoot, 'cards', row.memory_type);
-  const projScope = row.project_id || 'global';
-  const candidatePaths = [
-    path.join(typeDir, projScope, row.memory_id + '.json'),
-    path.join(typeDir, 'global', row.memory_id + '.json'),
-  ];
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
-      try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
-      catch { return null; }
-    }
-  }
-  return null;
-}
-
-function isNotDeprecated(card) {
-  return card.payload?.status !== 'deprecated';
-}
-
-/**
- * Stage 6 — applicability guard. The card carries a list of contexts where it
- * should NOT apply (`non_applicability[].value`). We tokenize each value, then
- * compare against the task tokens via Jaccard. If ANY non_applicability item
- * overlaps the task at ≥ 0.5 Jaccard, the card is dropped — applying it would
- * actively mislead.
- */
-function passesApplicabilityGuard(card, taskTokens) {
-  const nonApp = card.payload?.non_applicability || [];
-  for (const na of nonApp) {
-    const naTokens = tokenize(na.value);
-    if (naTokens.length === 0) continue;
-    if (jaccard(taskTokens, naTokens) >= APPLICABILITY_GUARD_THRESHOLD) {
-      return false;
-    }
-  }
-  return true;
-}
 
 /**
  * Stage 7 — diversity cap. For each memory_type, keep at most diversity_per_type

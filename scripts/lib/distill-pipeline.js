@@ -220,24 +220,40 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
   // zero-draft. Token-cap-deferred drafts hold the cursor BEFORE them.
   const deferredCount = refined.filter(r => r.deferred === true).length;
 
+  let cursorFile = file;
   let lastFullyProcessedLineEnd = lastByteOffset;
   if (deferredCount > 0) {
     const deferredSessions = new Set();
     for (const r of refined) {
       if (r.deferred && r.session_id) deferredSessions.add(r.session_id);
     }
-    // IMPL-R1-E: use `_line_start_offset` (the byte BEFORE the deferred line's
-    // first char) so cursor lands strictly upstream of the deferred line.
-    // Next run's readPendingEvents re-reads the same line.
-    const deferredStarts = ourEvents
-      .filter(e => deferredSessions.has(e.session_id))
-      .map(e => e._line_start_offset);
-    if (deferredStarts.length > 0) {
-      lastFullyProcessedLineEnd = Math.min(...deferredStarts, lastByteOffset);
+    // IMPL-R1-E + R4 #1: the hold point is a (file, offset) PAIR — offsets are
+    // per-file, so comparing raw offsets across month files corrupts the cursor
+    // on rollover (an old-file offset written under the newest filename skips
+    // the old file's deferred events entirely). Track the EARLIEST deferred
+    // event by (file lex ≡ chronological, then _line_start_offset — the byte
+    // BEFORE the deferred line) so the cursor lands strictly upstream of it
+    // and the next readPendingEvents re-reads that line.
+    let earliest = null;
+    for (const e of ourEvents) {
+      if (!deferredSessions.has(e.session_id)) continue;
+      if (!earliest || e._file < earliest._file ||
+          (e._file === earliest._file && e._line_start_offset < earliest._line_start_offset)) {
+        earliest = e;
+      }
+    }
+    if (earliest) {
+      if (earliest._file === cursorFile) {
+        lastFullyProcessedLineEnd = Math.min(earliest._line_start_offset, lastByteOffset);
+      } else {
+        cursorFile = earliest._file;
+        lastFullyProcessedLineEnd = earliest._line_start_offset;
+      }
     }
   }
 
   // Stage 6 — commit drafts (callback-driven for testability)
+  const draftsEmitted = refined.length - deferredCount;
   let cardsCommitted = 0;
   if (commitDrafts) {
     try {
@@ -247,15 +263,32 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
     }
   }
 
-  // β.7 — advance cursor to byte offset after last fully-processed line
-  advanceTo(root, projectId, file, lastFullyProcessedLineEnd);
+  // β.7 + P0 lossless-cursor invariant — advance the cursor ONLY when EVERY
+  // emitted draft was durably accounted for (committed OR idempotently
+  // de-duplicated; `commitDrafts` returns that count), or there was nothing to
+  // commit (every line was zero-draft / all drafts deferred). Anything less —
+  // no card-writer wired (production callers pass no `commitDrafts`),
+  // `commitDrafts` threw, or a PARTIAL commit (accounted < emitted, R2 #2) —
+  // holds the cursor so the events remain pending for a later re-distill
+  // instead of being silently skipped (the capture→distill data-loss bug).
+  const cursorSafeToAdvance = cardsCommitted >= draftsEmitted;
+  let cursorAdvancedTo = null;
+  if (cursorSafeToAdvance) {
+    advanceTo(root, projectId, cursorFile, lastFullyProcessedLineEnd);
+    cursorAdvancedTo = `${cursorFile}:${lastFullyProcessedLineEnd}`;
+  } else {
+    warnings.push(
+      `cursor_held: ${draftsEmitted} draft(s) emitted but only ${cardsCommitted} durably accounted ` +
+      `(no card-writer wired, or partial commit) — events kept pending to avoid loss`
+    );
+  }
 
   return {
     processed_events: rawEvents.length,
-    drafts_emitted: refined.length - deferredCount,
+    drafts_emitted: draftsEmitted,
     cards_committed: cardsCommitted,
     deferred_count: deferredCount,
-    cursor_advanced_to: `${file}:${lastFullyProcessedLineEnd}`,
+    cursor_advanced_to: cursorAdvancedTo,
     warnings,
     started_at: startedAt,
     finished_at: new Date().toISOString()

@@ -183,7 +183,25 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
 
   // PR2-B: acquire is async + needs .lock dir path.
   const lockDir = path.join(DEEP_MEMORY_ROOT, '.lock');
-  const lockHandle = await acquire(lockDir);
+  let lockHandle;
+  try {
+    lockHandle = await acquire(lockDir);
+  } catch (e) {
+    // A stale lock (holder crashed >5min ago) makes acquire() THROW. In the
+    // capture path that must not propagate — otherwise every subsequent
+    // tool-use hook fails until the user runs /deep-memory-audit --unlock.
+    // Skip this one event with a warning and let the session continue; the
+    // durable events tail is untouched and re-capture resumes once the lock
+    // is broken. We do NOT auto-break here (that stays a deliberate audit op).
+    if (e && e.code === 'STALE_LOCK') {
+      console.error(`[deep-memory] capture skipped (stale lock): ${e.message}`);
+      return { skipped: true, reason: 'stale-lock', warning: e.message };
+    }
+    // Any other acquire failure (e.g. retries exhausted) is likewise non-fatal
+    // for capture — drop the event rather than crash the hook.
+    console.error(`[deep-memory] capture skipped (lock unavailable): ${e && e.message}`);
+    return { skipped: true, reason: 'lock-unavailable', warning: e && e.message };
+  }
   try {
     // IMPL-R1-I — TOCTOU close: re-check dedupe INSIDE the lock. If a
     // concurrent hook beat us in between the optimistic check and lock

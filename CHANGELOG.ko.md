@@ -2,6 +2,24 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [0.4.0] - 2026-07-07
+
+### Fixed (수정)
+
+- **MCP 도구가 가짜 성공을 보고하던 문제.** 여러 `deep-memory` MCP 도구가 내부 store
+  조회가 아무것도 못 찾거나 card payload를 resolve하지 못했을 때도 성공 형태를
+  반환했습니다. 이제 fail-closed로 동작합니다 — card payload를 찾지 못한 fused row는
+  빈 "성공" 대신 정직한 오류를 노출하며, recall/조회는 scope-strict입니다(global-privacy
+  row는 global scope에서만 resolve; deprecated / 비적용 card는 hybrid 경로에서 필터링).
+- **무손실 distill 커서.** 지연된 distill 커서를 `(file, offset)` 쌍으로 유지하여 월
+  경계(rollover)를 넘어도 draft를 유실하거나 재emit하지 않습니다; 커서는 emit된 모든
+  draft가 durable하게 반영된 뒤에만 전진합니다.
+- **세션 hook 무파괴.** capture hook이 부작용으로 live 세션 상태를 변경/폐기하지
+  않습니다.
+- **harvest envelope 가드.** envelope-guard 경고를 redact·bound하고, harvest wrapper가
+  emit 전에 `schema_version`을 검증하며, native-loader 오류는 MCP 경고에 도달하기 전에
+  redact됩니다.
+
 ## [0.3.2] - 2026-05-25
 
 ### Added (추가)

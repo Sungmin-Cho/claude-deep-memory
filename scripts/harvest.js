@@ -301,6 +301,89 @@ const STEP_A_MAPPERS = {
   'wiki-index': mapWikiIndex,
 };
 
+/**
+ * Envelope contract per source kind — MUST stay in sync with
+ * `scripts/lib/default-config.js` `sources[*]` (producer / artifact_kind /
+ * supported_schema_versions). Consumed by the harvest envelope guard.
+ */
+const SOURCE_CONTRACTS = {
+  'review-recurring': { producer: 'deep-review', artifact_kind: 'recurring-findings', supported_schema_versions: ['1.0'] },
+  'evolve-insights':  { producer: 'deep-evolve', artifact_kind: 'evolve-insights',    supported_schema_versions: ['1.0'] },
+  'work-receipt':     { producer: 'deep-work',   artifact_kind: 'session-receipt',     supported_schema_versions: ['1.0'] },
+  'docs-scan':        { producer: 'deep-docs',   artifact_kind: 'last-scan',           supported_schema_versions: ['1.0'] },
+  'wiki-index':       { producer: 'deep-wiki',   artifact_kind: 'wiki-index',          supported_schema_versions: ['1.0'] },
+};
+
+/**
+ * Envelope contract guard (SKILL.md Step 4: "producer / artifact_kind /
+ * schema_version 헤더 확인 → mis-match 면 skip + warning"). Returns {ok:true}
+ * when the artifact's M3 envelope header is consistent with the source kind's
+ * contract, or {ok:false, warning} on a POSITIVE mismatch — a present envelope
+ * field that disagrees, or a present schema.version whose MAJOR is outside the
+ * supported majors derived from supported_schema_versions.
+ *
+ * Version is compared at MAJOR granularity: a minor bump is additive and
+ * backward-compatible by SemVer convention (verified in practice — deep-docs
+ * emits last-scan schema 1.1 while the config still declares 1.0, and the
+ * docs-scan mapper handles it), so 1.1 passes against a supported "1.0" but a
+ * breaking 2.0 is rejected. An absent envelope / absent field is tolerated
+ * (legacy unwrapped artifact); the guard rejects only artifacts that actively
+ * declare a different producer/kind or an unsupported MAJOR schema revision
+ * (sibling schema drift), which would otherwise map to zero/garbage cards
+ * silently.
+ */
+function majorOf(version) {
+  return String(version).split('.')[0];
+}
+
+// Supported M3 envelope WRAPPER major (top-level `schema_version` — the
+// envelope format version, independent of the per-payload `envelope.schema
+// .version` checked against SOURCE_CONTRACTS). The suite locks the wrapper
+// schema at 1.x; a 2.x wrapper is a format this reader does not understand.
+const ENVELOPE_WRAPPER_SUPPORTED_MAJOR = '1';
+
+// This guard runs BEFORE Pass 1 redaction (the artifact is still raw), and its
+// warning is mirrored to disk in `latest-harvest.json` — so every external
+// header value echoed into the warning must be redacted and bounded here
+// (same privacy invariant as the ftsLoadError handling below).
+function safeHeaderValue(value) {
+  return redactString(String(value).slice(0, 120));
+}
+
+function checkEnvelopeContract(raw, sourceKind) {
+  const contract = SOURCE_CONTRACTS[sourceKind];
+  if (!contract) return { ok: true }; // unknown kind is handled by the mapper existence check
+  const env = (raw && raw.envelope) || {};
+  const producer = env.producer;
+  const artifactKind = env.artifact_kind;
+  const version = env.schema && env.schema.version;
+  const wrapperVersion = raw && raw.schema_version;
+  const problems = [];
+  if (producer != null && producer !== contract.producer) {
+    problems.push(`producer '${safeHeaderValue(producer)}' != expected '${contract.producer}'`);
+  }
+  if (artifactKind != null && artifactKind !== contract.artifact_kind) {
+    problems.push(`artifact_kind '${safeHeaderValue(artifactKind)}' != expected '${contract.artifact_kind}'`);
+  }
+  if (version != null) {
+    const supportedMajors = new Set(contract.supported_schema_versions.map(majorOf));
+    if (!supportedMajors.has(majorOf(version))) {
+      problems.push(`schema.version '${safeHeaderValue(version)}' major not in supported [${contract.supported_schema_versions.join(', ')}]`);
+    }
+  }
+  // Top-level wrapper version: only meaningful on an envelope-shaped artifact.
+  // NOTE: wrapper and payload schema versions are independent by M3 design —
+  // no equality cross-check between them (a 1.x wrapper may carry any
+  // supported payload schema).
+  if (raw && raw.envelope && wrapperVersion != null && majorOf(wrapperVersion) !== ENVELOPE_WRAPPER_SUPPORTED_MAJOR) {
+    problems.push(`schema_version '${safeHeaderValue(wrapperVersion)}' wrapper major not supported (expected ${ENVELOPE_WRAPPER_SUPPORTED_MAJOR}.x)`);
+  }
+  if (problems.length > 0) {
+    return { ok: false, warning: `envelope_mismatch (${sourceKind}): ${problems.join('; ')} — artifact skipped` };
+  }
+  return { ok: true };
+}
+
 function memoryIdFor(memoryType, dk) {
   const typeSlug = memoryType.replace(/-/g, '_');
   const shortHash = createHash('sha256').update(dk).digest('hex').slice(0, 16); // 64-bit; was 6 (24-bit)
@@ -496,6 +579,23 @@ async function harvestArtifact({
   const sourceMeta = buildSourceMeta(artifactPath, raw, sourceKind);
   const mapper = STEP_A_MAPPERS[sourceKind];
   if (!mapper) throw new Error(`Unknown sourceKind: ${sourceKind}`);
+
+  // Envelope contract guard — skip (do NOT persist) a sibling artifact whose
+  // M3 envelope header disagrees with this source kind's contract, recording a
+  // warning instead of silently mapping schema-drifted input to zero/garbage
+  // cards. Returns an empty card array carrying non-enumerable `skipped` +
+  // `warnings` so the CLI mirrors both into latest-harvest.json.
+  const contractCheck = checkEnvelopeContract(raw, sourceKind);
+  if (!contractCheck.ok) {
+    const skipped = [];
+    Object.defineProperty(skipped, 'skipped', {
+      enumerable: false, configurable: true, writable: true, value: true,
+    });
+    Object.defineProperty(skipped, 'warnings', {
+      enumerable: false, configurable: true, writable: true, value: [contractCheck.warning],
+    });
+    return skipped;
+  }
 
   // Pass 1 redaction — applied to raw artifact before Step A reads it
   const redacted = redactObject(raw);
@@ -742,6 +842,8 @@ module.exports = {
   mapDocsScan,
   mapWikiIndex,
   STEP_A_MAPPERS,
+  SOURCE_CONTRACTS,
+  checkEnvelopeContract,
   buildCardFromDraft,
   buildSourceMeta,
   splitSourceMeta,
@@ -861,6 +963,7 @@ if (require.main === module) {
   harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
     .then((cards) => {
       const warnings = Array.isArray(cards.warnings) ? cards.warnings : [];
+      const wasSkipped = cards.skipped === true;
       const summary = {
         generated_at: new Date().toISOString(),
         artifactPath,
@@ -868,12 +971,15 @@ if (require.main === module) {
         projectId: finalProjectId,
         cards_count: cards.length,
         memory_ids: cards.map((c) => c.payload?.memory_id),
+        skipped: wasSkipped,
         warnings,
       };
       const outDir = path.join(cwd, '.deep-memory');
       fs.mkdirSync(outDir, { recursive: true });
       writeJsonAtomic(path.join(outDir, 'latest-harvest.json'), summary);
-      console.log(`Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
+      console.log(wasSkipped
+        ? `Harvest: SKIPPED ${sourceKind} (envelope mismatch) → ${path.join(outDir, 'latest-harvest.json')}`
+        : `Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
       for (const w of warnings) console.warn(`Warning: ${w}`);
     })
     .catch((e) => { console.error(e.message); process.exit(1); });

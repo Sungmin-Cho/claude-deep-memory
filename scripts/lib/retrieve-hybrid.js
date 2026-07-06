@@ -16,6 +16,7 @@
 const { rrfFuse } = require('./rrf-fusion');
 const { embedText, probeModelVersion } = require('./embed-model');
 const { openIndex, searchVector } = require('./vector-index');
+const { locateCard, isNotDeprecated, passesApplicabilityGuard, tokenize } = require('./card-filters');
 
 /**
  * γ.6 — session_id diversification (Stage 8 of 6-stage rerank extension).
@@ -73,8 +74,13 @@ function probeStreams(root) {
  * @param {object} [args.config] - { brief: { max_per_session } }
  * @returns {Promise<{memories: Array, warnings: string[], streams_used: string[]}>}
  */
-async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, topN = 5, topK = 30, config = {} }) {
-  const { vector_available, warnings } = probeStreams(root);
+async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, topN = 5, topK = 30, config = {}, useVector = true }) {
+  // useVector:false = lexical-only by DESIGN (R4 #4 — deep_memory_recall is
+  // advertised as FTS5 BM25 only): skip the vector probe entirely and emit no
+  // vector degradation warnings, since the stream is intentionally off.
+  const { vector_available, warnings } = useVector
+    ? probeStreams(root)
+    : { vector_available: false, warnings: [] };
   const streamsUsed = [];
 
   // Stream A — FTS5 (always available unless caller passes null)
@@ -116,9 +122,42 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
   const streams = [ftsStream, vectorStream].filter(s => s.length > 0);
   const fused = streams.length > 0 ? rrfFuse(streams) : [];
 
+  // Card-state filter parity with scripts/retrieve.js (R2 #3): index rows say
+  // nothing about card status, so load each fused candidate's payload and apply
+  // the Stage 1 hard filter (status !== 'deprecated') + Stage 6 applicability
+  // guard. A row whose card cannot be located is DROPPED (fail-closed, R3 #1):
+  // its state is unverifiable and index rows carry claim text — after a
+  // forget/audit deletion with a stale index, passing it through would surface
+  // memory content the user removed. The skew is surfaced as ONE bounded
+  // warning (no card content echoed) pointing at the audit repair path.
+  const taskTokens = tokenize(query);
+  let unlocatable = 0;
+  const filtered = [];
+  for (const row of fused) {
+    const card = locateCard(root, row);
+    if (!card) { unlocatable += 1; continue; }
+    if (!(isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens))) continue;
+    // R4 #3 — rrfFuse may pick a vector row (ids/score only) as the duplicate
+    // representative; fill fields the row lacks from the payload we just
+    // validated so MCP consumers keep claim/memory_type/session_id.
+    const p = card.payload || {};
+    filtered.push({
+      ...row,
+      claim: row.claim ?? p.claim,
+      memory_type: row.memory_type ?? p.memory_type,
+      session_id: row.session_id ?? p.session_id,
+    });
+  }
+  if (unlocatable > 0) {
+    warnings.push(
+      `card_filter_dropped: ${unlocatable} index row(s) with no loadable card payload ` +
+      `(index/card skew?) — run /deep-memory-audit`
+    );
+  }
+
   // Stage 8 — session diversification (γ.6)
   const maxPerSession = (config.brief && config.brief.max_per_session) || 3;
-  const diversified = sessionDiversify(fused, maxPerSession);
+  const diversified = sessionDiversify(filtered, maxPerSession);
 
   return {
     memories: diversified.slice(0, topN),

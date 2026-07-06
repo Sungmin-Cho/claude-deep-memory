@@ -25,10 +25,21 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { runHybridRetrieve } = require('./lib/retrieve-hybrid.js');
+const { makeFtsSearch } = require('./lib/mcp-fts-search.js');
 const { runLazyDistill } = require('./lib/distill-pipeline.js');
 const { redactString } = require('./lib/redact.js');
 const { resolveCurrentProject } = require('./lib/project-resolver.js');
 const { writeEntry } = require('./lib/audit-log.js');
+
+// Honest not-implemented reply for autonomous MCP tools whose full behavior is
+// not wired in v0.3.x. Returns `isError: true` (never `slash_only_in_v030`, which
+// is reserved for the mutation gate) so the model does not mistake a stub for a
+// real success. `recommended` points at the real slash command when one exists.
+function notImplemented(toolName, message, recommended = null) {
+  const body = { error: 'not_implemented', tool: toolName, message };
+  if (recommended) body.recommended = recommended;
+  return { content: [{ type: 'text', text: JSON.stringify(body) }], isError: true };
+}
 
 const DEEP_MEMORY_ROOT = process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
 
@@ -52,7 +63,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_smart_search',
-    description: 'Hybrid retrieval (BM25+vector+RRF) with LLM-driven rerank. Read-only.',
+    description: 'Hybrid retrieval (FTS5 BM25 + optional vector stream, RRF-fused). Vector stream is used only when @xenova/transformers is installed; otherwise FTS5-only. Returns candidate card references. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -65,7 +76,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_recall',
-    description: 'Lightweight lexical recall (FTS5 only). Read-only.',
+    description: 'Lightweight lexical recall (FTS5 BM25 only). Returns candidate card references. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -78,7 +89,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_save',
-    description: 'Add a new memory card (privacy=local). Additive + reversible — no consent gate.',
+    description: 'NOT IMPLEMENTED in v0.3.x — returns an error. Manual card creation is unsupported; memory cards are produced only by harvesting sibling deep-suite artifacts (run /deep-memory-harvest).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -92,7 +103,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_harvest',
-    description: 'Harvest sibling deep-suite artifacts into events. Read-only summary; idempotent.',
+    description: 'NOT IMPLEMENTED as an autonomous MCP tool in v0.3.x — returns an error. Run /deep-memory-harvest instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,7 +113,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_audit',
-    description: 'Audit operations. mode=check is autonomous-readable; other modes are slash-only mutation.',
+    description: 'Audit operations. mode=check is NOT IMPLEMENTED in v0.3.x (returns an error — run /deep-memory-audit); other modes are slash-only mutation.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -123,7 +134,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_sessions',
-    description: 'List recent hook-capture sessions with event + draft counts.',
+    description: 'NOT IMPLEMENTED in v0.3.x — returns an error. Session enumeration is not yet available.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -133,7 +144,7 @@ const TOOLS = [
   },
   {
     name: 'deep_memory_profile',
-    description: 'Show or update the project profile (signature, languages, tags).',
+    description: 'NOT IMPLEMENTED in v0.3.x — returns an error. Project profile show/update is not yet available.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -292,8 +303,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const query = args.query || args.task || '';
       const result = await runHybridRetrieve({
         query, currentProjectId: projectId, root: DEEP_MEMORY_ROOT,
-        ftsSearch: null,  // FTS5 wiring is final-integration task (Opus 🟡 #7)
-        topN: args.limit || 5
+        ftsSearch: makeFtsSearch(DEEP_MEMORY_ROOT),  // real FTS5 lexical stream (degrades gracefully)
+        topN: args.limit || 5,
+        // R4 #4 — recall is advertised "FTS5 BM25 only": keep it lexical-only
+        // even when a vector model/index is available.
+        useVector: name !== 'deep_memory_recall'
       });
       // Stage 0a warnings surface alongside retrieval results.
       result.distill = distillResult;
@@ -307,78 +321,53 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === 'deep_memory_save') {
-    // Spec §6.3.1 Gate 2 carve-out — additive + local, no consent gate.
-    // Card writer wiring tied to Opus 🔴 #5 + 🟡 #8 — emit audit-log save entry
-    // even though card body write is a deferred minor.
-    try {
-      writeEntry(DEEP_MEMORY_ROOT, {
-        kind: 'save', by: 'mcp-autonomous', host: process.env.DEEP_MEMORY_HOST || 'unknown',
-        payload: {
-          memory_id: 'mem_' + Math.random().toString(36).slice(2, 14),
-          memory_type: args.memory_type, privacy: 'local'
-        }
-      });
-    } catch {}
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'accepted',
-          note: 'save audit-log emitted; card body persistence consolidated with v0.3.1 card-writer task'
-        })
-      }]
-    };
+    // Honesty (P0): the previous handler wrote an audit-log 'save' entry with a
+    // random memory_id and returned {status:'accepted'} while persisting NO card
+    // body — a silent failure that made the model believe a card was saved.
+    // Manual card creation is a deferred feature (no /deep-memory-save command
+    // exists; cards are produced only by harvesting sibling artifacts), so fail
+    // honestly instead of faking success. No audit-log entry is written because
+    // nothing was saved.
+    return notImplemented(
+      'deep_memory_save',
+      'Manual memory-card creation is not implemented in v0.3.x. Memory cards are ' +
+      'produced by harvesting sibling deep-suite artifacts (deep-work / deep-review / ' +
+      'deep-evolve / deep-docs / deep-wiki). Run /deep-memory-harvest to distill cards ' +
+      'from those outputs. No card was saved.',
+      "Run '/deep-memory-harvest' in your CLI."
+    );
   }
 
   if (name === 'deep_memory_audit' && args.mode === 'check') {
-    // Read-only audit — no mutation, returns lock + index health.
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'ok',
-          note: 'autonomous audit check stub — full lock/index health probe in v0.3.1'
-        })
-      }]
-    };
+    // The prior stub returned {status:'ok'} without probing anything — a false
+    // clean bill of health. Fail honestly until the lock/index health probe is wired.
+    return notImplemented(
+      'deep_memory_audit',
+      'Autonomous audit check (mode=check) is not implemented in v0.3.x. Run /deep-memory-audit.',
+      "Run '/deep-memory-audit' in your CLI."
+    );
   }
 
   if (name === 'deep_memory_harvest') {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'stub',
-          note: 'deep_memory_harvest autonomous wrapper around scripts/harvest.js — full wiring v0.3.1'
-        })
-      }]
-    };
+    return notImplemented(
+      'deep_memory_harvest',
+      'Harvest is not implemented as an autonomous MCP tool in v0.3.x. Run /deep-memory-harvest.',
+      "Run '/deep-memory-harvest' in your CLI."
+    );
   }
 
   if (name === 'deep_memory_sessions') {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'stub',
-          sessions: [],
-          note: 'deep_memory_sessions stub — full session enumerator v0.3.1'
-        })
-      }]
-    };
+    return notImplemented(
+      'deep_memory_sessions',
+      'Session enumeration is not implemented in v0.3.x.'
+    );
   }
 
   if (name === 'deep_memory_profile') {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'stub',
-          project_id: projectId,
-          note: 'deep_memory_profile stub — full profile show/update v0.3.1'
-        })
-      }]
-    };
+    return notImplemented(
+      'deep_memory_profile',
+      'Project profile show/update is not implemented in v0.3.x.'
+    );
   }
 
   return {

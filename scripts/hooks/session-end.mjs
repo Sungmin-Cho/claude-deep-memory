@@ -6,23 +6,29 @@ import { fileURLToPath } from 'node:url';
 
 if (!isCaptureEnabled()) process.exit(0);
 
-const chunks = [];
-for await (const c of process.stdin) chunks.push(c);
-const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
-await normalizeAndAppend('hook-session-end', input, detectHost());
+try {
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+  await normalizeAndAppend('hook-session-end', input, detectHost());
 
-if (isEagerDistillEnabled()) {
-  try {
-    const distillScript = fileURLToPath(new URL('../harvest.js', import.meta.url));
-    const sessionId = input.session_id || 'unknown';
-    const child = spawn('node', [distillScript, '--rebuild-from-events', '--session', sessionId], {
-      detached: true,
-      stdio: 'ignore'
-    });
-    child.unref();
-  } catch {
-    // best-effort
+  if (isEagerDistillEnabled()) {
+    try {
+      const distillScript = fileURLToPath(new URL('../harvest.js', import.meta.url));
+      const sessionId = input.session_id || 'unknown';
+      const child = spawn('node', [distillScript, '--rebuild-from-events', '--session', sessionId], {
+        detached: true,
+        stdio: 'ignore'
+      });
+      child.unref();
+    } catch {
+      // best-effort
+    }
   }
+} catch (e) {
+  // A hook must never break the host session — swallow any capture failure
+  // (malformed stdin, lock error, disk error) to a clean exit.
+  console.error(`[deep-memory] session-end hook skipped: ${e && e.message}`);
 }
 
 process.exit(0);

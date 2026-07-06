@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { runLazyDistill, filterByProject, groupBySession, readPendingEvents } = require('../scripts/lib/distill-pipeline');
-const { readCursor } = require('../scripts/lib/cursor');
+const { readCursor, advanceTo } = require('../scripts/lib/cursor');
 
 function mkTmpRoot() {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-distill-pipe-'));
@@ -140,6 +140,64 @@ test('β.5: events from other projects do not block current project cursor', asy
   assert.ok(cursor.offset > 0, `cursor should advance past foreign events, got ${cursor.offset}`);
 });
 
+test('P0 lossless invariant: cursor does NOT advance when drafts emitted but 0 committed (no card-writer wired)', async () => {
+  // Reproduces the capture→distill data-loss bug: production callers
+  // (mcp-server.mjs brief prelude, harvest.js --rebuild-from-events) invoke
+  // runLazyDistill WITHOUT a commitDrafts writer. Pre-fix the cursor advanced
+  // to EOF while 0 cards were committed → the events were permanently skipped.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  const lines = [mkHookEvent('proj_a', 's1'), mkHookEvent('proj_a', 's1')];
+  fs.writeFileSync(eventsFile, lines.map(JSON.stringify).join('\n') + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } }
+    // NO commitDrafts — mirrors the production call sites.
+  });
+
+  assert.ok(result.drafts_emitted >= 1, 'sanity: at least one draft emitted');
+  assert.strictEqual(result.cards_committed, 0, 'no writer wired → zero cards committed');
+  assert.strictEqual(result.cursor_advanced_to, null, 'cursor must not advance when nothing committed');
+  assert.ok(
+    result.warnings.some(w => w.startsWith('cursor_held:')),
+    `expected a cursor_held warning, got ${JSON.stringify(result.warnings)}`
+  );
+  // Losslessness proof: cursor is unset and a re-run re-observes the same events.
+  assert.strictEqual(readCursor(root, 'proj_a'), null, 'cursor must remain unset (lossless)');
+  const rerun = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } }
+  });
+  assert.strictEqual(rerun.processed_events, 2, 'events remain pending for re-distill after a no-commit run');
+});
+
+test('P0 lossless invariant: zero-draft session still advances cursor (no stuck events)', async () => {
+  // A session that matches no detector and has always_emit=false produces 0
+  // drafts. Those lines are "processed" (nothing to persist) and MUST be
+  // consumed so the cursor is not stuck re-reading unmatched events forever.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  // A single lone event triggers no pattern/failure/decision/style detector.
+  fs.writeFileSync(eventsFile, JSON.stringify(mkHookEvent('proj_a', 's1')) + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } }
+    // NO commitDrafts, but also zero drafts → safe to advance.
+  });
+
+  assert.strictEqual(result.drafts_emitted, 0, 'no detector matched → zero drafts');
+  assert.notStrictEqual(result.cursor_advanced_to, null, 'zero-draft lines must be consumed');
+  const cursor = readCursor(root, 'proj_a');
+  assert.ok(cursor && cursor.offset > 0, 'cursor advances past the consumed zero-draft line');
+});
+
 test('groupBySession: groups events by session_id', () => {
   const groups = groupBySession([
     { session_id: 's1', tool_name: 'a' },
@@ -149,4 +207,66 @@ test('groupBySession: groups events by session_id', () => {
   assert.strictEqual(groups.size, 2);
   assert.strictEqual(groups.get('s1').length, 2);
   assert.strictEqual(groups.get('s2').length, 1);
+});
+
+test('P0 lossless invariant (R2 #2): partial commit (accounted < emitted) holds the cursor', async () => {
+  // A real writer that durably accounts for only SOME of the emitted drafts
+  // (e.g. returns 1 of 3) must NOT let the cursor advance past the whole tail —
+  // the unaccounted drafts' events would be permanently skipped otherwise.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  const lines = [mkHookEvent('proj_a', 's1'), mkHookEvent('proj_a', 's2'), mkHookEvent('proj_a', 's3')];
+  fs.writeFileSync(eventsFile, lines.map(JSON.stringify).join('\n') + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } },
+    commitDrafts: async () => 1  // partial: 1 accounted, rest dropped
+  });
+
+  assert.ok(result.drafts_emitted >= 2, `sanity: multiple drafts emitted, got ${result.drafts_emitted}`);
+  assert.strictEqual(result.cards_committed, 1);
+  assert.strictEqual(result.cursor_advanced_to, null, 'partial accounting must hold the cursor');
+  assert.ok(
+    result.warnings.some(w => w.startsWith('cursor_held:')),
+    `expected a cursor_held warning, got ${JSON.stringify(result.warnings)}`
+  );
+  assert.strictEqual(readCursor(root, 'proj_a'), null, 'cursor must remain unset (lossless)');
+});
+
+test('P0 lossless invariant (R4 #1): deferred cursor keeps (file, offset) across month-file rollover', async () => {
+  // Cursor starts in an OLD month file; a deferred draft lives there while a
+  // NEWER month file is also pending. The cursor must land strictly upstream
+  // of the OLD file's deferred line — not pair an old-file offset (or a
+  // new-file offset) with the newest filename, which skips the old events.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const oldFile = '2000-01.jsonl';  // lex < any current month
+  const evA = mkHookEvent('proj_a', 'sA');
+  const evB = mkHookEvent('proj_a', 'sB');
+  const evC = mkHookEvent('proj_a', 'sC');
+  const oldLines = JSON.stringify(evA) + '\n' + JSON.stringify(evB) + '\n';
+  fs.writeFileSync(path.join(root, 'events', oldFile), oldLines);
+  fs.writeFileSync(path.join(root, 'events', `${ym}.jsonl`), JSON.stringify(evC) + '\n');
+  const sBstart = Buffer.byteLength(JSON.stringify(evA), 'utf8') + 1;
+  advanceTo(root, 'proj_a', oldFile, 0);  // cursor begins in the old month
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    // skip_llm:false + batch_size:1 → draft[0] (sA) refined-or-candidate,
+    // drafts for sB (old file) and sC (new file) deferred.
+    config: { skip_llm: false, batch_size: 1, distill: { detectors: { session_summary: { always_emit: true } } } },
+    commitDrafts: async (drafts) => drafts.length  // fully account non-deferred
+  });
+
+  assert.strictEqual(result.deferred_count, 2, `sanity: sB+sC deferred, got ${result.deferred_count}`);
+  const cursor = readCursor(root, 'proj_a');
+  assert.ok(cursor, 'cursor must be set');
+  assert.strictEqual(cursor.file, oldFile,
+    `cursor must stay in the old month file, got ${JSON.stringify(cursor)}`);
+  assert.strictEqual(cursor.offset, sBstart,
+    `cursor must land before the deferred sB line, got ${JSON.stringify(cursor)}`);
 });

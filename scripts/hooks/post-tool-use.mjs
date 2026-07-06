@@ -11,8 +11,14 @@ if (!isCaptureEnabled()) {
   process.exit(0);
 }
 
-const chunks = [];
-for await (const c of process.stdin) chunks.push(c);
-const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
-await normalizeAndAppend('hook-post-tool-use', input, detectHost());
+try {
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+  await normalizeAndAppend('hook-post-tool-use', input, detectHost());
+} catch (e) {
+  // A hook must never break the host session — swallow any capture failure
+  // (malformed stdin, lock error, disk error) to a clean exit.
+  console.error(`[deep-memory] post-tool-use hook skipped: ${e && e.message}`);
+}
 process.exit(0);
