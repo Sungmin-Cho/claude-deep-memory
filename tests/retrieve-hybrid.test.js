@@ -172,3 +172,69 @@ test('R3 #1: rows whose card file is missing are DROPPED with one bounded skew w
   assert.match(skew[0], /\b2\b/, 'warning should carry the dropped-row count');
   assert.ok(!skew[0].includes('forgotten secret claim'), 'warning must not echo card content');
 });
+
+// R4 #2/#3/#4 — scope-strict locate / payload enrichment / lexical-only option
+
+test('R4 #2: a local row is NOT validated by a same-id global card (scope-strict fail-closed)', async () => {
+  const root = mkTmpRoot();
+  // The local scoped card was deleted; a global card with the same memory_id
+  // remains (memory_id is deterministic from type/claim, not scope).
+  writeCard(root, { memory_type: 'pattern', project_id: 'global', memory_id: 'm_dup' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [
+      { memory_id: 'm_dup', project_id: 'p1', privacy_level: 'local', memory_type: 'pattern', claim: 'stale local claim' },
+    ],
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 0, 'stale local row must not be validated by a global card');
+  assert.ok(result.warnings.some(w => w.startsWith('card_filter_dropped:')));
+});
+
+test('R4 #2: a global-privacy row still resolves via the global directory', async () => {
+  const root = mkTmpRoot();
+  writeCard(root, { memory_type: 'pattern', project_id: 'global', memory_id: 'm_glob' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p2', root,
+    ftsSearch: async () => [
+      { memory_id: 'm_glob', project_id: 'p9', privacy_level: 'global', memory_type: 'pattern' },
+    ],
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 1, 'global-privacy row must resolve from the global dir');
+});
+
+test('R4 #3: fields missing on the fused row are filled from the validated card payload', async () => {
+  const root = mkTmpRoot();
+  writeCardWithClaim(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_enrich', claim: 'card claim text' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [{ memory_id: 'm_enrich', project_id: 'p1' }],  // vector-shape: no claim/memory_type
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 1);
+  assert.strictEqual(result.memories[0].claim, 'card claim text', 'claim must be filled from the card payload');
+  assert.strictEqual(result.memories[0].memory_type, 'pattern', 'memory_type must be filled from the card payload');
+});
+
+function writeCardWithClaim(root, { memory_type, project_id, memory_id, claim }) {
+  const dir = path.join(root, 'cards', memory_type, project_id || 'global');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, memory_id + '.json'), JSON.stringify({
+    payload: { memory_id, memory_type, status: 'active', non_applicability: [], claim },
+  }));
+}
+
+test('R4 #4: useVector:false keeps retrieval lexical-only (no vector probe, no vector warnings)', async () => {
+  const root = mkTmpRoot();
+  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_lex' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [{ memory_id: 'm_lex', project_id: 'p1', memory_type: 'pattern' }],
+    topN: 5,
+    useVector: false,
+  });
+  assert.deepStrictEqual(result.streams_used, ['fts5']);
+  assert.ok(!result.warnings.some(w => w.includes('vector_stream')),
+    `lexical-only mode must not emit vector-stream warnings, got: ${JSON.stringify(result.warnings)}`);
+});

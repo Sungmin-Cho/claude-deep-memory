@@ -304,7 +304,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const result = await runHybridRetrieve({
         query, currentProjectId: projectId, root: DEEP_MEMORY_ROOT,
         ftsSearch: makeFtsSearch(DEEP_MEMORY_ROOT),  // real FTS5 lexical stream (degrades gracefully)
-        topN: args.limit || 5
+        topN: args.limit || 5,
+        // R4 #4 — recall is advertised "FTS5 BM25 only": keep it lexical-only
+        // even when a vector model/index is available.
+        useVector: name !== 'deep_memory_recall'
       });
       // Stage 0a warnings surface alongside retrieval results.
       result.distill = distillResult;

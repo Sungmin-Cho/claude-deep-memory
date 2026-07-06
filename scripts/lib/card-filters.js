@@ -42,19 +42,42 @@ function loadCard(memoryRoot, row) {
   return null;
 }
 
+function readCardFile(memoryRoot, memoryType, scope, memoryId) {
+  const p = path.join(memoryRoot, 'cards', memoryType, scope, memoryId + '.json');
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+  catch { return null; }
+}
+
 /**
- * loadCard for rows that may lack `memory_type` — vector-index rows carry only
- * (memory_id, project_id, privacy_level), so fall back to probing each
- * `cards/<type>/` directory. The cards tree has a handful of type dirs, so the
- * scan is bounded.
+ * Scope-strict card lookup for the MCP hybrid path (R4 #2). memory_id is
+ * deterministic from type/claim — NOT from scope — so a same-id GLOBAL card
+ * must never "validate" a stale LOCAL index row whose scoped card was deleted:
+ * a local row resolves ONLY from its own project scope. Rows that are
+ * themselves global-privacy (or scope-less) may resolve from the global
+ * directory. Also handles rows lacking `memory_type` (vector-index rows carry
+ * only memory_id/project_id/privacy_level) by probing each `cards/<type>/`
+ * directory — the type dir set is a handful, so the scan is bounded.
+ * (The CLI pipeline's loadCard keeps its project→global fallback: it renders
+ * the LOADED card's payload, not the index row, so no stale row content can
+ * surface through it.)
  */
 function locateCard(memoryRoot, row) {
-  if (row.memory_type) return loadCard(memoryRoot, row);
+  const isGlobalRow = row.privacy_level === 'global' || !row.project_id;
+  const scopes = isGlobalRow
+    ? [...new Set([row.project_id, 'global'].filter(Boolean))]
+    : [row.project_id];
   let types = [];
-  try { types = fs.readdirSync(path.join(memoryRoot, 'cards')); } catch { return null; }
+  if (row.memory_type) {
+    types = [row.memory_type];
+  } else {
+    try { types = fs.readdirSync(path.join(memoryRoot, 'cards')); } catch { return null; }
+  }
   for (const t of types) {
-    const card = loadCard(memoryRoot, { ...row, memory_type: t });
-    if (card) return card;
+    for (const s of scopes) {
+      const card = readCardFile(memoryRoot, t, s, row.memory_id);
+      if (card) return card;
+    }
   }
   return null;
 }
