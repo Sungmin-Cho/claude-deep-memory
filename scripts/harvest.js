@@ -301,6 +301,67 @@ const STEP_A_MAPPERS = {
   'wiki-index': mapWikiIndex,
 };
 
+/**
+ * Envelope contract per source kind — MUST stay in sync with
+ * `scripts/lib/default-config.js` `sources[*]` (producer / artifact_kind /
+ * supported_schema_versions). Consumed by the harvest envelope guard.
+ */
+const SOURCE_CONTRACTS = {
+  'review-recurring': { producer: 'deep-review', artifact_kind: 'recurring-findings', supported_schema_versions: ['1.0'] },
+  'evolve-insights':  { producer: 'deep-evolve', artifact_kind: 'evolve-insights',    supported_schema_versions: ['1.0'] },
+  'work-receipt':     { producer: 'deep-work',   artifact_kind: 'session-receipt',     supported_schema_versions: ['1.0'] },
+  'docs-scan':        { producer: 'deep-docs',   artifact_kind: 'last-scan',           supported_schema_versions: ['1.0'] },
+  'wiki-index':       { producer: 'deep-wiki',   artifact_kind: 'wiki-index',          supported_schema_versions: ['1.0'] },
+};
+
+/**
+ * Envelope contract guard (SKILL.md Step 4: "producer / artifact_kind /
+ * schema_version 헤더 확인 → mis-match 면 skip + warning"). Returns {ok:true}
+ * when the artifact's M3 envelope header is consistent with the source kind's
+ * contract, or {ok:false, warning} on a POSITIVE mismatch — a present envelope
+ * field that disagrees, or a present schema.version whose MAJOR is outside the
+ * supported majors derived from supported_schema_versions.
+ *
+ * Version is compared at MAJOR granularity: a minor bump is additive and
+ * backward-compatible by SemVer convention (verified in practice — deep-docs
+ * emits last-scan schema 1.1 while the config still declares 1.0, and the
+ * docs-scan mapper handles it), so 1.1 passes against a supported "1.0" but a
+ * breaking 2.0 is rejected. An absent envelope / absent field is tolerated
+ * (legacy unwrapped artifact); the guard rejects only artifacts that actively
+ * declare a different producer/kind or an unsupported MAJOR schema revision
+ * (sibling schema drift), which would otherwise map to zero/garbage cards
+ * silently.
+ */
+function majorOf(version) {
+  return String(version).split('.')[0];
+}
+
+function checkEnvelopeContract(raw, sourceKind) {
+  const contract = SOURCE_CONTRACTS[sourceKind];
+  if (!contract) return { ok: true }; // unknown kind is handled by the mapper existence check
+  const env = (raw && raw.envelope) || {};
+  const producer = env.producer;
+  const artifactKind = env.artifact_kind;
+  const version = env.schema && env.schema.version;
+  const problems = [];
+  if (producer != null && producer !== contract.producer) {
+    problems.push(`producer '${producer}' != expected '${contract.producer}'`);
+  }
+  if (artifactKind != null && artifactKind !== contract.artifact_kind) {
+    problems.push(`artifact_kind '${artifactKind}' != expected '${contract.artifact_kind}'`);
+  }
+  if (version != null) {
+    const supportedMajors = new Set(contract.supported_schema_versions.map(majorOf));
+    if (!supportedMajors.has(majorOf(version))) {
+      problems.push(`schema.version '${version}' major not in supported [${contract.supported_schema_versions.join(', ')}]`);
+    }
+  }
+  if (problems.length > 0) {
+    return { ok: false, warning: `envelope_mismatch (${sourceKind}): ${problems.join('; ')} — artifact skipped` };
+  }
+  return { ok: true };
+}
+
 function memoryIdFor(memoryType, dk) {
   const typeSlug = memoryType.replace(/-/g, '_');
   const shortHash = createHash('sha256').update(dk).digest('hex').slice(0, 16); // 64-bit; was 6 (24-bit)
@@ -496,6 +557,23 @@ async function harvestArtifact({
   const sourceMeta = buildSourceMeta(artifactPath, raw, sourceKind);
   const mapper = STEP_A_MAPPERS[sourceKind];
   if (!mapper) throw new Error(`Unknown sourceKind: ${sourceKind}`);
+
+  // Envelope contract guard — skip (do NOT persist) a sibling artifact whose
+  // M3 envelope header disagrees with this source kind's contract, recording a
+  // warning instead of silently mapping schema-drifted input to zero/garbage
+  // cards. Returns an empty card array carrying non-enumerable `skipped` +
+  // `warnings` so the CLI mirrors both into latest-harvest.json.
+  const contractCheck = checkEnvelopeContract(raw, sourceKind);
+  if (!contractCheck.ok) {
+    const skipped = [];
+    Object.defineProperty(skipped, 'skipped', {
+      enumerable: false, configurable: true, writable: true, value: true,
+    });
+    Object.defineProperty(skipped, 'warnings', {
+      enumerable: false, configurable: true, writable: true, value: [contractCheck.warning],
+    });
+    return skipped;
+  }
 
   // Pass 1 redaction — applied to raw artifact before Step A reads it
   const redacted = redactObject(raw);
@@ -742,6 +820,8 @@ module.exports = {
   mapDocsScan,
   mapWikiIndex,
   STEP_A_MAPPERS,
+  SOURCE_CONTRACTS,
+  checkEnvelopeContract,
   buildCardFromDraft,
   buildSourceMeta,
   splitSourceMeta,
@@ -861,6 +941,7 @@ if (require.main === module) {
   harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
     .then((cards) => {
       const warnings = Array.isArray(cards.warnings) ? cards.warnings : [];
+      const wasSkipped = cards.skipped === true;
       const summary = {
         generated_at: new Date().toISOString(),
         artifactPath,
@@ -868,12 +949,15 @@ if (require.main === module) {
         projectId: finalProjectId,
         cards_count: cards.length,
         memory_ids: cards.map((c) => c.payload?.memory_id),
+        skipped: wasSkipped,
         warnings,
       };
       const outDir = path.join(cwd, '.deep-memory');
       fs.mkdirSync(outDir, { recursive: true });
       writeJsonAtomic(path.join(outDir, 'latest-harvest.json'), summary);
-      console.log(`Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
+      console.log(wasSkipped
+        ? `Harvest: SKIPPED ${sourceKind} (envelope mismatch) → ${path.join(outDir, 'latest-harvest.json')}`
+        : `Harvest: ${cards.length} card(s) from ${sourceKind} → ${path.join(outDir, 'latest-harvest.json')}`);
       for (const w of warnings) console.warn(`Warning: ${w}`);
     })
     .catch((e) => { console.error(e.message); process.exit(1); });
