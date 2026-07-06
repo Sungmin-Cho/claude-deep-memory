@@ -248,24 +248,23 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
     }
   }
 
-  // β.7 + P0 lossless-cursor invariant — advance the cursor ONLY when at least
-  // one card was durably committed OR there was nothing to commit (every line
-  // was zero-draft / all drafts deferred). When drafts WERE emitted but nothing
-  // was committed — because no card-writer is wired (production callers pass no
-  // `commitDrafts`) or `commitDrafts` threw — the cursor stays put so the events
-  // remain pending for a later re-distill instead of being silently skipped
-  // (the capture→distill data-loss bug). `commitDrafts` must return the count of
-  // drafts durably accounted for (committed OR idempotently de-duplicated) so a
-  // real writer that dedupes to zero still lets the cursor advance.
-  const cursorSafeToAdvance = cardsCommitted > 0 || draftsEmitted === 0;
+  // β.7 + P0 lossless-cursor invariant — advance the cursor ONLY when EVERY
+  // emitted draft was durably accounted for (committed OR idempotently
+  // de-duplicated; `commitDrafts` returns that count), or there was nothing to
+  // commit (every line was zero-draft / all drafts deferred). Anything less —
+  // no card-writer wired (production callers pass no `commitDrafts`),
+  // `commitDrafts` threw, or a PARTIAL commit (accounted < emitted, R2 #2) —
+  // holds the cursor so the events remain pending for a later re-distill
+  // instead of being silently skipped (the capture→distill data-loss bug).
+  const cursorSafeToAdvance = cardsCommitted >= draftsEmitted;
   let cursorAdvancedTo = null;
   if (cursorSafeToAdvance) {
     advanceTo(root, projectId, file, lastFullyProcessedLineEnd);
     cursorAdvancedTo = `${file}:${lastFullyProcessedLineEnd}`;
   } else {
     warnings.push(
-      `cursor_held: ${draftsEmitted} draft(s) emitted but 0 committed ` +
-      `(no card-writer wired) — events kept pending to avoid loss`
+      `cursor_held: ${draftsEmitted} draft(s) emitted but only ${cardsCommitted} durably accounted ` +
+      `(no card-writer wired, or partial commit) — events kept pending to avoid loss`
     );
   }
 

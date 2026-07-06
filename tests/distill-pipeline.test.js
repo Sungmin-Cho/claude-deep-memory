@@ -208,3 +208,30 @@ test('groupBySession: groups events by session_id', () => {
   assert.strictEqual(groups.get('s1').length, 2);
   assert.strictEqual(groups.get('s2').length, 1);
 });
+
+test('P0 lossless invariant (R2 #2): partial commit (accounted < emitted) holds the cursor', async () => {
+  // A real writer that durably accounts for only SOME of the emitted drafts
+  // (e.g. returns 1 of 3) must NOT let the cursor advance past the whole tail —
+  // the unaccounted drafts' events would be permanently skipped otherwise.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  const lines = [mkHookEvent('proj_a', 's1'), mkHookEvent('proj_a', 's2'), mkHookEvent('proj_a', 's3')];
+  fs.writeFileSync(eventsFile, lines.map(JSON.stringify).join('\n') + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } },
+    commitDrafts: async () => 1  // partial: 1 accounted, rest dropped
+  });
+
+  assert.ok(result.drafts_emitted >= 2, `sanity: multiple drafts emitted, got ${result.drafts_emitted}`);
+  assert.strictEqual(result.cards_committed, 1);
+  assert.strictEqual(result.cursor_advanced_to, null, 'partial accounting must hold the cursor');
+  assert.ok(
+    result.warnings.some(w => w.startsWith('cursor_held:')),
+    `expected a cursor_held warning, got ${JSON.stringify(result.warnings)}`
+  );
+  assert.strictEqual(readCursor(root, 'proj_a'), null, 'cursor must remain unset (lossless)');
+});
