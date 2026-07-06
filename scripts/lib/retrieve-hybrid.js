@@ -16,6 +16,7 @@
 const { rrfFuse } = require('./rrf-fusion');
 const { embedText, probeModelVersion } = require('./embed-model');
 const { openIndex, searchVector } = require('./vector-index');
+const { locateCard, isNotDeprecated, passesApplicabilityGuard, tokenize } = require('./card-filters');
 
 /**
  * γ.6 — session_id diversification (Stage 8 of 6-stage rerank extension).
@@ -116,9 +117,22 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
   const streams = [ftsStream, vectorStream].filter(s => s.length > 0);
   const fused = streams.length > 0 ? rrfFuse(streams) : [];
 
+  // Card-state filter parity with scripts/retrieve.js (R2 #3): index rows say
+  // nothing about card status, so load each fused candidate's payload and apply
+  // the Stage 1 hard filter (status !== 'deprecated') + Stage 6 applicability
+  // guard. A row whose card file cannot be located passes through unchanged —
+  // there is no payload evidence to drop it on, and stubbed/stale-index rows
+  // must keep degrading gracefully rather than vanish.
+  const taskTokens = tokenize(query);
+  const filtered = fused.filter((row) => {
+    const card = locateCard(root, row);
+    if (!card) return true;
+    return isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens);
+  });
+
   // Stage 8 — session diversification (γ.6)
   const maxPerSession = (config.brief && config.brief.max_per_session) || 3;
-  const diversified = sessionDiversify(fused, maxPerSession);
+  const diversified = sessionDiversify(filtered, maxPerSession);
 
   return {
     memories: diversified.slice(0, topN),

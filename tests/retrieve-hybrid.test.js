@@ -97,3 +97,65 @@ test('γ.5 + γ.6: hybrid fuse + session diversification combined', async () => 
   // 5 cards in same session capped to 2 per max_per_session
   assert.strictEqual(result.memories.length, 2);
 });
+
+// R2 #3 — card-state filter parity with scripts/retrieve.js (Stage 1 + Stage 6)
+
+function writeCard(root, { memory_type, project_id, memory_id, status, non_applicability }) {
+  const dir = path.join(root, 'cards', memory_type, project_id || 'global');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, memory_id + '.json'), JSON.stringify({
+    payload: { memory_id, memory_type, status: status || 'active', non_applicability: non_applicability || [] },
+  }));
+}
+
+test('R2 #3: deprecated cards are dropped from hybrid results (Stage 1 parity)', async () => {
+  const root = mkTmpRoot();
+  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_live' });
+  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_dead', status: 'deprecated' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [
+      { memory_id: 'm_live', project_id: 'p1', memory_type: 'pattern' },
+      { memory_id: 'm_dead', project_id: 'p1', memory_type: 'pattern' },
+    ],
+    topN: 5,
+  });
+  const ids = result.memories.map(m => m.memory_id);
+  assert.ok(ids.includes('m_live'), `live card must survive, got ${JSON.stringify(ids)}`);
+  assert.ok(!ids.includes('m_dead'), 'deprecated card must not surface via the MCP hybrid path');
+});
+
+test('R2 #3: non-applicability guard drops cards matching the query (Stage 6 parity)', async () => {
+  const root = mkTmpRoot();
+  writeCard(root, {
+    memory_type: 'pattern', project_id: 'p1', memory_id: 'm_na',
+    non_applicability: [{ value: 'flaky network retry' }],
+  });
+  const result = await runHybridRetrieve({
+    query: 'flaky network retry', currentProjectId: 'p1', root,
+    ftsSearch: async () => [{ memory_id: 'm_na', project_id: 'p1', memory_type: 'pattern' }],
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 0, 'non-applicable card must be dropped');
+});
+
+test('R2 #3: deprecated filter also applies to rows lacking memory_type (vector stream shape)', async () => {
+  const root = mkTmpRoot();
+  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_vdead', status: 'deprecated' });
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [{ memory_id: 'm_vdead', project_id: 'p1' }],  // no memory_type, like searchVector rows
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 0, 'deprecated card must be dropped even without memory_type on the row');
+});
+
+test('R2 #3: rows whose card file is missing pass through unchanged (graceful degradation preserved)', async () => {
+  const root = mkTmpRoot();
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p1', root,
+    ftsSearch: async () => [{ memory_id: 'm_ghost', project_id: 'p1', memory_type: 'pattern' }],
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 1, 'missing card payload must not drop the row (fail-open)');
+});
