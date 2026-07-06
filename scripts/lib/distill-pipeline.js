@@ -238,6 +238,7 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
   }
 
   // Stage 6 — commit drafts (callback-driven for testability)
+  const draftsEmitted = refined.length - deferredCount;
   let cardsCommitted = 0;
   if (commitDrafts) {
     try {
@@ -247,15 +248,33 @@ async function runLazyDistill({ root, projectId, config = {}, commitDrafts = nul
     }
   }
 
-  // β.7 — advance cursor to byte offset after last fully-processed line
-  advanceTo(root, projectId, file, lastFullyProcessedLineEnd);
+  // β.7 + P0 lossless-cursor invariant — advance the cursor ONLY when at least
+  // one card was durably committed OR there was nothing to commit (every line
+  // was zero-draft / all drafts deferred). When drafts WERE emitted but nothing
+  // was committed — because no card-writer is wired (production callers pass no
+  // `commitDrafts`) or `commitDrafts` threw — the cursor stays put so the events
+  // remain pending for a later re-distill instead of being silently skipped
+  // (the capture→distill data-loss bug). `commitDrafts` must return the count of
+  // drafts durably accounted for (committed OR idempotently de-duplicated) so a
+  // real writer that dedupes to zero still lets the cursor advance.
+  const cursorSafeToAdvance = cardsCommitted > 0 || draftsEmitted === 0;
+  let cursorAdvancedTo = null;
+  if (cursorSafeToAdvance) {
+    advanceTo(root, projectId, file, lastFullyProcessedLineEnd);
+    cursorAdvancedTo = `${file}:${lastFullyProcessedLineEnd}`;
+  } else {
+    warnings.push(
+      `cursor_held: ${draftsEmitted} draft(s) emitted but 0 committed ` +
+      `(no card-writer wired) — events kept pending to avoid loss`
+    );
+  }
 
   return {
     processed_events: rawEvents.length,
-    drafts_emitted: refined.length - deferredCount,
+    drafts_emitted: draftsEmitted,
     cards_committed: cardsCommitted,
     deferred_count: deferredCount,
-    cursor_advanced_to: `${file}:${lastFullyProcessedLineEnd}`,
+    cursor_advanced_to: cursorAdvancedTo,
     warnings,
     started_at: startedAt,
     finished_at: new Date().toISOString()

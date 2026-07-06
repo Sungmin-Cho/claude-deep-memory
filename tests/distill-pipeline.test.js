@@ -140,6 +140,64 @@ test('β.5: events from other projects do not block current project cursor', asy
   assert.ok(cursor.offset > 0, `cursor should advance past foreign events, got ${cursor.offset}`);
 });
 
+test('P0 lossless invariant: cursor does NOT advance when drafts emitted but 0 committed (no card-writer wired)', async () => {
+  // Reproduces the capture→distill data-loss bug: production callers
+  // (mcp-server.mjs brief prelude, harvest.js --rebuild-from-events) invoke
+  // runLazyDistill WITHOUT a commitDrafts writer. Pre-fix the cursor advanced
+  // to EOF while 0 cards were committed → the events were permanently skipped.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  const lines = [mkHookEvent('proj_a', 's1'), mkHookEvent('proj_a', 's1')];
+  fs.writeFileSync(eventsFile, lines.map(JSON.stringify).join('\n') + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } }
+    // NO commitDrafts — mirrors the production call sites.
+  });
+
+  assert.ok(result.drafts_emitted >= 1, 'sanity: at least one draft emitted');
+  assert.strictEqual(result.cards_committed, 0, 'no writer wired → zero cards committed');
+  assert.strictEqual(result.cursor_advanced_to, null, 'cursor must not advance when nothing committed');
+  assert.ok(
+    result.warnings.some(w => w.startsWith('cursor_held:')),
+    `expected a cursor_held warning, got ${JSON.stringify(result.warnings)}`
+  );
+  // Losslessness proof: cursor is unset and a re-run re-observes the same events.
+  assert.strictEqual(readCursor(root, 'proj_a'), null, 'cursor must remain unset (lossless)');
+  const rerun = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: true } } } }
+  });
+  assert.strictEqual(rerun.processed_events, 2, 'events remain pending for re-distill after a no-commit run');
+});
+
+test('P0 lossless invariant: zero-draft session still advances cursor (no stuck events)', async () => {
+  // A session that matches no detector and has always_emit=false produces 0
+  // drafts. Those lines are "processed" (nothing to persist) and MUST be
+  // consumed so the cursor is not stuck re-reading unmatched events forever.
+  const root = mkTmpRoot();
+  const ym = new Date().toISOString().slice(0, 7);
+  const eventsFile = path.join(root, 'events', `${ym}.jsonl`);
+  // A single lone event triggers no pattern/failure/decision/style detector.
+  fs.writeFileSync(eventsFile, JSON.stringify(mkHookEvent('proj_a', 's1')) + '\n');
+
+  const result = await runLazyDistill({
+    root,
+    projectId: 'proj_a',
+    config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } }
+    // NO commitDrafts, but also zero drafts → safe to advance.
+  });
+
+  assert.strictEqual(result.drafts_emitted, 0, 'no detector matched → zero drafts');
+  assert.notStrictEqual(result.cursor_advanced_to, null, 'zero-draft lines must be consumed');
+  const cursor = readCursor(root, 'proj_a');
+  assert.ok(cursor && cursor.offset > 0, 'cursor advances past the consumed zero-draft line');
+});
+
 test('groupBySession: groups events by session_id', () => {
   const groups = groupBySession([
     { session_id: 's1', tool_name: 'a' },
