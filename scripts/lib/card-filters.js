@@ -63,10 +63,12 @@ function readCardFile(memoryRoot, memoryType, scope, memoryId) {
  * surface through it.)
  */
 function locateCard(memoryRoot, row) {
+  // R5 P1: a global row resolves from global/ ONLY — vector rows keep their
+  // origin project_id even at privacy_level 'global', and probing that scope
+  // first would let a same-id LOCAL card validate a stale global row for
+  // every other project.
   const isGlobalRow = row.privacy_level === 'global' || !row.project_id;
-  const scopes = isGlobalRow
-    ? [...new Set([row.project_id, 'global'].filter(Boolean))]
-    : [row.project_id];
+  const scopes = isGlobalRow ? ['global'] : [row.project_id];
   let types = [];
   if (row.memory_type) {
     types = [row.memory_type];

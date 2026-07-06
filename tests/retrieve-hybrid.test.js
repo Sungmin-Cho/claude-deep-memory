@@ -238,3 +238,21 @@ test('R4 #4: useVector:false keeps retrieval lexical-only (no vector probe, no v
   assert.ok(!result.warnings.some(w => w.includes('vector_stream')),
     `lexical-only mode must not emit vector-stream warnings, got: ${JSON.stringify(result.warnings)}`);
 });
+
+test('R5 P1: a global-privacy row is NOT validated by a same-id LOCAL card (global scope only)', async () => {
+  // Vector rows keep their origin project_id even when privacy_level is
+  // 'global'. If the global card is gone but a same-id LOCAL card exists in
+  // the origin project, the row must still fail closed — otherwise another
+  // project's retrieval validates a global row with local-only payload.
+  const root = mkTmpRoot();
+  writeCard(root, { memory_type: 'pattern', project_id: 'pX', memory_id: 'm_shadow' });  // local shadow only
+  const result = await runHybridRetrieve({
+    query: 'anything', currentProjectId: 'p2', root,
+    ftsSearch: async () => [
+      { memory_id: 'm_shadow', project_id: 'pX', privacy_level: 'global', memory_type: 'pattern' },
+    ],
+    topN: 5,
+  });
+  assert.strictEqual(result.memories.length, 0, 'global row must resolve from global/ only');
+  assert.ok(result.warnings.some(w => w.startsWith('card_filter_dropped:')));
+});
