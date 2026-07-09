@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cross-project semantic operational memory — tests + helpers only; plugin manifest at .claude-plugin/plugin.json.",
   "author": {
     "name": "Sungmin-Cho"
@@ -14,6 +14,7 @@
     "deep-suite"
   ],
   "scripts": {
+    "build:mcp": "esbuild scripts/mcp-server.mjs --bundle --platform=node --format=cjs --target=node22 --external:better-sqlite3 --external:@xenova/transformers --outfile=dist/mcp-server.cjs",
     "test": "node --test tests/*.test.js tests/runtime-contract/*.test.js tests/hooks/*.test.js tests/mcp-tools/*.test.js",
     "test:envelope": "node --test tests/envelope-emit.test.js",
     "test:redaction": "node --test tests/redaction.test.js",
@@ -32,6 +33,7 @@
     "sql.js": "^1.10.0"
   },
   "devDependencies": {
+    "esbuild": "^0.25.12",
     "js-yaml": "^4.1.1"
   }
 }

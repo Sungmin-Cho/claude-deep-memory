@@ -2,6 +2,23 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [1.0.1] - 2026-07-09
+
+### Fixed (수정)
+
+- **설치 시점 `npm ci` 없이도 MCP startup 가능.** Claude Code와 Codex MCP
+  manifest가 이제 bundled `dist/mcp-server.cjs` entrypoint를 실행합니다. 따라서
+  marketplace/cache 설치물이 `node_modules` 없이 배치되어도 MCP stdio handshake와
+  read-only tool surface 노출이 가능합니다.
+- **MCP startup path의 dependency 축소.** Retrieval, distill, audit-log helper는
+  관련 tool 호출 시점에만 lazy-load합니다. 서버는 `better-sqlite3` 같은 optional/native
+  dependency가 없어도 먼저 시작하고 tool 목록을 반환할 수 있습니다.
+
+### Tests (테스트)
+
+- no-`node_modules` MCP smoke test를 추가했습니다. runtime에 필요한 plugin artifact
+  파일만 복사한 뒤 `initialize` + `tools/list`가 10개 tool을 반환하는지 검증합니다.
+
 ## [1.0.0] - 2026-07-09
 
 ### Fixed (수정)

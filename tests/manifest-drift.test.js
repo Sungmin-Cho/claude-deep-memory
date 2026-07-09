@@ -12,6 +12,7 @@ const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugi
 const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const codexHooksPath = path.join(root, codexManifest.hooks || '');
+const mcpManifest = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
   assert.strictEqual(claudeManifest.version, pkg.version, `claude=${claudeManifest.version} pkg=${pkg.version}`);
@@ -72,4 +73,22 @@ test('manifest-drift: codex hooks use external hooks.json with Claude hook shape
     assert.ok(Array.isArray(hooksManifest.hooks[hookName]), `missing ${hookName} hooks`);
     assert.ok(hooksManifest.hooks[hookName].length > 0, `${hookName} hooks empty`);
   }
+});
+
+test('manifest-drift: MCP manifests use bundled dist entrypoint', () => {
+  const expectedArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
+  assert.deepStrictEqual(
+    claudeManifest.mcpServers['deep-memory'].args,
+    expectedArgs,
+    'Claude Code MCP entrypoint must use bundled dist server',
+  );
+  assert.deepStrictEqual(
+    mcpManifest.mcpServers['deep-memory'].args,
+    expectedArgs,
+    'Codex MCP entrypoint must use bundled dist server via .mcp.json',
+  );
+  assert.ok(
+    fs.existsSync(path.join(root, 'dist/mcp-server.cjs')),
+    'bundled dist/mcp-server.cjs must be committed for node_modules-free installs',
+  );
 });
