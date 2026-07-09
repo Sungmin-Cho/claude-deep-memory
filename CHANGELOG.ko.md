@@ -2,6 +2,24 @@
 
 deep-memory의 모든 주요 변경 사항이 여기에 기록됩니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [1.0.0] - 2026-07-09
+
+### Fixed (수정)
+
+- **Codex hook manifest 로딩.** Codex plugin manifest가 Claude hook object를
+  inline으로 넣는 대신 `./hooks/hooks.json`을 참조하도록 변경했습니다. 이로써 Codex
+  session startup 중 hook 설정이 무시되는 경고를 방지합니다.
+- **Codex hook parity.** 외부 Codex hook manifest에 `PostToolUseFailure`와
+  `SessionEnd`를 포함한 전체 Tier-1 capture hook set을 등록했습니다.
+- **release metadata drift.** MCP server metadata와 hook event envelope가 package
+  version을 읽도록 하여 runtime `producer_version`이 plugin/package release version과
+  동기화됩니다.
+
+### Tests (테스트)
+
+- Codex hooks가 외부 hooks manifest를 사용하고 예상 hook entry가 모두 존재하는지
+  검증하는 manifest-drift 회귀 테스트를 추가했습니다.
+
 ## [0.4.0] - 2026-07-07
 
 ### Fixed (수정)

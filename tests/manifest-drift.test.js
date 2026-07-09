@@ -11,6 +11,7 @@ const root = path.resolve(__dirname, '..');
 const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
 const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const codexHooksPath = path.join(root, codexManifest.hooks || '');
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
   assert.strictEqual(claudeManifest.version, pkg.version, `claude=${claudeManifest.version} pkg=${pkg.version}`);
@@ -60,5 +61,15 @@ test('manifest-drift: codex manifest interface block present', () => {
   assert.ok(codexManifest.interface, 'codex manifest missing interface');
   for (const field of ['displayName', 'shortDescription', 'longDescription', 'capabilities', 'defaultPrompt']) {
     assert.ok(codexManifest.interface[field] !== undefined, `codex interface missing ${field}`);
+  }
+});
+
+test('manifest-drift: codex hooks use external hooks.json with Claude hook shape', () => {
+  assert.strictEqual(codexManifest.hooks, './hooks/hooks.json');
+  const hooksManifest = JSON.parse(fs.readFileSync(codexHooksPath, 'utf8'));
+  assert.ok(hooksManifest.hooks, 'codex hooks manifest missing hooks block');
+  for (const hookName of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd']) {
+    assert.ok(Array.isArray(hooksManifest.hooks[hookName]), `missing ${hookName} hooks`);
+    assert.ok(hooksManifest.hooks[hookName].length > 0, `${hookName} hooks empty`);
   }
 });

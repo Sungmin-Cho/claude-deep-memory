@@ -2,6 +2,24 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-07-09
+
+### Fixed
+
+- **Codex hook manifest loading.** The Codex plugin manifest now references
+  `./hooks/hooks.json` instead of embedding the Claude hook object inline, which
+  prevents Codex from ignoring hook configuration during session startup.
+- **Codex hook parity.** The external Codex hook manifest registers the full
+  Tier-1 capture hook set, including `PostToolUseFailure` and `SessionEnd`.
+- **Release metadata drift.** MCP server metadata and hook event envelopes now
+  read the package version, keeping runtime `producer_version` aligned with the
+  plugin/package release version.
+
+### Tests
+
+- Added a manifest-drift regression that requires Codex hooks to use the
+  external hooks manifest and verifies all expected hook entries are present.
+
 ## [0.4.0] - 2026-07-07
 
 ### Fixed

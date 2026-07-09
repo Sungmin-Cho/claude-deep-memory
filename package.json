@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "Cross-project semantic operational memory — tests + helpers only; plugin manifest at .claude-plugin/plugin.json.",
   "author": {
     "name": "Sungmin-Cho"
