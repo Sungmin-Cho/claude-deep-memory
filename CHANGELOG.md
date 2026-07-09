@@ -2,6 +2,25 @@
 
 All notable changes to deep-memory are documented here. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-09
+
+### Fixed
+
+- **MCP startup without install-time `npm ci`.** Claude Code and Codex MCP
+  manifests now execute the bundled `dist/mcp-server.cjs` entrypoint, so a
+  marketplace/cache install without `node_modules` can still complete the MCP
+  stdio handshake and expose the read-only tool surface.
+- **MCP startup path is dependency-light.** Retrieval, distill, and audit-log
+  helpers are lazy-loaded only when the relevant tool is called. The server can
+  start and list tools before optional/native dependencies such as
+  `better-sqlite3` are available.
+
+### Tests
+
+- Added a no-`node_modules` MCP smoke test that copies only the plugin artifact
+  files needed at runtime and verifies `initialize` + `tools/list` returns all
+  10 tools.
+
 ## [1.0.0] - 2026-07-09
 
 ### Fixed

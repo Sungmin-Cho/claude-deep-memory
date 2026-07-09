@@ -21,16 +21,72 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createRequire } from 'node:module';
+import pkg from '../package.json' with { type: 'json' };
 
-const require = createRequire(import.meta.url);
-const pkg = require('../package.json');
-const { runHybridRetrieve } = require('./lib/retrieve-hybrid.js');
-const { makeFtsSearch } = require('./lib/mcp-fts-search.js');
-const { runLazyDistill } = require('./lib/distill-pipeline.js');
-const { redactString } = require('./lib/redact.js');
-const { resolveCurrentProject } = require('./lib/project-resolver.js');
-const { writeEntry } = require('./lib/audit-log.js');
+function cjsModule(ns) {
+  return ns && ns.default ? ns.default : ns;
+}
+
+function redactConfigText(text) {
+  return String(text)
+    .replace(/([A-Za-z0-9_]*KEY[A-Za-z0-9_]*\s*[:=]\s*)[^\s#]+/gi, '$1<redacted>')
+    .replace(/([A-Za-z0-9_]*TOKEN[A-Za-z0-9_]*\s*[:=]\s*)[^\s#]+/gi, '$1<redacted>')
+    .replace(/([A-Za-z0-9_]*SECRET[A-Za-z0-9_]*\s*[:=]\s*)[^\s#]+/gi, '$1<redacted>');
+}
+
+async function resolveProjectId(cwd) {
+  try {
+    const projectResolver = cjsModule(await import('./lib/project-resolver.js'));
+    return projectResolver.resolveCurrentProject(cwd);
+  } catch {
+    return 'proj_unknown';
+  }
+}
+
+async function loadRetrievalRuntime() {
+  const [retrieveHybrid, mcpFtsSearch] = await Promise.all([
+    import('./lib/retrieve-hybrid.js'),
+    import('./lib/mcp-fts-search.js'),
+  ]);
+  return {
+    runHybridRetrieve: cjsModule(retrieveHybrid).runHybridRetrieve,
+    makeFtsSearch: cjsModule(mcpFtsSearch).makeFtsSearch,
+  };
+}
+
+async function runBestEffortLazyDistill(projectId) {
+  try {
+    const distillPipeline = cjsModule(await import('./lib/distill-pipeline.js'));
+    return await distillPipeline.runLazyDistill({
+      root: DEEP_MEMORY_ROOT,
+      projectId,
+      config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } }
+    });
+  } catch (e) {
+    return { warnings: [`stage_0a_failed: ${e.message}`] };
+  }
+}
+
+function writeGateViolation(toolName, args = {}) {
+  import('./lib/audit-log.js')
+    .then((mod) => {
+      const auditLog = cjsModule(mod);
+      auditLog.writeEntry(DEEP_MEMORY_ROOT, {
+        kind: 'gate-violation',
+        by: 'mcp-autonomous',
+        host: process.env.DEEP_MEMORY_HOST || 'unknown',
+        payload: {
+          tool: toolName.replace('deep_memory_', ''),
+          requested_scope: JSON.stringify(args).slice(0, 200),
+          denial_reason: 'gate2',
+          error: 'slash_only_in_v030'
+        }
+      });
+    })
+    .catch(() => {
+      // Best-effort — audit-log failure must not block the gate response.
+    });
+}
 
 // Honest not-implemented reply for autonomous MCP tools whose full behavior is
 // not wired in v0.3.x. Returns `isError: true` (never `slash_only_in_v030`, which
@@ -184,21 +240,7 @@ function isAutonomousAllowed(toolName, args) {
 
 function slashOnlyError(toolName, args = {}) {
   // IMPL-R1-D — emit gate-violation audit-log entry on every rejection.
-  try {
-    writeEntry(DEEP_MEMORY_ROOT, {
-      kind: 'gate-violation',
-      by: 'mcp-autonomous',
-      host: process.env.DEEP_MEMORY_HOST || 'unknown',
-      payload: {
-        tool: toolName.replace('deep_memory_', ''),
-        requested_scope: JSON.stringify(args).slice(0, 200),
-        denial_reason: 'gate2',
-        error: 'slash_only_in_v030'
-      }
-    });
-  } catch {
-    // Best-effort — audit-log failure must not block the gate response.
-  }
+  writeGateViolation(toolName, args);
   return {
     content: [{
       type: 'text',
@@ -227,7 +269,7 @@ function readResource(uri) {
   if (uri === 'deep-memory://config') {
     try {
       const cfg = fs.readFileSync(path.join(DEEP_MEMORY_ROOT, 'config.yaml'), 'utf8');
-      return { contents: [{ uri, mimeType: 'text/yaml', text: redactString(cfg) }] };
+      return { contents: [{ uri, mimeType: 'text/yaml', text: redactConfigText(cfg) }] };
     } catch {
       return { contents: [{ uri, mimeType: 'text/yaml', text: '# config.yaml not present' }] };
     }
@@ -285,22 +327,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   // IMPL-R1-B — projectId from CWD (shared resolver), not env var.
-  const projectId = resolveCurrentProject(process.env.PROJECT_CWD || process.cwd());
+  const projectId = await resolveProjectId(process.env.PROJECT_CWD || process.cwd());
 
   // IMPL-R1-C — read tools run Stage 0a Lazy distill BEFORE retrieval.
   // brief, smart_search, recall all share this prelude.
   if (name === 'deep_memory_brief' || name === 'deep_memory_smart_search' || name === 'deep_memory_recall') {
-    let distillResult = null;
+    const distillResult = await runBestEffortLazyDistill(projectId);
     try {
-      distillResult = await runLazyDistill({
-        root: DEEP_MEMORY_ROOT, projectId,
-        config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } }
-      });
-    } catch (e) {
-      // Stage 0a is best-effort; retrieval proceeds with a warning.
-      distillResult = { warnings: [`stage_0a_failed: ${e.message}`] };
-    }
-    try {
+      const { runHybridRetrieve, makeFtsSearch } = await loadRetrievalRuntime();
       const query = args.query || args.task || '';
       const result = await runHybridRetrieve({
         query, currentProjectId: projectId, root: DEEP_MEMORY_ROOT,
@@ -404,5 +438,12 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
 
 // ---- Bootstrap -----------------------------------------------------------
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err) => {
+  process.stderr.write(`[deep-memory] MCP server failed: ${err && err.message ? err.message : String(err)}\n`);
+  process.exit(1);
+});
