@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const pkg = require('../../package.json');
 const { redactString } = require('../lib/redact.js');
 const { acquire, release } = require('../lib/lock.js');
 
@@ -152,7 +153,7 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
     schema_version: '1.0',
     envelope: {
       producer: 'deep-memory',
-      producer_version: '0.3.0',
+      producer_version: pkg.version,
       artifact_kind: 'memory-hook-event',
       run_id: crypto.randomUUID(),
       generated_at: capturedAt,

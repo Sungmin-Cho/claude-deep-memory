@@ -24,6 +24,7 @@ import os from 'node:os';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
 const { runHybridRetrieve } = require('./lib/retrieve-hybrid.js');
 const { makeFtsSearch } = require('./lib/mcp-fts-search.js');
 const { runLazyDistill } = require('./lib/distill-pipeline.js');
@@ -269,7 +270,7 @@ const PROMPTS = [
 // ---- Server setup --------------------------------------------------------
 
 const server = new Server(
-  { name: 'deep-memory', version: '0.3.0' },
+  { name: 'deep-memory', version: pkg.version },
   { capabilities: { tools: {}, resources: {}, prompts: {} } }
 );
 
