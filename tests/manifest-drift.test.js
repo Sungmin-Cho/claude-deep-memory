@@ -51,6 +51,35 @@ test('manifest-drift: all skill SKILL.md frontmatter — strict YAML + descripti
   }
 });
 
+test('manifest-drift: all agent frontmatter is strict YAML with bounded required metadata', () => {
+  const agentsDir = path.join(root, 'agents');
+  if (!fs.existsSync(agentsDir)) return;
+
+  for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const txt = fs.readFileSync(path.join(agentsDir, entry.name), 'utf8');
+    const fmMatch = txt.match(/^---\r?\n([\s\S]+?)\r?\n---(?:\r?\n|$)/);
+    assert.ok(fmMatch, `${entry.name}: no frontmatter`);
+
+    let fm;
+    try { fm = yaml.load(fmMatch[1]); }
+    catch (e) { assert.fail(`${entry.name}: strict YAML parse error: ${e.message}`); }
+
+    assert.ok(fm && typeof fm === 'object' && !Array.isArray(fm),
+      `${entry.name}: frontmatter must be a mapping`);
+    assert.ok(typeof fm.name === 'string' && fm.name.trim().length > 0,
+      `${entry.name}: missing name`);
+    assert.ok(typeof fm.description === 'string' && fm.description.trim().length > 0,
+      `${entry.name}: missing description`);
+    assert.ok(fm.description.length <= 1024,
+      `${entry.name}: description ${fm.description.length} chars (host limit)`);
+    assert.ok(typeof fm.tools === 'string' && fm.tools.trim().length > 0,
+      `${entry.name}: tools must be a non-empty comma-separated string`);
+    assert.ok(fm.tools.split(',').every((tool) => tool.trim().length > 0),
+      `${entry.name}: tools contains an empty entry`);
+  }
+});
+
 test('manifest-drift: claude manifest minimal fields present', () => {
   for (const field of ['name', 'version', 'description', 'author', 'license', 'keywords']) {
     assert.ok(claudeManifest[field] !== undefined, `claude manifest missing ${field}`);
