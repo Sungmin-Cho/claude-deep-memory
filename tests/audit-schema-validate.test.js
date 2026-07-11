@@ -32,7 +32,7 @@ test('validateAllCards: 2 freshly harvested cards pass Ajv strict (post envelope
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    const result = validateAllCards(tmp);
+    const result = validateAllCards(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.ok(result.total >= 2, `expected >= 2 cards, got ${result.total}`);
     assert.strictEqual(result.invalid, 0,
       'no schema violations expected: ' + JSON.stringify(result.schema_violations, null, 2));
@@ -52,7 +52,7 @@ test('validateAllCards: hand-planted invalid card surfaces in schema_violations[
       path.join(dir, 'mem_broken.json'),
       JSON.stringify({ schema_version: '1.0', envelope: { producer: 'deep-memory' } })
     );
-    const result = validateAllCards(tmp);
+    const result = validateAllCards(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.invalid, 1);
     assert.strictEqual(result.valid, 0);
     assert.ok(result.schema_violations[0].errors.some((e) => /required/.test(e.message)));
@@ -67,7 +67,7 @@ test('validateAllCards: unparseable JSON file → parse_error report', async () 
     const dir = path.join(tmp, 'cards', 'pattern', 'proj_aaaaaaaaaaaa');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'mem_corrupt.json'), '{ NOT VALID JSON ');
-    const result = validateAllCards(tmp);
+    const result = validateAllCards(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.invalid, 1);
     assert.ok(result.schema_violations[0].parse_error);
     assert.strictEqual(result.schema_violations[0].memory_id, null);

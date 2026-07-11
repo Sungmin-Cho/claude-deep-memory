@@ -1,5 +1,5 @@
 {
-  "description": "Deep Memory capture hooks for session, prompt, tool, compact, and session-end events.",
+  "description": "Deep Memory capture hooks supported by Codex.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.mjs"
+            "command": "node \"${PLUGIN_ROOT}/scripts/hooks/session-start.mjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\scripts\\hooks\\session-start.mjs\""
           }
         ]
       }
@@ -18,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs"
+            "command": "node \"${PLUGIN_ROOT}/scripts/hooks/user-prompt-submit.mjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\scripts\\hooks\\user-prompt-submit.mjs\""
           }
         ]
       }
@@ -29,18 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-use.mjs"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-tool-failure.mjs"
+            "command": "node \"${PLUGIN_ROOT}/scripts/hooks/post-tool-use.mjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\scripts\\hooks\\post-tool-use.mjs\""
           }
         ]
       }
@@ -51,18 +43,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.mjs"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-end.mjs"
+            "command": "node \"${PLUGIN_ROOT}/scripts/hooks/pre-compact.mjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\scripts\\hooks\\pre-compact.mjs\""
           }
         ]
       }

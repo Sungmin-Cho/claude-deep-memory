@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '..');
 const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
 const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const codexHooksPath = path.join(root, codexManifest.hooks || '');
+const codexHooksPath = path.join(root, 'hooks', 'hooks.json');
 const mcpManifest = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
@@ -65,28 +65,47 @@ test('manifest-drift: codex manifest interface block present', () => {
   }
 });
 
-test('manifest-drift: codex hooks use external hooks.json with Claude hook shape', () => {
-  assert.strictEqual(codexManifest.hooks, './hooks/hooks.json');
+test('manifest-drift: Codex default hooks contain the exact supported host subset', () => {
+  assert.strictEqual(Object.hasOwn(codexManifest, 'hooks'), false);
   const hooksManifest = JSON.parse(fs.readFileSync(codexHooksPath, 'utf8'));
   assert.ok(hooksManifest.hooks, 'codex hooks manifest missing hooks block');
-  for (const hookName of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd']) {
+  assert.deepStrictEqual(
+    Object.keys(hooksManifest.hooks).sort(),
+    ['PostToolUse', 'PreCompact', 'SessionStart', 'UserPromptSubmit'],
+  );
+  for (const hookName of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact']) {
     assert.ok(Array.isArray(hooksManifest.hooks[hookName]), `missing ${hookName} hooks`);
     assert.ok(hooksManifest.hooks[hookName].length > 0, `${hookName} hooks empty`);
+    const handlers = hooksManifest.hooks[hookName].flatMap((entry) => entry.hooks || []);
+    assert.strictEqual(handlers.length, 1, `${hookName} must have one handler`);
+    assert.match(handlers[0].command, /^node "\$\{PLUGIN_ROOT\}\//);
+    assert.match(handlers[0].commandWindows, /^node "%PLUGIN_ROOT%\\/);
   }
 });
 
-test('manifest-drift: MCP manifests use bundled dist entrypoint', () => {
-  const expectedArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
+test('manifest-drift: Claude retains its quoted six-event inline hook surface', () => {
+  const expected = ['PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd', 'SessionStart', 'UserPromptSubmit'];
+  assert.deepStrictEqual(Object.keys(claudeManifest.hooks).sort(), expected);
+  for (const event of expected) {
+    const handlers = claudeManifest.hooks[event].flatMap((entry) => entry.hooks || []);
+    assert.strictEqual(handlers.length, 1, event);
+    assert.match(handlers[0].command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\//, event);
+  }
+});
+
+test('manifest-drift: MCP manifests use their host-native bundled entrypoint', () => {
+  const claudeArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
   assert.deepStrictEqual(
     claudeManifest.mcpServers['deep-memory'].args,
-    expectedArgs,
+    claudeArgs,
     'Claude Code MCP entrypoint must use bundled dist server',
   );
   assert.deepStrictEqual(
     mcpManifest.mcpServers['deep-memory'].args,
-    expectedArgs,
-    'Codex MCP entrypoint must use bundled dist server via .mcp.json',
+    ['./dist/mcp-server.cjs'],
+    'Codex MCP entrypoint must be plugin-relative via .mcp.json',
   );
+  assert.strictEqual(mcpManifest.mcpServers['deep-memory'].cwd, '.');
   assert.ok(
     fs.existsSync(path.join(root, 'dist/mcp-server.cjs')),
     'bundled dist/mcp-server.cjs must be committed for node_modules-free installs',

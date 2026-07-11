@@ -50,7 +50,7 @@ test('ITEM-7-r3: re-harvest of globally-promoted card sets FTS row project_id to
     assert.strictEqual(cardsB.length, 1, 'Re-harvest should produce 1 card');
 
     // Step 4: read the FTS row and check project_id
-    const idxPath = path.join(tmpRoot, 'indexes', 'lexical.sqlite');
+    const idxPath = path.join(tmpRoot, 'indexes', 'v2', 'lexical.sqlite');
     assert.ok(fs.existsSync(idxPath), 'FTS index must exist');
     const idx = openIndex(idxPath);
     try {
@@ -79,7 +79,7 @@ test('ITEM-7-r3: local card upsert still gets correct project_id (regression gua
     assert.strictEqual(cards.length, 1);
     const memId = cards[0].payload.memory_id;
 
-    const idxPath = path.join(tmpRoot, 'indexes', 'lexical.sqlite');
+    const idxPath = path.join(tmpRoot, 'indexes', 'v2', 'lexical.sqlite');
     const idx = openIndex(idxPath);
     try {
       const row = idx.db.prepare('SELECT project_id, privacy_level FROM cards WHERE memory_id = ?').get(memId);

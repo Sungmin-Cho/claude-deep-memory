@@ -8,7 +8,6 @@
   "keywords": ["memory", "cross-project", "deep-suite"],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Deep Memory",
     "shortDescription": "Cross-project operational memory + reasoning",

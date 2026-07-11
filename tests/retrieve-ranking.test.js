@@ -44,7 +44,7 @@ function plantCard(tmp, projectId, payload, envelopeExtra = {}) {
 
 function plantAndIndex(tmp, projectId, payload, envelopeExtra = {}) {
   const wrapped = plantCard(tmp, projectId, payload, envelopeExtra);
-  const idx = openIndex(path.join(tmp, 'indexes', 'lexical.sqlite'));
+  const idx = openIndex(path.join(tmp, 'indexes', 'v2', 'lexical.sqlite'));
   try {
     upsertCard(idx, wrapped, { projectId: payload.privacy_level === 'global' ? '' : projectId });
   } finally {

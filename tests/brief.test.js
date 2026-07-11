@@ -41,7 +41,7 @@ function plantGlobalCard(memoryRoot, payload, envelopeExtra = {}) {
     payload,
   };
   fs.writeFileSync(path.join(dir, payload.memory_id + '.json'), JSON.stringify(wrapped, null, 2));
-  const idx = openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+  const idx = openIndex(path.join(memoryRoot, 'indexes', 'v2', 'lexical.sqlite'));
   try {
     upsertCard(idx, wrapped, { projectId: '' });
   } finally {

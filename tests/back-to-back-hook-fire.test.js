@@ -9,10 +9,12 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { writeValidProjectProfile } = require('./helpers/project-profile-fixtures');
 
 function mkTmpRoot() {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-b2b-'));
   fs.writeFileSync(path.join(r, 'config.yaml'), 'capture:\n  enabled: true\n');
+  writeValidProjectProfile(r);
   return r;
 }
 

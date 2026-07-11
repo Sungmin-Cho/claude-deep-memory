@@ -14,6 +14,7 @@ const REPO = path.join(__dirname, '..');
 const { setCaptureEnabled } = require('../scripts/lib/capture-toggle');
 const { defaultConfigYaml } = require('../scripts/lib/default-config');
 const { run } = require('../scripts/init');
+const { writeValidProjectProfile } = require('./helpers/project-profile-fixtures');
 
 function mkRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dm-captog-'));
@@ -59,6 +60,7 @@ test('setCaptureEnabled: enabling writes exactly one capture-toggle audit entry'
   try {
     fs.writeFileSync(configPath(root), defaultConfigYaml());
     setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    writeValidProjectProfile(root);
     const entries = readAudit(root).filter((e) => e.kind === 'capture-toggle');
     assert.strictEqual(entries.length, 1);
     assert.strictEqual(entries[0].by, 'cli-flag');
@@ -164,6 +166,7 @@ test('hook-contract: after setCaptureEnabled(true) the post-tool-use hook captur
   try {
     fs.writeFileSync(configPath(root), defaultConfigYaml());
     setCaptureEnabled(root, true, { by: 'cli-flag', method: 'cli-flag' });
+    writeValidProjectProfile(root);
     const r = spawnSync('node', ['scripts/hooks/post-tool-use.mjs'], {
       cwd: REPO,
       input: JSON.stringify({

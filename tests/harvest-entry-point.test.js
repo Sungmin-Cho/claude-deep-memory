@@ -10,15 +10,25 @@ const os = require('node:os');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const HARVEST_SCRIPT = path.join(REPO_ROOT, 'scripts', 'harvest.js');
+const INIT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'init.js');
 const FIXTURE = path.join(REPO_ROOT, 'tests', 'fixtures', 'sample-recurring-findings.json');
 
 test('ITEM-6-r3: CLI exit 0 and latest-harvest.json written with cards_count=1', () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-cli-harvest-'));
   const tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-cli-proj-'));
   try {
+    const initialized = spawnSync(process.execPath, [INIT_SCRIPT, tmpRoot], {
+      cwd: tmpProject,
+      env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    assert.strictEqual(initialized.status, 0, initialized.stderr);
+    const profile = JSON.parse(fs.readFileSync(
+      path.join(tmpProject, '.deep-memory', 'project-profile.json'), 'utf8'));
     const result = spawnSync(
       process.execPath,
-      [HARVEST_SCRIPT, FIXTURE, '--kind', 'review-recurring', '--project', 'proj_aaaaaaaaaaaa'],
+      [HARVEST_SCRIPT, FIXTURE, '--kind', 'review-recurring', '--project', profile.project_id],
       {
         cwd: tmpProject,
         env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot },
@@ -36,7 +46,7 @@ test('ITEM-6-r3: CLI exit 0 and latest-harvest.json written with cards_count=1',
     // The fixture has 2 findings; F1 filters the empty-evidence one → 1 card.
     assert.strictEqual(summary.cards_count, 1, `Expected 1 card, got ${summary.cards_count}`);
     assert.strictEqual(summary.sourceKind, 'review-recurring');
-    assert.strictEqual(summary.projectId, 'proj_aaaaaaaaaaaa');
+    assert.strictEqual(summary.projectId, profile.project_id);
     assert.ok(Array.isArray(summary.memory_ids), 'memory_ids must be an array');
     assert.strictEqual(summary.memory_ids.length, 1, 'memory_ids must have 1 entry');
   } finally {

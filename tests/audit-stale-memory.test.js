@@ -14,8 +14,10 @@ function mkRoot() {
   return tmp;
 }
 
+const PROJECT_ID = 'proj_aaaaaaaaaaaa';
+
 function plant(tmp, payload) {
-  const scope = payload.privacy_level === 'global' ? 'global' : 'proj_test';
+  const scope = payload.privacy_level === 'global' ? 'global' : PROJECT_ID;
   const dir = path.join(tmp, 'cards', payload.memory_type, scope);
   fs.mkdirSync(dir, { recursive: true });
   const wrapped = {
@@ -57,7 +59,7 @@ test('Task 5.2: validated card with past review_after → deprecated + status_hi
       confidence: 0.7,
       dedupe_key: 'sha256:stale',
     });
-    const result = applyAutoTransitions(tmp);
+    const result = applyAutoTransitions(tmp, { projectId: PROJECT_ID });
     assert.strictEqual(result.transitioned, 1);
     assert.strictEqual(result.transitions[0].to, 'deprecated');
     assert.strictEqual(result.transitions[0].by, 'auto:review_after_past');
@@ -94,7 +96,7 @@ test('Task 5.2: candidate with no triggers stays in candidate (no transition, no
       dedupe_key: 'sha256:stay',
     });
     const beforeMtime = fs.statSync(cardPath).mtimeMs;
-    const result = applyAutoTransitions(tmp);
+    const result = applyAutoTransitions(tmp, { projectId: PROJECT_ID });
     assert.strictEqual(result.transitioned, 0);
     assert.deepStrictEqual(result.transitions, []);
     const afterMtime = fs.statSync(cardPath).mtimeMs;
@@ -143,7 +145,7 @@ test('Task 5.2: status_history truncates at MAX_HISTORY (10) after transition pu
       confidence: 0.7,
       dedupe_key: 'sha256:full',
     });
-    applyAutoTransitions(tmp);
+    applyAutoTransitions(tmp, { projectId: PROJECT_ID });
     const updated = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
     assert.strictEqual(updated.payload.status_history.length, 10,
       'history capped at MAX_HISTORY=10 after the new transition is appended');

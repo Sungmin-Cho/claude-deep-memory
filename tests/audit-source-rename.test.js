@@ -27,7 +27,7 @@ test('Task 5.5: source file unchanged → no unresolved entries (clean baseline)
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.ok(result.scanned >= 1);
     assert.deepStrictEqual(result.unresolved, [],
       'baseline: source file unchanged since harvest');
@@ -58,7 +58,7 @@ test('Task 5.5: source file content mutated → content_drift reported', async (
       tags: ['mutated'],
     });
     fs.writeFileSync(fixture, JSON.stringify(raw));
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.unresolved.length, 1);
     assert.strictEqual(result.unresolved[0].reason, 'content_drift');
     assert.notStrictEqual(result.unresolved[0].expected_hash, result.unresolved[0].actual_hash);
@@ -80,7 +80,7 @@ test('Task 5.5: source file deleted → missing reported', async () => {
       skipDistillStepB: true,
     });
     fs.unlinkSync(fixture);
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.unresolved.length, 1);
     assert.strictEqual(result.unresolved[0].reason, 'missing');
     assert.strictEqual(result.unresolved[0].actual_hash, null);
@@ -119,7 +119,7 @@ test('ITEM-3-r2: harvest under HOME → audit sees clean baseline (no false-posi
 
     // Verify the persisted card uses a ~/ path (harvest redacts home to ~/)
     // Then detectSourceRenames must not report false-positive missing
-    const result = detectSourceRenames(memRoot);
+    const result = detectSourceRenames(memRoot, { projectId: 'proj_333333333333' });
     assert.ok(result.scanned >= 1, 'at least one card scanned');
     assert.deepStrictEqual(result.unresolved, [],
       `Expected no false-positive missing, got: ${JSON.stringify(result.unresolved)}`);

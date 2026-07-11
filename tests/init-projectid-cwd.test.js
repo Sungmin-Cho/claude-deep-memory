@@ -1,86 +1,61 @@
 'use strict';
-// ITEM-6-r4: safeGit now accepts cwd so projectId() is unaffected by
-// process.cwd() changes — each repo's remote is read from its own directory.
 const test = require('node:test');
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const path = require('node:path');
 const os = require('node:os');
+const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { projectId } = require('../scripts/init');
 
 function mkGitRepo(remote) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-pid-cwd-'));
-  spawnSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
-  spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir, stdio: 'ignore' });
+  spawnSync('git', ['init'], { cwd: dir, stdio: 'ignore', shell: false });
+  spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir, stdio: 'ignore', shell: false });
   return dir;
 }
 
-test('projectId(cwd) is stable — calling twice returns same result', () => {
-  const dir = mkGitRepo('https://github.com/test/repo-stable.git');
+test('projectId is root-only and ignores remote changes', () => {
+  const dir = mkGitRepo('https://github.com/test/repo-alpha.git');
   try {
-    const id1 = projectId(dir);
-    const id2 = projectId(dir);
-    assert.strictEqual(id1, id2, 'projectId must be deterministic');
-    assert.match(id1, /^proj_[a-f0-9]{12}$/, 'projectId must match format');
+    const before = projectId(dir);
+    spawnSync('git', ['remote', 'set-url', 'origin', 'https://github.com/test/repo-beta.git'], {
+      cwd: dir,
+      stdio: 'ignore',
+      shell: false,
+    });
+    assert.equal(projectId(dir), before);
+    assert.match(before, /^proj_[a-f0-9]{12}$/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('projectId(cwd) differs for repos with different remotes', () => {
-  const dir1 = mkGitRepo('https://github.com/test/repo-alpha.git');
-  const dir2 = mkGitRepo('https://github.com/test/repo-beta.git');
+test('a real root and its filesystem alias produce the same project id', (t) => {
+  const dir = mkGitRepo('https://github.com/test/repo-alias.git');
+  const alias = `${dir}-alias`;
+  t.after(() => {
+    fs.rmSync(alias, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  fs.symlinkSync(dir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(projectId(alias), projectId(fs.realpathSync.native(dir)));
+});
+
+test('different physical roots produce different project ids', () => {
+  const dir1 = mkGitRepo('https://github.com/test/same.git');
+  const dir2 = mkGitRepo('https://github.com/test/same.git');
   try {
-    const id1 = projectId(dir1);
-    const id2 = projectId(dir2);
-    assert.notStrictEqual(id1, id2, 'different remotes must produce different project_ids');
+    assert.notEqual(projectId(dir1), projectId(dir2));
   } finally {
     fs.rmSync(dir1, { recursive: true, force: true });
     fs.rmSync(dir2, { recursive: true, force: true });
   }
 });
 
-test('projectId(dir1) is unaffected by process.chdir(dir2)', () => {
-  const dir1 = mkGitRepo('https://github.com/test/repo-gamma.git');
-  const dir2 = mkGitRepo('https://github.com/test/repo-delta.git');
-  const originalCwd = process.cwd();
-  try {
-    // Capture stable IDs while in original cwd
-    const id1 = projectId(dir1);
-    const id2 = projectId(dir2);
-
-    // Change process.cwd() to dir2
-    process.chdir(dir2);
-
-    // projectId(dir1) must not be affected by cwd change
-    const id1AfterChdir = projectId(dir1);
-    assert.strictEqual(
-      id1,
-      id1AfterChdir,
-      `projectId(dir1) changed after chdir(dir2): was ${id1}, got ${id1AfterChdir}`
-    );
-
-    // projectId(dir2) must also be stable from dir2 as explicit arg
-    const id2AfterChdir = projectId(dir2);
-    assert.strictEqual(
-      id2,
-      id2AfterChdir,
-      `projectId(dir2) changed: was ${id2}, got ${id2AfterChdir}`
-    );
-  } finally {
-    process.chdir(originalCwd);
-    fs.rmSync(dir1, { recursive: true, force: true });
-    fs.rmSync(dir2, { recursive: true, force: true });
-  }
-});
-
-test('projectId works for non-git directories (safeGit returns empty string gracefully)', () => {
+test('projectId works for a non-git directory', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-pid-nogit-'));
   try {
-    const id = projectId(dir);
-    // Even without git, must return a valid format id (remote = '' → remoteHash = sha256:none)
-    assert.match(id, /^proj_[a-f0-9]{12}$/, `projectId must match format for non-git dir: ${id}`);
+    assert.match(projectId(dir), /^proj_[a-f0-9]{12}$/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

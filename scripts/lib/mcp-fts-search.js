@@ -4,11 +4,12 @@
 // MCP read tools (brief / smart_search / recall) to the real FTS5 lexical
 // index instead of the previous `ftsSearch: null` (which made lexical retrieval
 // a silent no-op). Mirrors scripts/retrieve.js's proven wiring: resolve
-// <root>/indexes/lexical.sqlite, open → search → close, with graceful
+// <root>/indexes/v2/lexical.sqlite, open → search → close, with graceful
 // degradation when better-sqlite3 is unloadable or the index does not exist yet.
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { v2LexicalIndexPath } = require('./v2-index-paths');
 const { redactString } = require('./redact');
 
 /**
@@ -36,7 +37,7 @@ function makeFtsSearch(root, { loadFts = () => require('./fts-index') } = {}) {
     // same privacy invariant as harvest.js's ftsLoadError handling.
     loadError = redactString(e && e.message ? e.message : String(e));
   }
-  const dbPath = path.join(root, 'indexes', 'lexical.sqlite');
+  const dbPath = v2LexicalIndexPath(root);
 
   return ({ query, currentProjectId, topK }) => {
     if (!fts) {

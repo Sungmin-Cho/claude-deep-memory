@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { writeValidProjectProfile } = require('../helpers/project-profile-fixtures');
 
 const HOOK_SOURCE_KIND = {
   'session-start.mjs':      'hook-session-start',
@@ -20,6 +21,7 @@ const HOOK_SOURCE_KIND = {
 function mkTmpRoot() {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-hook-batch-'));
   fs.writeFileSync(path.join(r, 'config.yaml'), 'capture:\n  enabled: true\n');
+  writeValidProjectProfile(r);
   return r;
 }
 

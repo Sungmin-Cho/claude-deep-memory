@@ -24,7 +24,7 @@ test('makeFtsSearch: returns [] (no DB file created) when the index does not exi
   const rows = search({ query: 'anything', currentProjectId: 'proj_a', topK: 10 });
   assert.deepStrictEqual(rows, []);
   assert.strictEqual(
-    fs.existsSync(path.join(root, 'indexes', 'lexical.sqlite')),
+    fs.existsSync(path.join(root, 'indexes', 'v2', 'lexical.sqlite')),
     false,
     'must not create an empty sqlite file for a project that never harvested'
   );
@@ -32,7 +32,7 @@ test('makeFtsSearch: returns [] (no DB file created) when the index does not exi
 
 test('makeFtsSearch: queries the real lexical index and returns matching card rows', { skip: !fts }, () => {
   const root = mkRoot();
-  const dbPath = path.join(root, 'indexes', 'lexical.sqlite');
+  const dbPath = path.join(root, 'indexes', 'v2', 'lexical.sqlite');
   const idx = fts.openIndex(dbPath);
   fts.upsertCard(idx, {
     memory_id: 'mem_pattern_abc',
@@ -103,7 +103,7 @@ test('makeFtsSearch: redacted loader error propagates redacted through runHybrid
 
 test('makeFtsSearch: privacy scope — a different project sees only global cards', { skip: !fts }, () => {
   const root = mkRoot();
-  const dbPath = path.join(root, 'indexes', 'lexical.sqlite');
+  const dbPath = path.join(root, 'indexes', 'v2', 'lexical.sqlite');
   const idx = fts.openIndex(dbPath);
   fts.upsertCard(idx, {
     memory_id: 'mem_local_a', memory_type: 'pattern', privacy_level: 'local',

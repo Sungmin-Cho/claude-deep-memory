@@ -8,6 +8,8 @@ const { execSync } = require('node:child_process');
 const { preflight } = require('./lib/preflight');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { setCaptureEnabled, ensureConfig } = require('./lib/capture-toggle');
+const { deriveProjectId } = require('./lib/project-resolver');
+const { validateProjectProfile } = require('./lib/project-profile-validator');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -27,12 +29,7 @@ function safeGit(cmd, cwd) {
 }
 
 function projectId(cwd) {
-  const remote = safeGit('git config --get remote.origin.url', cwd);
-  const remoteHash = remote
-    ? 'sha256:' + createHash('sha256').update(remote).digest('hex')
-    : 'sha256:none';
-  const rootHash = 'sha256:' + createHash('sha256').update(cwd).digest('hex');
-  return 'proj_' + createHash('sha256').update(remoteHash + '|' + rootHash).digest('hex').slice(0, 12);
+  return deriveProjectId(cwd);
 }
 
 function detectLanguages(cwd) {
@@ -61,7 +58,7 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   // Create config.yaml (if absent) under the capture lock so a plain init can
   // never race-overwrite a concurrent --enable-capture's config (R6 N9).
   ensureConfig(pre.resolved);
-  const cwd = process.cwd();
+  const cwd = fs.realpathSync.native(process.cwd());
   const pid = projectId(cwd);
   // ITEM-6-r4: pass cwd to all safeGit calls inside run() so remote/head/branch
   // are read from the project directory, not from a potentially different process.cwd().
@@ -71,7 +68,7 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
     repo: {
       remote_url_hash: remote
         ? 'sha256:' + createHash('sha256').update(remote).digest('hex')
-        : 'sha256:none',
+        : 'sha256:' + createHash('sha256').update('no-remote').digest('hex'),
       root_path_hash: 'sha256:' + createHash('sha256').update(cwd).digest('hex'),
       default_branch: safeGit('git symbolic-ref --short HEAD', cwd) || 'main',
       git_head: safeGit('git rev-parse HEAD', cwd),
@@ -89,6 +86,10 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
     source_mtimes: {},
     generated_at: new Date().toISOString(),
   };
+  const validation = validateProjectProfile(profile);
+  if (!validation.valid) {
+    throw Object.assign(new Error(validation.reason), { code: validation.reason });
+  }
   const localProfileDir = path.join(cwd, '.deep-memory');
   fs.mkdirSync(localProfileDir, { recursive: true });
   writeJsonAtomic(path.join(localProfileDir, 'project-profile.json'), profile);

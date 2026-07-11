@@ -12,6 +12,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { writeValidProjectProfile } = require('../helpers/project-profile-fixtures');
 
 const HOOKS = [
   'session-start.mjs',
@@ -25,6 +26,7 @@ const HOOKS = [
 function mkTmpRoot(captureEnabled = true) {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-hook-resil-'));
   fs.writeFileSync(path.join(r, 'config.yaml'), `capture:\n  enabled: ${captureEnabled}\n`);
+  if (captureEnabled) writeValidProjectProfile(r);
   return r;
 }
 

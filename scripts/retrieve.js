@@ -22,6 +22,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
 // v0.1.2 — FTS5 graceful degradation. If better-sqlite3 native binding is
 // unavailable (Node v26+ with immutable plugin cache), retrieve returns an
 // empty result + explicit warning instead of hard-throwing at require-time.
@@ -110,7 +111,7 @@ async function runRetrieve({
     return { task, memories: [], warnings };
   }
   const projectId = projectProfile?.project_id || null;
-  const dbPath = path.join(memoryRoot, 'indexes', 'lexical.sqlite');
+  const dbPath = v2LexicalIndexPath(memoryRoot);
   if (!fs.existsSync(dbPath)) {
     warnings.push('no lexical index — run /deep-memory-harvest first');
     return { task, memories: [], warnings };

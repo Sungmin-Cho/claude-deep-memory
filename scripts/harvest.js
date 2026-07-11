@@ -3,6 +3,8 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
+const { resolveProjectScope } = require('./lib/project-resolver');
 const { createHash } = require('node:crypto');
 const { wrap } = require('./lib/envelope');
 const { redactObject, redactString } = require('./lib/redact');
@@ -810,7 +812,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
     //    `fts === null` when better-sqlite3 require failed; cards/events
     //    are still written, but the index is not populated.)
     if (fts && fts.openIndex && fts.upsertCard) {
-      const idx = fts.openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+      const idx = fts.openIndex(v2LexicalIndexPath(memoryRoot));
       try {
         if (idx.driver === 'better-sqlite3') idx.db.exec('BEGIN');
         for (const c of cards) {
@@ -865,10 +867,6 @@ module.exports = {
 // ITEM-6-r3: CLI entry point — minimal single-artifact invocation for v0.1.0.
 // Full config.yaml-driven glob scan is deferred to v0.1.x (see docs/handoff-phase-4-6.md).
 if (require.main === module) {
-  // ITEM-1-r5: import projectId deriver from init.js for mismatch guard (fail-closed).
-  // Placed inside require.main block to avoid circular-require risk for library callers.
-  const { projectId: deriveProjectId } = require('./init');
-
   const args = process.argv.slice(2);
   // Parse --kind=<sourceKind> or --kind <sourceKind>
   let sourceKind = null;
@@ -889,22 +887,38 @@ if (require.main === module) {
   }
   const artifactPath = remainingArgs[0] || null;
   const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
+  const rebuildFromEvents = args.includes('--rebuild-from-events');
+  if (!rebuildFromEvents && (!artifactPath || !sourceKind)) {
+    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
+    console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
+    console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
+    console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
+    process.exit(1);
+  }
+  const cwd = fs.realpathSync.native(process.cwd());
+  const projectScope = resolveProjectScope(cwd);
+  if (projectScope.scope !== 'project' || !projectScope.projectId) {
+    console.error(`project scope unavailable: ${projectScope.warning || 'project_profile_untrusted'}`);
+    process.exit(1);
+  }
+  if (projectId !== null && projectId !== projectScope.projectId) {
+    console.error('requested project_id does not match the trusted project profile');
+    process.exit(1);
+  }
+  const finalProjectId = projectScope.projectId;
 
   // IMPL-R1-G — `--rebuild-from-events --session <id>` flag for eager-distill
   // child spawned from pre-compact.mjs / session-end.mjs (per spec §3.2.1
   // fire-and-forget). Runs runLazyDistill on the session-filtered event tail.
-  const rebuildFromEvents = args.includes('--rebuild-from-events');
   let sessionFilter = null;
   for (let i = 0; i < args.length - 1; i++) {
     if (args[i] === '--session') { sessionFilter = args[i + 1]; break; }
   }
   if (rebuildFromEvents) {
     const { runLazyDistill } = require('./lib/distill-pipeline.js');
-    const { resolveCurrentProject } = require('./lib/project-resolver.js');
-    const projectIdForDistill = projectId || resolveCurrentProject(process.cwd());
     runLazyDistill({
       root: memoryRoot,
-      projectId: projectIdForDistill,
+      projectId: finalProjectId,
       config: {
         skip_llm: true,
         distill: { detectors: { session_summary: { always_emit: false } } },
@@ -918,46 +932,6 @@ if (require.main === module) {
       process.exit(2);
     });
     return;
-  }
-
-  if (!artifactPath || !sourceKind) {
-    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
-    console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
-    console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
-    console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
-    process.exit(1);
-  }
-
-  const cwd = process.cwd();
-  let profile = null;
-  try {
-    profile = JSON.parse(fs.readFileSync(path.join(cwd, '.deep-memory', 'project-profile.json'), 'utf8'));
-  } catch { /* no profile — use fallback */ }
-
-  // ITEM-1-r5: fail-closed profile mismatch guard — harvest writes are STRONGER than brief reads.
-  // If the user did NOT explicitly pass --project and the profile's project_id doesn't match
-  // what the current cwd would derive, refuse rather than writing cards under the wrong scope.
-  if (!projectId && profile && profile.project_id) {
-    const cwdProjectId = deriveProjectId(cwd);
-    if (profile.project_id !== cwdProjectId) {
-      console.error(
-        `Error: project-profile mismatch — profile says project_id=${profile.project_id.slice(0, 13)} ` +
-        `but cwd derives ${cwdProjectId.slice(0, 13)}. ` +
-        `Refusing harvest (cards would be written under the wrong scope). ` +
-        `Run /deep-memory-init to refresh the profile after a workspace move.`
-      );
-      process.exit(1);
-    }
-  }
-
-  const finalProjectId = projectId || profile?.project_id || 'proj_unknown';
-
-  // ITEM-2-r4: validate before passing to harvestArtifact (CLI entry boundary)
-  try {
-    validateProjectId(finalProjectId);
-  } catch (e) {
-    console.error(e.message);
-    process.exit(1);
   }
 
   harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })

@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 const pkg = require('../../package.json');
 const { redactString } = require('../lib/redact.js');
 const { acquire, release } = require('../lib/lock.js');
+const { detectHost: detectRuntimeHost } = require('../lib/runtime-context.js');
 
 const DEEP_MEMORY_ROOT = process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
 
@@ -57,11 +58,9 @@ export function isEagerDistillEnabled() {
   }
 }
 
-// ---- project resolution (PR1-C + IMPL-R1-B lift) ---------------------------
-// Delegate to scripts/lib/project-resolver.js so the MCP server can share
-// the same logic without duplicating it (IMPL-R1-B fix per Opus 🔴 #7).
-const { resolveCurrentProject: _resolveCurrentProject } = require('../lib/project-resolver.js');
-export const resolveCurrentProject = _resolveCurrentProject;
+// ---- project resolution -----------------------------------------------------
+// Every hook invocation computes one full-schema, physical-root-bound scope.
+const { resolveProjectScope } = require('../lib/project-resolver.js');
 
 // ---- tool input/output summarization (PR1-J + Codex adv MED-2) -------------
 
@@ -115,7 +114,11 @@ function recordDedupeWindow(dedupeKey, projectId) {
 export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
   if (!isCaptureEnabled()) return { skipped: true, reason: 'capture-disabled' };
 
-  const projectId = resolveCurrentProject();
+  const projectScope = resolveProjectScope(process.env.PROJECT_CWD || null);
+  if (projectScope.scope !== 'project' || !projectScope.projectId) {
+    return { skipped: true, reason: projectScope.warning || 'project_profile_untrusted' };
+  }
+  const projectId = projectScope.projectId;
   const toolInputSummary = summarizeToolInput(hookPayload.tool_input);
   const toolOutputSummary = summarizeToolOutput(hookPayload.tool_output);
 
@@ -229,10 +232,5 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
 // ---- host detection (PR1-W8) ------------------------------------------------
 
 export function detectHost() {
-  if (process.env.CURSOR_PLUGIN_ROOT) return 'cursor';
-  if (process.env.GEMINI_CLI_ROOT) return 'gemini-cli';
-  if (process.env.CLINE_PLUGIN_ROOT) return 'cline';
-  if (process.env.CLAUDE_PLUGIN_ROOT && process.env.CLAUDE_PLUGIN_ROOT.includes('claude')) return 'claude-code';
-  if (process.env.CODEX_PLUGIN_ROOT) return 'codex';
-  return '(other)';
+  return detectRuntimeHost(process.env);
 }

@@ -16,8 +16,7 @@ const path = require('node:path');
 const { runRetrieve } = require('./retrieve');
 const { renderJson, renderMarkdown } = require('./lib/brief-format');
 const { writeJsonAtomic } = require('./lib/atomic-write');
-const { projectId: deriveProjectId } = require('./init');
-const { isValidProjectId } = require('./lib/validate-project-id');
+const { resolveProjectScope } = require('./lib/project-resolver');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
@@ -25,39 +24,15 @@ function resolveMemoryRoot(raw) {
 }
 
 function loadProjectProfile(projectDir) {
-  const profilePath = path.join(projectDir, '.deep-memory', 'project-profile.json');
-  if (!fs.existsSync(profilePath)) return null;
-  try { return JSON.parse(fs.readFileSync(profilePath, 'utf8')); }
-  catch { return null; }
+  return resolveProjectScope(projectDir).profile;
 }
 
 async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}) {
   if (!task) throw new Error('brief.run requires task');
   const cwd = projectDir || process.cwd();
   const resolvedMemoryRoot = resolveMemoryRoot(memoryRoot);
-  let profile = loadProjectProfile(cwd);
-
-  // ITEM-2-r4: validate profile.project_id — if invalid format, treat as missing profile
-  let invalidProjectIdWarning = null;
-  if (profile && !isValidProjectId(profile.project_id)) {
-    invalidProjectIdWarning = `project-profile has invalid project_id: ${JSON.stringify(profile.project_id)} — using global-only retrieval`;
-    profile = null;
-  }
-
-  // Security guard: re-derive the expected project_id from cwd and reject a
-  // profile whose stored project_id does not match — prevents project_id spoofing
-  // that would expose another project's local memories (spec §privacy boundary).
-  let profileMismatchWarning = null;
-  if (profile) {
-    const expected = deriveProjectId(cwd);
-    if (profile.project_id !== expected) {
-      const expectedFirst8 = expected.slice(0, 8 + 'proj_'.length);
-      const gotFirst8 = String(profile.project_id || '').slice(0, 8 + 'proj_'.length);
-      profileMismatchWarning =
-        `project-profile mismatch: expected=${expectedFirst8} got=${gotFirst8} — using global-only retrieval`;
-      profile = null; // trigger existing global-only path
-    }
-  }
+  const projectScope = resolveProjectScope(cwd);
+  const profile = projectScope.profile;
 
   const result = await runRetrieve({
     task,
@@ -67,13 +42,9 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
     diversityPerType,
   });
 
-  if (invalidProjectIdWarning) {
+  if (projectScope.warning) {
     result.warnings = result.warnings || [];
-    result.warnings.push(invalidProjectIdWarning);
-  }
-  if (profileMismatchWarning) {
-    result.warnings = result.warnings || [];
-    result.warnings.push(profileMismatchWarning);
+    result.warnings.push(projectScope.warning);
   }
 
   // Render JSON + MD
