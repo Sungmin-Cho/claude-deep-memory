@@ -43,6 +43,34 @@ function makeHookEvent(projectId) {
   };
 }
 
+function writeRetrievalCard(memoryRoot, {
+  memoryId,
+  scope,
+  projectId,
+  privacyLevel = 'local',
+  claim,
+  status = 'active',
+} = {}) {
+  const dir = path.join(memoryRoot, 'cards', 'pattern', scope);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${memoryId}.json`), JSON.stringify({
+    payload: {
+      memory_id: memoryId,
+      memory_type: 'pattern',
+      privacy_level: privacyLevel,
+      project_id: privacyLevel === 'global' ? '' : projectId,
+      claim,
+      status,
+      tags: ['artifact'],
+      applicability: [],
+      non_applicability: [],
+      search_keywords: ['fallback'],
+      confidence: 0.9,
+      evidence_summary: [],
+    },
+  }));
+}
+
 async function pollGateViolation(memoryRoot) {
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {
@@ -75,6 +103,32 @@ test('artifact-only bundle reads embedded schemas, honest resources, and gate au
   assert.equal(fs.existsSync(path.join(pluginRoot, 'schemas')), false);
 
   const profile = writeValidProjectProfile(workspaceRoot);
+  writeRetrievalCard(memoryRoot, {
+    memoryId: 'mem_current_allowed',
+    scope: profile.project_id,
+    projectId: profile.project_id,
+    claim: 'artifact current allowed fallback',
+  });
+  writeRetrievalCard(memoryRoot, {
+    memoryId: 'mem_global_unrelated',
+    scope: 'global',
+    projectId: profile.project_id,
+    privacyLevel: 'global',
+    claim: 'global deployment checklist',
+  });
+  writeRetrievalCard(memoryRoot, {
+    memoryId: 'mem_other_forbidden',
+    scope: 'proj_bbbbbbbbbbbb',
+    projectId: 'proj_bbbbbbbbbbbb',
+    claim: 'artifact current allowed fallback',
+  });
+  writeRetrievalCard(memoryRoot, {
+    memoryId: 'mem_deprecated_forbidden',
+    scope: profile.project_id,
+    projectId: profile.project_id,
+    claim: 'artifact current allowed fallback',
+    status: 'deprecated',
+  });
   const hookEvent = makeHookEvent(profile.project_id);
   const schema = JSON.parse(fs.readFileSync(path.join(root, 'schemas/memory-hook-event.schema.json'), 'utf8'));
   const ajv = new Ajv2020({ strict: true, allErrors: true });
@@ -111,10 +165,14 @@ test('artifact-only bundle reads embedded schemas, honest resources, and gate au
 
   const recall = await session.request('tools/call', {
     name: 'deep_memory_recall',
-    arguments: { query: 'missing index is still a valid read', limit: 5, project_scope: 'current' },
+    arguments: { query: 'current allowed', limit: 5, project_scope: 'current' },
   });
   assert.equal(recall.result.isError, undefined);
   assert.doesNotMatch(recall.result.content[0].text, /ENOENT|schemas|retrieval_failed/);
+  const body = JSON.parse(recall.result.content[0].text);
+  assert.deepEqual(body.memories.map((item) => item.memory_id), ['mem_current_allowed']);
+  assert.deepEqual(body.streams_used, ['card-scan']);
+  assert.equal(body.warnings.some((warning) => /Users\//.test(warning)), false);
 
   const listed = await session.request('resources/list', {});
   assert.deepEqual(listed.result.resources.map((item) => item.uri).sort(), [

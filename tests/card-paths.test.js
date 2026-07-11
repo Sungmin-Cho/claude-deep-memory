@@ -9,6 +9,7 @@ const {
   walkContainedCards,
   readContainedCard,
 } = require('../scripts/lib/card-paths');
+const { locateCard } = require('../scripts/lib/card-filters');
 
 const PROJECT_ID = 'proj_abcdef123456';
 const LEGACY_12 = 'proj_111111111111';
@@ -269,4 +270,89 @@ test('caller cannot raise the hard 5000-file invocation cap', () => {
   assert.equal(callbacks, 5000);
   assert.equal(result.visited, 5000);
   assert.ok(result.warnings.includes('card_scan_limit_reached'));
+});
+
+test('FTS-backed locateCard rejects linked and physical-escape candidates while returning a genuine current card', (t) => {
+  const outside = fixture(t, 'dm-card-locate-outside-');
+  const outsideFile = path.join(outside, 'outside.json');
+  writeJson(outsideFile, { payload: { memory_id: 'mem_target', memory_type: 'pattern', claim: 'outside secret' } });
+
+  const linkedRoot = fixture(t, 'dm-card-locate-link-');
+  const linkedScope = path.join(linkedRoot, 'cards', 'pattern', PROJECT_ID);
+  fs.mkdirSync(linkedScope, { recursive: true });
+  const linked = createFileAlias(outsideFile, path.join(linkedScope, 'mem_target.json'));
+  if (linked.available) {
+    const result = locateCard(linkedRoot, {
+      memory_id: 'mem_target',
+      memory_type: 'pattern',
+      project_id: PROJECT_ID,
+      privacy_level: 'local',
+    }, { currentProjectId: PROJECT_ID });
+    assert.equal(result, null, 'a linked card must not validate an FTS row');
+  } else {
+    assert.equal(linked.reason, 'junction_fixture_unavailable');
+  }
+
+  const escapedRoot = fixture(t, 'dm-card-locate-escape-');
+  const lexical = path.join(escapedRoot, 'cards', 'pattern', PROJECT_ID, 'mem_target.json');
+  writeJson(lexical, { payload: { memory_id: 'mem_target', memory_type: 'pattern', claim: 'lexical card' } });
+  const { io } = instrumentIo({
+    realpathOverride: new Map([[path.resolve(lexical), fs.realpathSync.native(outsideFile)]]),
+  });
+  assert.equal(locateCard(escapedRoot, {
+    memory_id: 'mem_target',
+    memory_type: 'pattern',
+    project_id: PROJECT_ID,
+    privacy_level: 'local',
+  }, { io, currentProjectId: PROJECT_ID }), null, 'a physical escape must fail closed');
+
+  const genuineRoot = fixture(t, 'dm-card-locate-genuine-');
+  writeJson(path.join(genuineRoot, 'cards', 'pattern', PROJECT_ID, 'mem_target.json'), {
+    payload: { memory_id: 'mem_target', memory_type: 'pattern', claim: 'genuine card' },
+  });
+  const genuine = locateCard(genuineRoot, {
+    memory_id: 'mem_target',
+    memory_type: 'pattern',
+    project_id: PROJECT_ID,
+    privacy_level: 'local',
+  }, { currentProjectId: PROJECT_ID });
+  assert.equal(genuine.payload.claim, 'genuine card');
+});
+
+test('FTS-backed locateCard never traverses cards, type, or scope directory aliases', (t) => {
+  const outside = fixture(t, 'dm-card-locate-dir-outside-');
+  writeJson(path.join(outside, 'pattern', PROJECT_ID, 'mem_target.json'), {
+    payload: { memory_id: 'mem_target', memory_type: 'pattern', claim: 'outside alias card' },
+  });
+  const roots = [];
+
+  const cardsRoot = fixture(t, 'dm-card-locate-cards-alias-');
+  const cardsAlias = createDirectoryAlias(outside, path.join(cardsRoot, 'cards'));
+  if (cardsAlias.available) roots.push(cardsRoot);
+  else assert.equal(cardsAlias.reason, 'junction_fixture_unavailable');
+
+  const typeRoot = fixture(t, 'dm-card-locate-type-alias-');
+  fs.mkdirSync(path.join(typeRoot, 'cards'), { recursive: true });
+  const typeAlias = createDirectoryAlias(path.join(outside, 'pattern'), path.join(typeRoot, 'cards', 'pattern'));
+  if (typeAlias.available) roots.push(typeRoot);
+  else assert.equal(typeAlias.reason, 'junction_fixture_unavailable');
+
+  const scopeRoot = fixture(t, 'dm-card-locate-scope-alias-');
+  fs.mkdirSync(path.join(scopeRoot, 'cards', 'pattern'), { recursive: true });
+  const scopeAlias = createDirectoryAlias(
+    path.join(outside, 'pattern', PROJECT_ID),
+    path.join(scopeRoot, 'cards', 'pattern', PROJECT_ID),
+  );
+  if (scopeAlias.available) roots.push(scopeRoot);
+  else assert.equal(scopeAlias.reason, 'junction_fixture_unavailable');
+
+  for (const root of roots) {
+    const result = locateCard(root, {
+      memory_id: 'mem_target',
+      memory_type: 'pattern',
+      project_id: PROJECT_ID,
+      privacy_level: 'local',
+    }, { currentProjectId: PROJECT_ID });
+    assert.equal(result, null);
+  }
 });

@@ -42,6 +42,10 @@ function addWarning(state, code) {
   state.warnings.add(code);
 }
 
+function lexicalCompare(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function lstatDirectory(io, lexical, parentPhysical, state, { missingIsClean = false } = {}) {
   let stat;
   try { stat = io.lstatSync(lexical); }
@@ -128,7 +132,7 @@ function walkContainedCards({
     return finalize(state, 0);
   }
   let visited = 0;
-  for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of [...entries].sort((a, b) => lexicalCompare(a.name, b.name))) {
     if (!safeName(entry.name)) {
       addWarning(state, 'card_path_outside_scope');
       continue;
@@ -136,7 +140,7 @@ function walkContainedCards({
     const typeLexical = path.join(base.cardsPhysical, entry.name);
     const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
     if (!typePhysical) continue;
-    const scopes = currentProjectId === null ? ['global'] : ['global', currentProjectId];
+    const scopes = (currentProjectId === null ? ['global'] : ['global', currentProjectId]).sort(lexicalCompare);
     for (const scope of scopes) {
       const scopeLexical = path.join(typePhysical, scope);
       const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
@@ -147,7 +151,7 @@ function walkContainedCards({
         addWarning(state, 'card_path_unavailable');
         continue;
       }
-      for (const file of [...files].sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const file of [...files].sort((a, b) => lexicalCompare(a.name, b.name))) {
         if (!safeName(file.name) || !file.name.endsWith('.json')) continue;
         if (visited >= boundedMax) {
           addWarning(state, 'card_scan_limit_reached');

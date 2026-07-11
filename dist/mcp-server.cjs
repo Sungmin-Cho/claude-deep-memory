@@ -35933,80 +35933,494 @@ var require_v2_index_paths = __commonJS({
   }
 });
 
-// scripts/lib/redact.js
-var require_redact = __commonJS({
-  "scripts/lib/redact.js"(exports2, module2) {
+// scripts/lib/validate-project-id.js
+var require_validate_project_id = __commonJS({
+  "scripts/lib/validate-project-id.js"(exports2, module2) {
     "use strict";
-    var os = require("os");
-    var REDACT_TAG = "[REDACTED]";
-    var DENY_PATTERNS = [
-      /(?:api[_-]?key|token|secret|bearer|password|passwd|pwd)[\s:=]+["']?[A-Za-z0-9_\-+/]{12,}/gi,
-      /[\w.+-]+@[\w-]+\.[\w.-]+/g,
-      /\b(?:postgres|postgresql|mysql|mongodb|redis|amqp)(?:ql)?:\/\/[^\s'"<>]+/gi,
-      /\b10\.\d+\.\d+\.\d+\b/g,
-      /\b192\.168\.\d+\.\d+\b/g,
-      /\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/g,
-      /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi
-    ];
-    var WINDOWS_ABSOLUTE_PATH_PATTERNS = [
-      /\\\\\?\\UNC\\[^\s'"<>]+/gi,
-      /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
-      /\\\\\.\\[^\s'"<>]+/g,
-      /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
-      /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g
-    ];
-    var SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
-    var HOME_RE = new RegExp(
-      os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
-      "g"
-    );
-    function applyGenericHomedir(s) {
-      return s.replace(/\/Users\/[a-zA-Z0-9_.-]+/g, "~").replace(/\/home\/[a-zA-Z0-9_.-]+/g, "~");
-    }
-    function applyEnvVarRedaction(s) {
-      return s.replace(SENSITIVE_VAR_RE, (_m, varRef, assignment) => assignment ? `${varRef}=<REDACTED>` : varRef);
-    }
-    function redactString(input, { allowPatterns = [] } = {}) {
-      if (typeof input !== "string") return input;
-      let out = input.replace(HOME_RE, "~");
-      out = applyGenericHomedir(out);
-      out = applyEnvVarRedaction(out);
-      for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) {
-        out = out.replace(re, REDACT_TAG);
+    var PROJECT_ID_RE = /^proj_[a-f0-9]{12}$/;
+    function validateProjectId(id) {
+      if (typeof id !== "string" || !PROJECT_ID_RE.test(id)) {
+        throw Object.assign(
+          new Error(`Invalid project_id: ${JSON.stringify(id)} \u2014 must match /^proj_[a-f0-9]{12}$/`),
+          { code: "INVALID_PROJECT_ID" }
+        );
       }
-      for (const re of DENY_PATTERNS) {
-        out = out.replace(re, REDACT_TAG);
+      return id;
+    }
+    function isValidProjectId(id) {
+      return typeof id === "string" && PROJECT_ID_RE.test(id);
+    }
+    module2.exports = { validateProjectId, isValidProjectId, PROJECT_ID_RE };
+  }
+});
+
+// scripts/lib/card-paths.js
+var require_card_paths = __commonJS({
+  "scripts/lib/card-paths.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var { isValidProjectId } = require_validate_project_id();
+    function pathApi(platform) {
+      return platform === "win32" ? path.win32 : path;
+    }
+    function isContainedPath(parent, child, { platform = process.platform } = {}) {
+      const api = pathApi(platform);
+      let base = api.resolve(parent);
+      let candidate = api.resolve(child);
+      if (platform === "win32") {
+        base = base.toLowerCase();
+        candidate = candidate.toLowerCase();
       }
-      for (const allow of allowPatterns) {
-        const allowRe = new RegExp(allow, "g");
-        if (allowRe.test(input)) {
-          const matches = input.match(allowRe) || [];
-          for (const m of matches) {
-            out = out.replace(REDACT_TAG, m);
+      return candidate.startsWith(`${base}${api.sep}`);
+    }
+    function realpathNative(io, value) {
+      const impl = io.realpathSync && (io.realpathSync.native || io.realpathSync);
+      if (typeof impl !== "function") throw Object.assign(new Error("realpath unavailable"), { code: "ENOSYS" });
+      return impl.call(io.realpathSync, value);
+    }
+    function isLink(stat) {
+      return Boolean(stat && typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink());
+    }
+    function safeName(value) {
+      return typeof value === "string" && value.length > 0 && value !== "." && value !== ".." && path.basename(value) === value && !value.includes("/") && !value.includes("\\");
+    }
+    function addWarning(state, code) {
+      state.warnings.add(code);
+    }
+    function lexicalCompare(left, right) {
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+    function lstatDirectory(io, lexical, parentPhysical, state, { missingIsClean = false } = {}) {
+      let stat;
+      try {
+        stat = io.lstatSync(lexical);
+      } catch (error) {
+        if (!(missingIsClean && error && error.code === "ENOENT")) addWarning(state, "card_path_unavailable");
+        return null;
+      }
+      if (isLink(stat)) {
+        addWarning(state, "card_path_link_rejected");
+        return null;
+      }
+      if (!stat.isDirectory()) {
+        addWarning(state, "card_path_not_directory");
+        return null;
+      }
+      let physical;
+      try {
+        physical = realpathNative(io, lexical);
+      } catch {
+        addWarning(state, "card_path_unavailable");
+        return null;
+      }
+      if (parentPhysical && !isContainedPath(parentPhysical, physical, { platform: state.platform })) {
+        addWarning(state, "card_path_outside_scope");
+        return null;
+      }
+      return physical;
+    }
+    function resolveRootAndCards(root, io, state) {
+      const rootLexical = path.resolve(root);
+      const rootPhysical = lstatDirectory(io, rootLexical, null, state);
+      if (!rootPhysical) return null;
+      const cardsLexical = path.join(rootPhysical, "cards");
+      const cardsPhysical = lstatDirectory(io, cardsLexical, rootPhysical, state, { missingIsClean: true });
+      if (!cardsPhysical) return null;
+      return { rootPhysical, cardsPhysical };
+    }
+    function resolveTypeAndScope({ root, type, scope, currentProjectId, io, state }) {
+      if (!safeName(type)) {
+        addWarning(state, "card_path_outside_scope");
+        return null;
+      }
+      if (scope !== "global" && scope !== currentProjectId) {
+        addWarning(state, "project_scope_invalid");
+        return null;
+      }
+      const base = resolveRootAndCards(root, io, state);
+      if (!base) return null;
+      const typeLexical = path.join(base.cardsPhysical, type);
+      const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
+      if (!typePhysical) return null;
+      const scopeLexical = path.join(typePhysical, scope);
+      const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
+      if (!scopePhysical) return null;
+      return { ...base, typePhysical, scopePhysical };
+    }
+    function finalize(state, visited) {
+      return { visited, warnings: [...state.warnings].sort() };
+    }
+    function walkContainedCards({
+      root,
+      currentProjectId = null,
+      maxFiles = 5e3,
+      onCard,
+      io = fs,
+      platform = process.platform
+    } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
+        addWarning(state, "project_scope_invalid");
+        return finalize(state, 0);
+      }
+      if (typeof onCard !== "function") throw new TypeError("walkContainedCards requires onCard");
+      const boundedMax = Number.isInteger(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, 5e3) : 5e3;
+      const base = resolveRootAndCards(root, io, state);
+      if (!base) return finalize(state, 0);
+      let entries;
+      try {
+        entries = io.readdirSync(base.cardsPhysical, { withFileTypes: true });
+      } catch {
+        addWarning(state, "card_path_unavailable");
+        return finalize(state, 0);
+      }
+      let visited = 0;
+      for (const entry of [...entries].sort((a, b) => lexicalCompare(a.name, b.name))) {
+        if (!safeName(entry.name)) {
+          addWarning(state, "card_path_outside_scope");
+          continue;
+        }
+        const typeLexical = path.join(base.cardsPhysical, entry.name);
+        const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
+        if (!typePhysical) continue;
+        const scopes = (currentProjectId === null ? ["global"] : ["global", currentProjectId]).sort(lexicalCompare);
+        for (const scope of scopes) {
+          const scopeLexical = path.join(typePhysical, scope);
+          const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
+          if (!scopePhysical) continue;
+          let files;
+          try {
+            files = io.readdirSync(scopePhysical, { withFileTypes: true });
+          } catch {
+            addWarning(state, "card_path_unavailable");
+            continue;
+          }
+          for (const file of [...files].sort((a, b) => lexicalCompare(a.name, b.name))) {
+            if (!safeName(file.name) || !file.name.endsWith(".json")) continue;
+            if (visited >= boundedMax) {
+              addWarning(state, "card_scan_limit_reached");
+              return finalize(state, visited);
+            }
+            const fileLexical = path.join(scopePhysical, file.name);
+            let stat;
+            try {
+              stat = io.lstatSync(fileLexical);
+            } catch {
+              addWarning(state, "card_path_unavailable");
+              continue;
+            }
+            if (isLink(stat)) {
+              addWarning(state, "card_path_link_rejected");
+              continue;
+            }
+            if (!stat.isFile()) {
+              addWarning(state, "card_path_not_regular");
+              continue;
+            }
+            let filePhysical;
+            try {
+              filePhysical = realpathNative(io, fileLexical);
+            } catch {
+              addWarning(state, "card_path_unavailable");
+              continue;
+            }
+            if (!isContainedPath(scopePhysical, filePhysical, { platform })) {
+              addWarning(state, "card_path_outside_scope");
+              continue;
+            }
+            onCard(Object.freeze({
+              root: base.rootPhysical,
+              currentProjectId,
+              type: entry.name,
+              scope,
+              file: file.name,
+              path: filePhysical
+            }));
+            visited += 1;
           }
         }
       }
-      return out;
+      return finalize(state, visited);
     }
-    function redactObject(value, opts = {}) {
-      if (value === null || value === void 0) return value;
-      if (typeof value === "string") return redactString(value, opts);
-      if (Array.isArray(value)) return value.map((v) => redactObject(v, opts));
-      if (typeof value === "object") {
-        const out = {};
-        for (const k of Object.keys(value)) out[k] = redactObject(value[k], opts);
-        return out;
+    function readContainedCard(descriptor, { io = fs, platform = process.platform } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (!descriptor || typeof descriptor !== "object") {
+        return { value: null, warning: "card_path_invalid_descriptor" };
       }
-      return value;
+      const { root, currentProjectId = null, type, scope, file } = descriptor;
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
+        return { value: null, warning: "project_scope_invalid" };
+      }
+      if (!safeName(file) || !file.endsWith(".json")) {
+        return { value: null, warning: "card_path_invalid_descriptor" };
+      }
+      const chain = resolveTypeAndScope({ root, type, scope, currentProjectId, io, state });
+      if (!chain) return { value: null, warning: [...state.warnings].sort()[0] || "card_path_unavailable" };
+      const lexical = path.join(chain.scopePhysical, file);
+      let stat;
+      try {
+        stat = io.lstatSync(lexical);
+      } catch {
+        return { value: null, warning: "card_path_unavailable" };
+      }
+      if (isLink(stat)) return { value: null, warning: "card_path_link_rejected" };
+      if (!stat.isFile()) return { value: null, warning: "card_path_not_regular" };
+      let physical;
+      try {
+        physical = realpathNative(io, lexical);
+      } catch {
+        return { value: null, warning: "card_path_unavailable" };
+      }
+      if (!isContainedPath(chain.scopePhysical, physical, { platform })) {
+        return { value: null, warning: "card_path_outside_scope" };
+      }
+      if (descriptor.path && path.resolve(descriptor.path) !== path.resolve(physical)) {
+        return { value: null, warning: "card_path_outside_scope" };
+      }
+      try {
+        return { value: JSON.parse(io.readFileSync(physical, "utf8")), warning: null };
+      } catch {
+        return { value: null, warning: "card_json_invalid" };
+      }
+    }
+    module2.exports = { isContainedPath, walkContainedCards, readContainedCard };
+  }
+});
+
+// scripts/lib/score.js
+var require_score = __commonJS({
+  "scripts/lib/score.js"(exports2, module2) {
+    "use strict";
+    function bm25MinMax(rows) {
+      if (!rows.length) return rows;
+      if (rows.length === 1) return [{ ...rows[0], task_sim_norm: 1 }];
+      const vals = rows.map((r) => r.bm25);
+      const min = Math.min(...vals), max = Math.max(...vals);
+      if (max === min) return rows.map((r) => ({ ...r, task_sim_norm: 1 }));
+      return rows.map((r) => ({ ...r, task_sim_norm: (max - r.bm25) / (max - min) }));
+    }
+    function sigmoid(x) {
+      return 1 / (1 + Math.exp(-x));
+    }
+    function stalePenalty(reviewAfter, graceDays) {
+      if (!reviewAfter) return 0;
+      const ageMs = Date.now() - new Date(reviewAfter).getTime();
+      const graceMs = graceDays * 86400 * 1e3;
+      return Math.max(0, Math.min(1, ageMs / graceMs));
+    }
+    function jaccard(a = [], b = []) {
+      const sa = new Set(a), sb = new Set(b);
+      const inter = [...sa].filter((x) => sb.has(x)).length;
+      const uni = (/* @__PURE__ */ new Set([...sa, ...sb])).size || 1;
+      return inter / uni;
+    }
+    function scoreCard(card, { project_profile = null, weights = { w_project_sim: 0.2, w_task_sim: 0.5, w_evidence: 0.3, w_stale_penalty: 0.1 }, audit = { stale_grace_days: 90 } } = {}) {
+      let w = { ...weights };
+      let project_sim_norm = 0;
+      if (!project_profile) w.w_project_sim = 0;
+      else {
+        project_sim_norm = jaccard(project_profile.signature?.languages || [], card.project_languages || []);
+      }
+      const evidence_q = (card.confidence || 0) * Math.log(1 + (card.evidence_count || 0)) * (1 - (card.feedback?.rejected || 0) / ((card.feedback?.accepted || 0) + (card.feedback?.rejected || 0) + 1));
+      const evidence_norm = sigmoid(evidence_q - 1.5);
+      const stale_norm = stalePenalty(card.review_after, audit.stale_grace_days);
+      const score = w.w_project_sim * project_sim_norm + w.w_task_sim * (card.task_sim_norm || 0) + w.w_evidence * evidence_norm - w.w_stale_penalty * stale_norm;
+      return { score: Math.max(0, Math.min(1, score)), parts: { project_sim_norm, task_sim_norm: card.task_sim_norm || 0, evidence_norm, stale_norm } };
+    }
+    module2.exports = { bm25MinMax, sigmoid, stalePenalty, jaccard, scoreCard };
+  }
+});
+
+// scripts/lib/card-filters.js
+var require_card_filters = __commonJS({
+  "scripts/lib/card-filters.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var { jaccard } = require_score();
+    var { isValidProjectId } = require_validate_project_id();
+    var { walkContainedCards, readContainedCard } = require_card_paths();
+    var APPLICABILITY_GUARD_THRESHOLD = 0.5;
+    function tokenize(text) {
+      return String(text || "").toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter(Boolean);
+    }
+    function findContainedCard(memoryRoot, row, {
+      io = fs,
+      platform = process.platform,
+      currentProjectId
+    } = {}) {
+      if (!row || typeof row !== "object" || typeof row.memory_id !== "string") return null;
+      const isGlobalRow = row.privacy_level === "global" || !row.project_id;
+      const rowProjectId = isGlobalRow ? null : row.project_id;
+      if (rowProjectId !== null && !isValidProjectId(rowProjectId)) return null;
+      if (currentProjectId !== void 0) {
+        if (currentProjectId !== null && !isValidProjectId(currentProjectId)) return null;
+        if (!isGlobalRow && currentProjectId !== rowProjectId) return null;
+      }
+      const wantedScope = isGlobalRow ? "global" : rowProjectId;
+      let found = null;
+      walkContainedCards({
+        root: memoryRoot,
+        currentProjectId: rowProjectId,
+        maxFiles: 5e3,
+        io,
+        platform,
+        onCard(descriptor) {
+          if (found || descriptor.scope !== wantedScope) return;
+          if (row.memory_type && descriptor.type !== row.memory_type) return;
+          const read = readContainedCard(descriptor, { io, platform });
+          if (!read.value) return;
+          const payload = read.value.payload || read.value;
+          if (payload.memory_id !== row.memory_id) return;
+          if (row.memory_type && payload.memory_type !== row.memory_type) return;
+          found = read.value;
+        }
+      });
+      return found;
+    }
+    function loadCard(memoryRoot, row, options) {
+      const card = findContainedCard(memoryRoot, row, options);
+      if (!card) return null;
+      return card.payload ? card : { payload: card };
+    }
+    function locateCard(memoryRoot, row, options) {
+      return findContainedCard(memoryRoot, row, options);
+    }
+    function isNotDeprecated(card) {
+      return (card.payload || card).status !== "deprecated";
+    }
+    function passesApplicabilityGuard(card, taskTokens) {
+      const nonApp = (card.payload || card).non_applicability || [];
+      for (const na of nonApp) {
+        const naTokens = tokenize(na.value);
+        if (naTokens.length === 0) continue;
+        if (jaccard(taskTokens, naTokens) >= APPLICABILITY_GUARD_THRESHOLD) {
+          return false;
+        }
+      }
+      return true;
     }
     module2.exports = {
-      redactString,
-      redactObject,
-      REDACT_TAG,
-      DENY_PATTERNS,
-      WINDOWS_ABSOLUTE_PATH_PATTERNS,
-      HOME_RE
+      tokenize,
+      loadCard,
+      locateCard,
+      isNotDeprecated,
+      passesApplicabilityGuard,
+      APPLICABILITY_GUARD_THRESHOLD
     };
+  }
+});
+
+// scripts/lib/card-scan-search.js
+var require_card_scan_search = __commonJS({
+  "scripts/lib/card-scan-search.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var { validateProjectId } = require_validate_project_id();
+    var { walkContainedCards, readContainedCard } = require_card_paths();
+    var { tokenize } = require_card_filters();
+    var HARD_SCAN_LIMIT = 5e3;
+    function compareText(left, right) {
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+    function values(items) {
+      return (Array.isArray(items) ? items : []).map((item) => typeof item === "string" ? item : item && item.value).filter((item) => typeof item === "string");
+    }
+    function uniqueTokens(texts) {
+      const tokens = /* @__PURE__ */ new Set();
+      for (const text of texts) {
+        for (const token of tokenize(text)) tokens.add(token);
+      }
+      return tokens;
+    }
+    function scanCards({
+      root,
+      currentProjectId = null,
+      query,
+      topK = 30,
+      io = fs,
+      platform = process.platform
+    } = {}) {
+      if (currentProjectId !== null) validateProjectId(currentProjectId);
+      const queryTokens = [...new Set(tokenize(query))];
+      const warningCodes = /* @__PURE__ */ new Set();
+      let malformed = 0;
+      const rows = [];
+      const walked = walkContainedCards({
+        root,
+        currentProjectId,
+        maxFiles: HARD_SCAN_LIMIT,
+        io,
+        platform,
+        onCard(descriptor) {
+          const read = readContainedCard(descriptor, { io, platform });
+          if (!read.value) {
+            if (read.warning === "card_json_invalid") malformed += 1;
+            else if (read.warning) warningCodes.add(read.warning);
+            return;
+          }
+          const payload = read.value.payload || read.value;
+          if (!payload || typeof payload !== "object") {
+            malformed += 1;
+            return;
+          }
+          if (typeof payload.memory_id !== "string" || payload.memory_id.length === 0 || typeof payload.memory_type !== "string" || payload.memory_type.length === 0 || typeof payload.claim !== "string" || payload.claim.length === 0) {
+            warningCodes.add("card_shape_invalid");
+            return;
+          }
+          if (payload.memory_type !== descriptor.type) {
+            warningCodes.add("card_scope_mismatch");
+            return;
+          }
+          const isGlobal = descriptor.scope === "global";
+          if (isGlobal && payload.privacy_level !== "global" || !isGlobal && payload.privacy_level !== "local") {
+            warningCodes.add("card_scope_mismatch");
+            return;
+          }
+          if (payload.status === "deprecated") return;
+          const searchable = uniqueTokens([
+            payload.claim,
+            ...Array.isArray(payload.tags) ? payload.tags : [],
+            ...values(payload.applicability),
+            ...Array.isArray(payload.search_keywords) ? payload.search_keywords : []
+          ]);
+          let matched = 0;
+          for (const token of queryTokens) {
+            if (searchable.has(token)) matched += 1;
+          }
+          if (queryTokens.length === 0 || matched === 0) return;
+          const score = matched / queryTokens.length;
+          rows.push({
+            memory_id: payload.memory_id,
+            memory_type: payload.memory_type,
+            privacy_level: payload.privacy_level,
+            project_id: isGlobal ? "" : descriptor.scope,
+            claim: payload.claim,
+            tags: payload.tags || [],
+            applicability: payload.applicability || [],
+            search_keywords: payload.search_keywords || [],
+            session_id: payload.session_id,
+            bm25: -score
+          });
+        }
+      });
+      for (const warning of walked.warnings) {
+        if (warning !== "card_scan_limit_reached") warningCodes.add(warning);
+      }
+      const warnings = [...warningCodes].sort(compareText);
+      if (malformed > 0) warnings.push(`card_json_malformed: ${malformed}`);
+      if (walked.warnings.includes("card_scan_limit_reached")) {
+        warnings.push(`scan_limit_reached: ${HARD_SCAN_LIMIT}`);
+      }
+      rows.sort((left, right) => right.bm25 === left.bm25 ? compareText(left.memory_id, right.memory_id) : left.bm25 - right.bm25);
+      const limit = Number.isInteger(topK) && topK > 0 ? topK : 30;
+      return {
+        rows: rows.slice(0, Math.max(1, limit)),
+        stream: "card-scan",
+        warnings
+      };
+    }
+    module2.exports = { scanCards, HARD_SCAN_LIMIT };
   }
 });
 
@@ -36089,34 +36503,58 @@ var require_mcp_fts_search = __commonJS({
   "scripts/lib/mcp-fts-search.js"(exports2, module2) {
     "use strict";
     var fs = require("node:fs");
-    var path = require("node:path");
     var { v2LexicalIndexPath } = require_v2_index_paths();
-    var { redactString } = require_redact();
-    function makeFtsSearch(root, { loadFts = () => require_fts_index() } = {}) {
+    var { scanCards } = require_card_scan_search();
+    var FALLBACK_WARNING = "lexical_stream_fallback";
+    function makeFtsSearch(root, {
+      loadFts = () => require_fts_index(),
+      io = fs,
+      scanCardsImpl = scanCards
+    } = {}) {
       let fts = null;
-      let loadError = null;
       try {
         fts = loadFts();
-      } catch (e) {
-        loadError = redactString(e && e.message ? e.message : String(e));
+      } catch {
       }
       const dbPath = v2LexicalIndexPath(root);
-      return ({ query, currentProjectId, topK }) => {
-        if (!fts) {
-          throw new Error(`FTS5 lexical index unavailable (better-sqlite3 not loadable): ${loadError}`);
-        }
-        if (!fs.existsSync(dbPath)) {
-          return [];
-        }
-        const idx = fts.openIndex(dbPath);
+      function fallback(request) {
+        const scanned = scanCardsImpl({
+          root,
+          currentProjectId: request.currentProjectId,
+          query: request.query,
+          topK: request.topK,
+          io
+        });
+        return {
+          rows: scanned.rows,
+          stream: "card-scan",
+          warnings: [.../* @__PURE__ */ new Set([...scanned.warnings, FALLBACK_WARNING])]
+        };
+      }
+      return (request) => {
+        if (!fts || !io.existsSync(dbPath)) return fallback(request);
+        let index = null;
         try {
-          return fts.search(idx, query, { topN: topK, projectId: currentProjectId });
+          index = fts.openIndex(dbPath);
+          const rows = fts.search(index, request.query, {
+            topN: request.topK,
+            projectId: request.currentProjectId
+          });
+          if (!Array.isArray(rows)) throw new TypeError("native lexical search returned a non-array");
+          return { rows, stream: "fts5", warnings: [] };
+        } catch {
+          return fallback(request);
         } finally {
-          fts.closeIndex(idx);
+          if (index) {
+            try {
+              fts.closeIndex(index);
+            } catch {
+            }
+          }
         }
       };
     }
-    module2.exports = { makeFtsSearch };
+    module2.exports = { makeFtsSearch, FALLBACK_WARNING };
   }
 });
 
@@ -36326,134 +36764,6 @@ var require_vector_index = __commonJS({
   }
 });
 
-// scripts/lib/score.js
-var require_score = __commonJS({
-  "scripts/lib/score.js"(exports2, module2) {
-    "use strict";
-    function bm25MinMax(rows) {
-      if (!rows.length) return rows;
-      if (rows.length === 1) return [{ ...rows[0], task_sim_norm: 1 }];
-      const vals = rows.map((r) => r.bm25);
-      const min = Math.min(...vals), max = Math.max(...vals);
-      if (max === min) return rows.map((r) => ({ ...r, task_sim_norm: 1 }));
-      return rows.map((r) => ({ ...r, task_sim_norm: (max - r.bm25) / (max - min) }));
-    }
-    function sigmoid(x) {
-      return 1 / (1 + Math.exp(-x));
-    }
-    function stalePenalty(reviewAfter, graceDays) {
-      if (!reviewAfter) return 0;
-      const ageMs = Date.now() - new Date(reviewAfter).getTime();
-      const graceMs = graceDays * 86400 * 1e3;
-      return Math.max(0, Math.min(1, ageMs / graceMs));
-    }
-    function jaccard(a = [], b = []) {
-      const sa = new Set(a), sb = new Set(b);
-      const inter = [...sa].filter((x) => sb.has(x)).length;
-      const uni = (/* @__PURE__ */ new Set([...sa, ...sb])).size || 1;
-      return inter / uni;
-    }
-    function scoreCard(card, { project_profile = null, weights = { w_project_sim: 0.2, w_task_sim: 0.5, w_evidence: 0.3, w_stale_penalty: 0.1 }, audit = { stale_grace_days: 90 } } = {}) {
-      let w = { ...weights };
-      let project_sim_norm = 0;
-      if (!project_profile) w.w_project_sim = 0;
-      else {
-        project_sim_norm = jaccard(project_profile.signature?.languages || [], card.project_languages || []);
-      }
-      const evidence_q = (card.confidence || 0) * Math.log(1 + (card.evidence_count || 0)) * (1 - (card.feedback?.rejected || 0) / ((card.feedback?.accepted || 0) + (card.feedback?.rejected || 0) + 1));
-      const evidence_norm = sigmoid(evidence_q - 1.5);
-      const stale_norm = stalePenalty(card.review_after, audit.stale_grace_days);
-      const score = w.w_project_sim * project_sim_norm + w.w_task_sim * (card.task_sim_norm || 0) + w.w_evidence * evidence_norm - w.w_stale_penalty * stale_norm;
-      return { score: Math.max(0, Math.min(1, score)), parts: { project_sim_norm, task_sim_norm: card.task_sim_norm || 0, evidence_norm, stale_norm } };
-    }
-    module2.exports = { bm25MinMax, sigmoid, stalePenalty, jaccard, scoreCard };
-  }
-});
-
-// scripts/lib/card-filters.js
-var require_card_filters = __commonJS({
-  "scripts/lib/card-filters.js"(exports2, module2) {
-    "use strict";
-    var fs = require("node:fs");
-    var path = require("node:path");
-    var { jaccard } = require_score();
-    var APPLICABILITY_GUARD_THRESHOLD = 0.5;
-    function tokenize(text) {
-      return String(text || "").toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter(Boolean);
-    }
-    function loadCard(memoryRoot, row) {
-      const typeDir = path.join(memoryRoot, "cards", row.memory_type);
-      const projScope = row.project_id || "global";
-      const candidatePaths = [
-        path.join(typeDir, projScope, row.memory_id + ".json"),
-        path.join(typeDir, "global", row.memory_id + ".json")
-      ];
-      for (const p of candidatePaths) {
-        if (fs.existsSync(p)) {
-          try {
-            return JSON.parse(fs.readFileSync(p, "utf8"));
-          } catch {
-            return null;
-          }
-        }
-      }
-      return null;
-    }
-    function readCardFile(memoryRoot, memoryType, scope, memoryId) {
-      const p = path.join(memoryRoot, "cards", memoryType, scope, memoryId + ".json");
-      if (!fs.existsSync(p)) return null;
-      try {
-        return JSON.parse(fs.readFileSync(p, "utf8"));
-      } catch {
-        return null;
-      }
-    }
-    function locateCard(memoryRoot, row) {
-      const isGlobalRow = row.privacy_level === "global" || !row.project_id;
-      const scopes = isGlobalRow ? ["global"] : [row.project_id];
-      let types = [];
-      if (row.memory_type) {
-        types = [row.memory_type];
-      } else {
-        try {
-          types = fs.readdirSync(path.join(memoryRoot, "cards"));
-        } catch {
-          return null;
-        }
-      }
-      for (const t of types) {
-        for (const s of scopes) {
-          const card = readCardFile(memoryRoot, t, s, row.memory_id);
-          if (card) return card;
-        }
-      }
-      return null;
-    }
-    function isNotDeprecated(card) {
-      return card.payload?.status !== "deprecated";
-    }
-    function passesApplicabilityGuard(card, taskTokens) {
-      const nonApp = card.payload?.non_applicability || [];
-      for (const na of nonApp) {
-        const naTokens = tokenize(na.value);
-        if (naTokens.length === 0) continue;
-        if (jaccard(taskTokens, naTokens) >= APPLICABILITY_GUARD_THRESHOLD) {
-          return false;
-        }
-      }
-      return true;
-    }
-    module2.exports = {
-      tokenize,
-      loadCard,
-      locateCard,
-      isNotDeprecated,
-      passesApplicabilityGuard,
-      APPLICABILITY_GUARD_THRESHOLD
-    };
-  }
-});
-
 // scripts/lib/retrieve-hybrid.js
 var require_retrieve_hybrid = __commonJS({
   "scripts/lib/retrieve-hybrid.js"(exports2, module2) {
@@ -36498,10 +36808,15 @@ var require_retrieve_hybrid = __commonJS({
       let ftsStream = [];
       if (ftsSearch) {
         try {
-          ftsStream = await ftsSearch({ query, currentProjectId, topK });
-          streamsUsed.push("fts5");
+          const lexical = await ftsSearch({ query, currentProjectId, topK });
+          if (!lexical || typeof lexical !== "object" || !Array.isArray(lexical.rows) || !["fts5", "card-scan"].includes(lexical.stream) || !Array.isArray(lexical.warnings)) {
+            throw new TypeError("structured lexical result required");
+          }
+          ftsStream = lexical.rows;
+          warnings.push(...lexical.warnings.filter((warning) => typeof warning === "string"));
+          streamsUsed.push(lexical.stream);
         } catch (e) {
-          warnings.push(`fts_stream_error: ${e.message}`);
+          warnings.push(`fts_stream_error: ${e && e.message ? e.message : "lexical search failed"}`);
         }
       } else {
         warnings.push("fts_stream_skipped: no ftsSearch callback provided");
@@ -36532,13 +36847,13 @@ var require_retrieve_hybrid = __commonJS({
       let unlocatable = 0;
       const filtered = [];
       for (const row of fused) {
-        const card = locateCard(root, row);
+        const card = locateCard(root, row, { currentProjectId });
         if (!card) {
           unlocatable += 1;
           continue;
         }
         if (!(isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens))) continue;
-        const p = card.payload || {};
+        const p = card.payload || card;
         filtered.push({
           ...row,
           claim: row.claim ?? p.claim,
@@ -36563,255 +36878,80 @@ var require_retrieve_hybrid = __commonJS({
   }
 });
 
-// scripts/lib/validate-project-id.js
-var require_validate_project_id = __commonJS({
-  "scripts/lib/validate-project-id.js"(exports2, module2) {
+// scripts/lib/redact.js
+var require_redact = __commonJS({
+  "scripts/lib/redact.js"(exports2, module2) {
     "use strict";
-    var PROJECT_ID_RE = /^proj_[a-f0-9]{12}$/;
-    function validateProjectId(id) {
-      if (typeof id !== "string" || !PROJECT_ID_RE.test(id)) {
-        throw Object.assign(
-          new Error(`Invalid project_id: ${JSON.stringify(id)} \u2014 must match /^proj_[a-f0-9]{12}$/`),
-          { code: "INVALID_PROJECT_ID" }
-        );
+    var os = require("os");
+    var REDACT_TAG = "[REDACTED]";
+    var DENY_PATTERNS = [
+      /(?:api[_-]?key|token|secret|bearer|password|passwd|pwd)[\s:=]+["']?[A-Za-z0-9_\-+/]{12,}/gi,
+      /[\w.+-]+@[\w-]+\.[\w.-]+/g,
+      /\b(?:postgres|postgresql|mysql|mongodb|redis|amqp)(?:ql)?:\/\/[^\s'"<>]+/gi,
+      /\b10\.\d+\.\d+\.\d+\b/g,
+      /\b192\.168\.\d+\.\d+\b/g,
+      /\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/g,
+      /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi
+    ];
+    var WINDOWS_ABSOLUTE_PATH_PATTERNS = [
+      /\\\\\?\\UNC\\[^\s'"<>]+/gi,
+      /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
+      /\\\\\.\\[^\s'"<>]+/g,
+      /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
+      /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g
+    ];
+    var SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
+    var HOME_RE = new RegExp(
+      os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
+      "g"
+    );
+    function applyGenericHomedir(s) {
+      return s.replace(/\/Users\/[a-zA-Z0-9_.-]+/g, "~").replace(/\/home\/[a-zA-Z0-9_.-]+/g, "~");
+    }
+    function applyEnvVarRedaction(s) {
+      return s.replace(SENSITIVE_VAR_RE, (_m, varRef, assignment) => assignment ? `${varRef}=<REDACTED>` : varRef);
+    }
+    function redactString(input, { allowPatterns = [] } = {}) {
+      if (typeof input !== "string") return input;
+      let out = input.replace(HOME_RE, "~");
+      out = applyGenericHomedir(out);
+      out = applyEnvVarRedaction(out);
+      for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) {
+        out = out.replace(re, REDACT_TAG);
       }
-      return id;
-    }
-    function isValidProjectId(id) {
-      return typeof id === "string" && PROJECT_ID_RE.test(id);
-    }
-    module2.exports = { validateProjectId, isValidProjectId, PROJECT_ID_RE };
-  }
-});
-
-// scripts/lib/card-paths.js
-var require_card_paths = __commonJS({
-  "scripts/lib/card-paths.js"(exports2, module2) {
-    "use strict";
-    var fs = require("node:fs");
-    var path = require("node:path");
-    var { isValidProjectId } = require_validate_project_id();
-    function pathApi(platform) {
-      return platform === "win32" ? path.win32 : path;
-    }
-    function isContainedPath(parent, child, { platform = process.platform } = {}) {
-      const api = pathApi(platform);
-      let base = api.resolve(parent);
-      let candidate = api.resolve(child);
-      if (platform === "win32") {
-        base = base.toLowerCase();
-        candidate = candidate.toLowerCase();
+      for (const re of DENY_PATTERNS) {
+        out = out.replace(re, REDACT_TAG);
       }
-      return candidate.startsWith(`${base}${api.sep}`);
-    }
-    function realpathNative(io, value) {
-      const impl = io.realpathSync && (io.realpathSync.native || io.realpathSync);
-      if (typeof impl !== "function") throw Object.assign(new Error("realpath unavailable"), { code: "ENOSYS" });
-      return impl.call(io.realpathSync, value);
-    }
-    function isLink(stat) {
-      return Boolean(stat && typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink());
-    }
-    function safeName(value) {
-      return typeof value === "string" && value.length > 0 && value !== "." && value !== ".." && path.basename(value) === value && !value.includes("/") && !value.includes("\\");
-    }
-    function addWarning(state, code) {
-      state.warnings.add(code);
-    }
-    function lstatDirectory(io, lexical, parentPhysical, state, { missingIsClean = false } = {}) {
-      let stat;
-      try {
-        stat = io.lstatSync(lexical);
-      } catch (error) {
-        if (!(missingIsClean && error && error.code === "ENOENT")) addWarning(state, "card_path_unavailable");
-        return null;
-      }
-      if (isLink(stat)) {
-        addWarning(state, "card_path_link_rejected");
-        return null;
-      }
-      if (!stat.isDirectory()) {
-        addWarning(state, "card_path_not_directory");
-        return null;
-      }
-      let physical;
-      try {
-        physical = realpathNative(io, lexical);
-      } catch {
-        addWarning(state, "card_path_unavailable");
-        return null;
-      }
-      if (parentPhysical && !isContainedPath(parentPhysical, physical, { platform: state.platform })) {
-        addWarning(state, "card_path_outside_scope");
-        return null;
-      }
-      return physical;
-    }
-    function resolveRootAndCards(root, io, state) {
-      const rootLexical = path.resolve(root);
-      const rootPhysical = lstatDirectory(io, rootLexical, null, state);
-      if (!rootPhysical) return null;
-      const cardsLexical = path.join(rootPhysical, "cards");
-      const cardsPhysical = lstatDirectory(io, cardsLexical, rootPhysical, state, { missingIsClean: true });
-      if (!cardsPhysical) return null;
-      return { rootPhysical, cardsPhysical };
-    }
-    function resolveTypeAndScope({ root, type, scope, currentProjectId, io, state }) {
-      if (!safeName(type)) {
-        addWarning(state, "card_path_outside_scope");
-        return null;
-      }
-      if (scope !== "global" && scope !== currentProjectId) {
-        addWarning(state, "project_scope_invalid");
-        return null;
-      }
-      const base = resolveRootAndCards(root, io, state);
-      if (!base) return null;
-      const typeLexical = path.join(base.cardsPhysical, type);
-      const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
-      if (!typePhysical) return null;
-      const scopeLexical = path.join(typePhysical, scope);
-      const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
-      if (!scopePhysical) return null;
-      return { ...base, typePhysical, scopePhysical };
-    }
-    function finalize(state, visited) {
-      return { visited, warnings: [...state.warnings].sort() };
-    }
-    function walkContainedCards({
-      root,
-      currentProjectId = null,
-      maxFiles = 5e3,
-      onCard,
-      io = fs,
-      platform = process.platform
-    } = {}) {
-      const state = { platform, warnings: /* @__PURE__ */ new Set() };
-      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
-        addWarning(state, "project_scope_invalid");
-        return finalize(state, 0);
-      }
-      if (typeof onCard !== "function") throw new TypeError("walkContainedCards requires onCard");
-      const boundedMax = Number.isInteger(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, 5e3) : 5e3;
-      const base = resolveRootAndCards(root, io, state);
-      if (!base) return finalize(state, 0);
-      let entries;
-      try {
-        entries = io.readdirSync(base.cardsPhysical, { withFileTypes: true });
-      } catch {
-        addWarning(state, "card_path_unavailable");
-        return finalize(state, 0);
-      }
-      let visited = 0;
-      for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!safeName(entry.name)) {
-          addWarning(state, "card_path_outside_scope");
-          continue;
-        }
-        const typeLexical = path.join(base.cardsPhysical, entry.name);
-        const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
-        if (!typePhysical) continue;
-        const scopes = currentProjectId === null ? ["global"] : ["global", currentProjectId];
-        for (const scope of scopes) {
-          const scopeLexical = path.join(typePhysical, scope);
-          const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
-          if (!scopePhysical) continue;
-          let files;
-          try {
-            files = io.readdirSync(scopePhysical, { withFileTypes: true });
-          } catch {
-            addWarning(state, "card_path_unavailable");
-            continue;
-          }
-          for (const file of [...files].sort((a, b) => a.name.localeCompare(b.name))) {
-            if (!safeName(file.name) || !file.name.endsWith(".json")) continue;
-            if (visited >= boundedMax) {
-              addWarning(state, "card_scan_limit_reached");
-              return finalize(state, visited);
-            }
-            const fileLexical = path.join(scopePhysical, file.name);
-            let stat;
-            try {
-              stat = io.lstatSync(fileLexical);
-            } catch {
-              addWarning(state, "card_path_unavailable");
-              continue;
-            }
-            if (isLink(stat)) {
-              addWarning(state, "card_path_link_rejected");
-              continue;
-            }
-            if (!stat.isFile()) {
-              addWarning(state, "card_path_not_regular");
-              continue;
-            }
-            let filePhysical;
-            try {
-              filePhysical = realpathNative(io, fileLexical);
-            } catch {
-              addWarning(state, "card_path_unavailable");
-              continue;
-            }
-            if (!isContainedPath(scopePhysical, filePhysical, { platform })) {
-              addWarning(state, "card_path_outside_scope");
-              continue;
-            }
-            onCard(Object.freeze({
-              root: base.rootPhysical,
-              currentProjectId,
-              type: entry.name,
-              scope,
-              file: file.name,
-              path: filePhysical
-            }));
-            visited += 1;
+      for (const allow of allowPatterns) {
+        const allowRe = new RegExp(allow, "g");
+        if (allowRe.test(input)) {
+          const matches = input.match(allowRe) || [];
+          for (const m of matches) {
+            out = out.replace(REDACT_TAG, m);
           }
         }
       }
-      return finalize(state, visited);
+      return out;
     }
-    function readContainedCard(descriptor, { io = fs, platform = process.platform } = {}) {
-      const state = { platform, warnings: /* @__PURE__ */ new Set() };
-      if (!descriptor || typeof descriptor !== "object") {
-        return { value: null, warning: "card_path_invalid_descriptor" };
+    function redactObject(value, opts = {}) {
+      if (value === null || value === void 0) return value;
+      if (typeof value === "string") return redactString(value, opts);
+      if (Array.isArray(value)) return value.map((v) => redactObject(v, opts));
+      if (typeof value === "object") {
+        const out = {};
+        for (const k of Object.keys(value)) out[k] = redactObject(value[k], opts);
+        return out;
       }
-      const { root, currentProjectId = null, type, scope, file } = descriptor;
-      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
-        return { value: null, warning: "project_scope_invalid" };
-      }
-      if (!safeName(file) || !file.endsWith(".json")) {
-        return { value: null, warning: "card_path_invalid_descriptor" };
-      }
-      const chain = resolveTypeAndScope({ root, type, scope, currentProjectId, io, state });
-      if (!chain) return { value: null, warning: [...state.warnings].sort()[0] || "card_path_unavailable" };
-      const lexical = path.join(chain.scopePhysical, file);
-      let stat;
-      try {
-        stat = io.lstatSync(lexical);
-      } catch {
-        return { value: null, warning: "card_path_unavailable" };
-      }
-      if (isLink(stat)) return { value: null, warning: "card_path_link_rejected" };
-      if (!stat.isFile()) return { value: null, warning: "card_path_not_regular" };
-      let physical;
-      try {
-        physical = realpathNative(io, lexical);
-      } catch {
-        return { value: null, warning: "card_path_unavailable" };
-      }
-      if (!isContainedPath(chain.scopePhysical, physical, { platform })) {
-        return { value: null, warning: "card_path_outside_scope" };
-      }
-      if (descriptor.path && path.resolve(descriptor.path) !== path.resolve(physical)) {
-        return { value: null, warning: "card_path_outside_scope" };
-      }
-      try {
-        return { value: JSON.parse(io.readFileSync(physical, "utf8")), warning: null };
-      } catch {
-        return { value: null, warning: "card_json_invalid" };
-      }
+      return value;
     }
-    module2.exports = { isContainedPath, walkContainedCards, readContainedCard };
+    module2.exports = {
+      redactString,
+      redactObject,
+      REDACT_TAG,
+      DENY_PATTERNS,
+      WINDOWS_ABSOLUTE_PATH_PATTERNS,
+      HOME_RE
+    };
   }
 });
 
@@ -38541,9 +38681,9 @@ var require_mcp_server_runtime = __commonJS({
     var { listResources, readResource } = require_mcp_resources();
     var { redactMcpPayload } = require_mcp_output_redaction();
     var TOOLS = Object.freeze([
-      ["deep_memory_brief", "Top-N task-specific memory brief.", { task: { type: "string" }, limit: { type: "integer" } }, ["task"]],
-      ["deep_memory_smart_search", "Hybrid operational-memory search.", { query: { type: "string" }, limit: { type: "integer" } }, ["query"]],
-      ["deep_memory_recall", "Lightweight FTS5 lexical recall.", { query: { type: "string" }, limit: { type: "integer" } }, ["query"]],
+      ["deep_memory_brief", "Top-N task-specific memory brief. FTS5 when available; bounded privacy-scoped card scan otherwise.", { task: { type: "string" }, limit: { type: "integer" } }, ["task"]],
+      ["deep_memory_smart_search", "Hybrid operational-memory search. FTS5 when available; bounded privacy-scoped card scan otherwise.", { query: { type: "string" }, limit: { type: "integer" } }, ["query"]],
+      ["deep_memory_recall", "Lightweight lexical recall. FTS5 when available; bounded privacy-scoped card scan otherwise.", { query: { type: "string" }, limit: { type: "integer" } }, ["query"]],
       ["deep_memory_save", "Manual save is not implemented; harvest produces cards.", { memory_type: { type: "string" }, title: { type: "string" }, claim: { type: "string" } }, ["memory_type", "title", "claim"]],
       ["deep_memory_harvest", "Harvest is available through the host skill.", { source: { type: "string" } }, []],
       ["deep_memory_audit", "Audit operations; mutations are host-skill only.", { mode: { type: "string" }, memory_id: { type: "string" } }, ["mode"]],

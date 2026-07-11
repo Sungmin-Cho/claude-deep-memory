@@ -19,9 +19,9 @@ const { listResources, readResource } = require('./mcp-resources');
 const { redactMcpPayload } = require('./mcp-output-redaction');
 
 const TOOLS = Object.freeze([
-  ['deep_memory_brief', 'Top-N task-specific memory brief.', { task: { type: 'string' }, limit: { type: 'integer' } }, ['task']],
-  ['deep_memory_smart_search', 'Hybrid operational-memory search.', { query: { type: 'string' }, limit: { type: 'integer' } }, ['query']],
-  ['deep_memory_recall', 'Lightweight FTS5 lexical recall.', { query: { type: 'string' }, limit: { type: 'integer' } }, ['query']],
+  ['deep_memory_brief', 'Top-N task-specific memory brief. FTS5 when available; bounded privacy-scoped card scan otherwise.', { task: { type: 'string' }, limit: { type: 'integer' } }, ['task']],
+  ['deep_memory_smart_search', 'Hybrid operational-memory search. FTS5 when available; bounded privacy-scoped card scan otherwise.', { query: { type: 'string' }, limit: { type: 'integer' } }, ['query']],
+  ['deep_memory_recall', 'Lightweight lexical recall. FTS5 when available; bounded privacy-scoped card scan otherwise.', { query: { type: 'string' }, limit: { type: 'integer' } }, ['query']],
   ['deep_memory_save', 'Manual save is not implemented; harvest produces cards.', { memory_type: { type: 'string' }, title: { type: 'string' }, claim: { type: 'string' } }, ['memory_type', 'title', 'claim']],
   ['deep_memory_harvest', 'Harvest is available through the host skill.', { source: { type: 'string' } }, []],
   ['deep_memory_audit', 'Audit operations; mutations are host-skill only.', { mode: { type: 'string' }, memory_id: { type: 'string' } }, ['mode']],

@@ -7,8 +7,9 @@
 // (Stage 6 applicability guard).
 
 const fs = require('node:fs');
-const path = require('node:path');
 const { jaccard } = require('./score');
+const { isValidProjectId } = require('./validate-project-id');
+const { walkContainedCards, readContainedCard } = require('./card-paths');
 
 const APPLICABILITY_GUARD_THRESHOLD = 0.5;
 
@@ -26,27 +27,46 @@ function tokenize(text) {
  * project_id scope first, then global; the FTS5 row already tells us the
  * memory_type so we don't have to walk the whole tree.
  */
-function loadCard(memoryRoot, row) {
-  const typeDir = path.join(memoryRoot, 'cards', row.memory_type);
-  const projScope = row.project_id || 'global';
-  const candidatePaths = [
-    path.join(typeDir, projScope, row.memory_id + '.json'),
-    path.join(typeDir, 'global', row.memory_id + '.json'),
-  ];
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
-      try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
-      catch { return null; }
-    }
+function findContainedCard(memoryRoot, row, {
+  io = fs,
+  platform = process.platform,
+  currentProjectId,
+} = {}) {
+  if (!row || typeof row !== 'object' || typeof row.memory_id !== 'string') return null;
+  const isGlobalRow = row.privacy_level === 'global' || !row.project_id;
+  const rowProjectId = isGlobalRow ? null : row.project_id;
+  if (rowProjectId !== null && !isValidProjectId(rowProjectId)) return null;
+  if (currentProjectId !== undefined) {
+    if (currentProjectId !== null && !isValidProjectId(currentProjectId)) return null;
+    if (!isGlobalRow && currentProjectId !== rowProjectId) return null;
   }
-  return null;
+
+  const wantedScope = isGlobalRow ? 'global' : rowProjectId;
+  let found = null;
+  walkContainedCards({
+    root: memoryRoot,
+    currentProjectId: rowProjectId,
+    maxFiles: 5000,
+    io,
+    platform,
+    onCard(descriptor) {
+      if (found || descriptor.scope !== wantedScope) return;
+      if (row.memory_type && descriptor.type !== row.memory_type) return;
+      const read = readContainedCard(descriptor, { io, platform });
+      if (!read.value) return;
+      const payload = read.value.payload || read.value;
+      if (payload.memory_id !== row.memory_id) return;
+      if (row.memory_type && payload.memory_type !== row.memory_type) return;
+      found = read.value;
+    },
+  });
+  return found;
 }
 
-function readCardFile(memoryRoot, memoryType, scope, memoryId) {
-  const p = path.join(memoryRoot, 'cards', memoryType, scope, memoryId + '.json');
-  if (!fs.existsSync(p)) return null;
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
-  catch { return null; }
+function loadCard(memoryRoot, row, options) {
+  const card = findContainedCard(memoryRoot, row, options);
+  if (!card) return null;
+  return card.payload ? card : { payload: card };
 }
 
 /**
@@ -62,30 +82,12 @@ function readCardFile(memoryRoot, memoryType, scope, memoryId) {
  * the LOADED card's payload, not the index row, so no stale row content can
  * surface through it.)
  */
-function locateCard(memoryRoot, row) {
-  // R5 P1: a global row resolves from global/ ONLY — vector rows keep their
-  // origin project_id even at privacy_level 'global', and probing that scope
-  // first would let a same-id LOCAL card validate a stale global row for
-  // every other project.
-  const isGlobalRow = row.privacy_level === 'global' || !row.project_id;
-  const scopes = isGlobalRow ? ['global'] : [row.project_id];
-  let types = [];
-  if (row.memory_type) {
-    types = [row.memory_type];
-  } else {
-    try { types = fs.readdirSync(path.join(memoryRoot, 'cards')); } catch { return null; }
-  }
-  for (const t of types) {
-    for (const s of scopes) {
-      const card = readCardFile(memoryRoot, t, s, row.memory_id);
-      if (card) return card;
-    }
-  }
-  return null;
+function locateCard(memoryRoot, row, options) {
+  return findContainedCard(memoryRoot, row, options);
 }
 
 function isNotDeprecated(card) {
-  return card.payload?.status !== 'deprecated';
+  return (card.payload || card).status !== 'deprecated';
 }
 
 /**
@@ -96,7 +98,7 @@ function isNotDeprecated(card) {
  * actively mislead.
  */
 function passesApplicabilityGuard(card, taskTokens) {
-  const nonApp = card.payload?.non_applicability || [];
+  const nonApp = (card.payload || card).non_applicability || [];
   for (const na of nonApp) {
     const naTokens = tokenize(na.value);
     if (naTokens.length === 0) continue;

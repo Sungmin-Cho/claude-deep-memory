@@ -1,32 +1,49 @@
 'use strict';
-// v0.1.2 — symmetric graceful degradation on the brief/retrieve side. When
-// scripts/lib/fts-index.js fails to require (better-sqlite3 native binding
-// unavailable in this Node), retrieve must return an empty result + a
-// loud, actionable warning. harvest-fts-silent-disable.test.js covers the
-// harvest side; this file covers retrieve/brief.
+// When the optional native SQLite driver cannot load, CLI retrieval must still
+// run the ordinary Stage 1–8 pipeline over the bounded privacy-scoped card scan.
 const test = require('node:test');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const RETRIEVE_PATH = path.join(REPO_ROOT, 'scripts', 'retrieve.js');
 const FTS_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'fts-index.js');
 
-test('graceful degradation — retrieve module loads + runRetrieve returns empty+warning when fts-index require fails', () => {
+test('graceful degradation preserves Stage 1–8 over card-scan fallback', (t) => {
+  const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-retrieve degraded Ω '));
+  t.after(() => fs.rmSync(memoryRoot, { recursive: true, force: true }));
+  const projectId = 'proj_aaaaaaaaaaaa';
+  const cardDir = path.join(memoryRoot, 'cards', 'pattern', projectId);
+  fs.mkdirSync(cardDir, { recursive: true });
+  fs.writeFileSync(path.join(cardDir, 'mem_fallback.json'), JSON.stringify({
+    memory_id: 'mem_fallback',
+    memory_type: 'pattern',
+    privacy_level: 'local',
+    project_id: projectId,
+    claim: 'retry with bounded exponential backoff',
+    status: 'active',
+    tags: ['retry'],
+    applicability: [],
+    non_applicability: [],
+    search_keywords: ['backoff'],
+    confidence: 0.9,
+    evidence_summary: [],
+  }));
+
   const script = `
     'use strict';
     const Module = require('module');
+    const os = require('node:os');
 
     const ftsPath = ${JSON.stringify(FTS_PATH)};
     const retrievePath = ${JSON.stringify(RETRIEVE_PATH)};
-
     delete require.cache[ftsPath];
     delete require.cache[retrievePath];
 
-    const os = require('node:os');
     const origLoad = Module._load;
-    // v0.1.3 — embed homedir-like substring to exercise redaction path (Codex 🟡 #2).
     const simulatedErr = "Cannot find module '" + os.homedir() + "/.cache/plugin/better-sqlite3.node'";
     Module._load = function(request, parent, isMain) {
       if (request === ftsPath || (parent && Module._resolveFilename(request, parent) === ftsPath)) {
@@ -43,41 +60,28 @@ test('graceful degradation — retrieve module loads + runRetrieve returns empty
           process.exit(1);
         }
         const result = await retrieve.runRetrieve({
-          task: 'any task',
-          memoryRoot: '/tmp/dm-retrieve-degraded',
-          projectProfile: { project_id: 'proj_aaaaaaaaaaaa' },
+          task: 'retry backoff',
+          memoryRoot: ${JSON.stringify(memoryRoot)},
+          projectProfile: { project_id: ${JSON.stringify(projectId)}, signature: { languages: [] } },
         });
-        if (!Array.isArray(result.memories) || result.memories.length !== 0) {
-          process.stderr.write('ERROR: expected empty memories[]\\n');
+        if (!Array.isArray(result.memories) || result.memories.length !== 1 ||
+            result.memories[0].payload.memory_id !== 'mem_fallback') {
+          process.stderr.write('ERROR: expected card-scan memory: ' + JSON.stringify(result.memories) + '\\n');
           process.exit(1);
         }
-        if (!Array.isArray(result.warnings)) {
-          process.stderr.write('ERROR: warnings[] missing\\n');
+        if (!Array.isArray(result.warnings) || !result.warnings.includes('lexical_stream_fallback')) {
+          process.stderr.write('ERROR: fallback warning missing: ' + JSON.stringify(result.warnings) + '\\n');
           process.exit(1);
         }
-        const hasDegradedWarning = result.warnings.some(
-          (w) => typeof w === 'string' && w.includes('FTS5') && w.includes('better-sqlite3')
-        );
-        if (!hasDegradedWarning) {
-          process.stderr.write('ERROR: degraded warning not present in warnings[]: ' + JSON.stringify(result.warnings) + '\\n');
-          process.exit(1);
-        }
-        // v0.1.3 redaction check — warning must NOT contain literal homedir.
         const homedir = os.homedir();
-        const leaked = result.warnings.find((w) => typeof w === 'string' && w.includes(homedir));
+        const leaked = result.warnings.find((warning) => typeof warning === 'string' && warning.includes(homedir));
         if (leaked) {
           process.stderr.write('ERROR: warning leaked homedir path: ' + leaked + '\\n');
           process.exit(1);
         }
-        const hasTilde = result.warnings.some((w) => typeof w === 'string' && w.includes('~/'));
-        if (!hasTilde) {
-          process.stderr.write('ERROR: warning missing ~/ redaction marker: ' + JSON.stringify(result.warnings) + '\\n');
-          process.exit(1);
-        }
         process.stdout.write('OK\\n');
-        process.exit(0);
-      } catch (e) {
-        process.stderr.write('ERROR: retrieve threw unexpectedly: ' + e.message + '\\n');
+      } catch (error) {
+        process.stderr.write('ERROR: retrieve threw unexpectedly: ' + error.message + '\\n');
         process.exit(1);
       }
     })();
