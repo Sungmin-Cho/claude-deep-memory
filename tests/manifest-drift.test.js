@@ -13,6 +13,7 @@ const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const codexHooksPath = path.join(root, 'hooks', 'hooks.json');
 const mcpManifest = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
+const initSkill = fs.readFileSync(path.join(root, 'skills', 'deep-memory-init', 'SKILL.md'), 'utf8');
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
   assert.strictEqual(claudeManifest.version, pkg.version, `claude=${claudeManifest.version} pkg=${pkg.version}`);
@@ -139,4 +140,11 @@ test('manifest-drift: MCP manifests use their host-native bundled entrypoint', (
     fs.existsSync(path.join(root, 'dist/mcp-server.cjs')),
     'bundled dist/mcp-server.cjs must be committed for node_modules-free installs',
   );
+});
+
+test('manifest-drift: init guidance uses native Windows paths and keeps UNC opt-in explicit', () => {
+  assert.match(initSkill, /C:\\Users\\me\\\.deep-memory/);
+  assert.doesNotMatch(initSkill, /POSIX form 필수/);
+  assert.doesNotMatch(initSkill, /Windows 사용자는 `\/c\/\.\.\.` 또는 `\/mnt\/c\/\.\.\.`/);
+  assert.match(initSkill, /UNC[^\n]*--allow-network-root/);
 });

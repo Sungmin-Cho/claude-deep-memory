@@ -4,9 +4,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
-const { execSync } = require('node:child_process');
 const { preflight } = require('./lib/preflight');
 const { writeJsonAtomic } = require('./lib/atomic-write');
+const { runGit } = require('./lib/git-command');
 const { setCaptureEnabled, ensureConfig } = require('./lib/capture-toggle');
 const { deriveProjectId } = require('./lib/project-resolver');
 const { validateProjectProfile } = require('./lib/project-profile-validator');
@@ -18,11 +18,10 @@ function resolveMemoryRoot(raw) {
 
 // ITEM-6-r4: accept cwd so callers in different working directories get the
 // git config from the intended directory, not process.cwd().
-function safeGit(cmd, cwd) {
+function safeGit(args, cwd, gitProcess = runGit) {
   try {
-    const opts = { stdio: ['ignore', 'pipe', 'ignore'] };
-    if (cwd) opts.cwd = cwd;
-    return execSync(cmd, opts).toString().trim();
+    const result = gitProcess(args, { cwd });
+    return typeof result === 'string' ? result.trim() : '';
   } catch {
     return '';
   }
@@ -62,7 +61,7 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   const pid = projectId(cwd);
   // ITEM-6-r4: pass cwd to all safeGit calls inside run() so remote/head/branch
   // are read from the project directory, not from a potentially different process.cwd().
-  const remote = safeGit('git config --get remote.origin.url', cwd);
+  const remote = safeGit(['config', '--get', 'remote.origin.url'], cwd);
   const profile = {
     project_id: pid,
     repo: {
@@ -70,8 +69,8 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
         ? 'sha256:' + createHash('sha256').update(remote).digest('hex')
         : 'sha256:' + createHash('sha256').update('no-remote').digest('hex'),
       root_path_hash: 'sha256:' + createHash('sha256').update(cwd).digest('hex'),
-      default_branch: safeGit('git symbolic-ref --short HEAD', cwd) || 'main',
-      git_head: safeGit('git rev-parse HEAD', cwd),
+      default_branch: safeGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd) || 'main',
+      git_head: safeGit(['rev-parse', 'HEAD'], cwd),
     },
     signature: {
       languages: detectLanguages(cwd),
@@ -111,7 +110,7 @@ async function run({ memoryRoot, allowNetworkRoot = false, capture } = {}) {
   return result;
 }
 
-module.exports = { run, resolveMemoryRoot, projectId };
+module.exports = { run, resolveMemoryRoot, projectId, safeGit };
 
 if (require.main === module) {
   const args = process.argv.slice(2);

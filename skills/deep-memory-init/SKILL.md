@@ -22,8 +22,8 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 | 인자 | 의미 |
 |---|---|
 | (없음) | 환경변수 `DEEP_MEMORY_ROOT` 또는 `~/.deep-memory/` 를 memory_root 로 사용 |
-| `<memory_root>` | 절대경로 또는 `~`-prefix. POSIX form 필수 (Windows 사용자는 `/c/...` 또는 `/mnt/c/...`) |
-| `--allow-network-root` | NFS / `/Volumes/` / `/mnt/` / `/net/` 경로를 명시적으로 허용 (기본 차단) |
+| `<memory_root>` | 절대경로 또는 `~`-prefix. Windows 에서는 `C:\Users\me\.deep-memory` 같은 native 경로를 그대로 사용 |
+| `--allow-network-root` | NFS / `/Volumes/` / `/mnt/` / `/net/` / Windows UNC 경로를 명시적으로 허용 (기본 차단, UNC 도 `--allow-network-root` 필요) |
 | `--enable-capture` | 자동 hook capture 를 켬 (`config.yaml#capture.enabled: true`). 모든 워크스페이스에 적용되는 전역 토글. 기본값은 OFF (프라이버시) |
 | `--disable-capture` | 자동 hook capture 를 끔. `--enable-capture` 와 동시 지정 시 exit 1 (mutually exclusive) |
 
@@ -35,6 +35,8 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 ## Steps
 
 1. **memory_root 결정**: arg > 환경변수 `DEEP_MEMORY_ROOT` > `~/.deep-memory`. `~`-prefix 는 `os.homedir()` 로 치환.
+   - Windows 예: `node scripts/init.js "C:\Users\me\.deep-memory"`
+   - UNC 예: `node scripts/init.js "\\server\share\deep-memory" --allow-network-root` (명시적 opt-in 필수)
 2. **preflight 호출** — `scripts/lib/preflight.js` 의 `preflight(memoryRoot, { allowNetworkRoot })` 가 다음을 검증:
    - realpath / 쓰기 가능 / 부모 디렉토리 존재
    - NFS · 네트워크 마운트 차단 (`--allow-network-root` 없으면)

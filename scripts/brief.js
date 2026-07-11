@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runRetrieve } = require('./retrieve');
 const { renderJson, renderMarkdown } = require('./lib/brief-format');
-const { writeJsonAtomic } = require('./lib/atomic-write');
+const { writeJsonAtomic, writeTextAtomic } = require('./lib/atomic-write');
 const { resolveProjectScope } = require('./lib/project-resolver');
 
 function resolveMemoryRoot(raw) {
@@ -60,13 +60,7 @@ async function run({ task, projectDir, memoryRoot, topN, diversityPerType } = {}
   const jsonPath = path.join(outDir, 'latest-brief.json');
   const mdPath = path.join(outDir, 'latest-brief.md');
   writeJsonAtomic(jsonPath, json);
-
-  // MD is written via tmp+rename for atomicity (parent fsync mirrors writeJsonAtomic)
-  const mdTmp = mdPath + '.tmp';
-  fs.writeFileSync(mdTmp, md);
-  fs.renameSync(mdTmp, mdPath);
-  const dirFd = fs.openSync(outDir, 'r');
-  try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  writeTextAtomic(mdPath, md);
 
   return {
     task,

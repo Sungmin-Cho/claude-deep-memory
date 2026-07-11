@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { detect } = require('../scripts/lib/adapter-registry');
+const { adapterForHost } = require('../scripts/lib/runtime-context');
 const { ADAPTER_NAMES } = require('../scripts/lib/llm-bridge');
 
 test('adapter-registry.detect: explicit override returns input as-is', () => {
@@ -9,27 +10,25 @@ test('adapter-registry.detect: explicit override returns input as-is', () => {
   assert.strictEqual(detect('stdin-fallback'), 'stdin-fallback');
 });
 
-test('adapter-registry.detect: auto picks via env vars or stdin-fallback default', () => {
-  // Save + clear env
-  const saved = { CLAUDE_PLUGIN_ROOT: process.env.CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT: process.env.CODEX_PLUGIN_ROOT, GEMINI_API_KEY: process.env.GEMINI_API_KEY };
-  delete process.env.CLAUDE_PLUGIN_ROOT;
-  delete process.env.CODEX_PLUGIN_ROOT;
-  delete process.env.GEMINI_API_KEY;
-  try {
-    process.env.CLAUDE_PLUGIN_ROOT = '/x';
-    assert.strictEqual(detect('auto'), 'claude-agent');
-    delete process.env.CLAUDE_PLUGIN_ROOT;
+test('adapter-registry.detect: auto maps an injected host env deterministically', () => {
+  assert.strictEqual(detect('auto', {
+    env: { PLUGIN_ROOT: '/codex', CLAUDE_PLUGIN_ROOT: '/compat' },
+  }), 'codex-bash');
+  assert.strictEqual(detect('auto', {
+    env: { CLAUDE_PLUGIN_ROOT: '/claude' },
+  }), 'claude-agent');
+  assert.strictEqual(detect('auto', {
+    env: { GEMINI_CLI_ROOT: '/gemini' },
+  }), 'gemini-sdk');
+  assert.strictEqual(detect('auto', { env: { PATH: '/does/not/matter' } }), 'stdin-fallback');
+});
 
-    process.env.GEMINI_API_KEY = 'abc';
-    // codex CLI presence on PATH may override; just assert one of the env-driven adapters
-    const r = detect('auto');
-    assert.ok(['claude-agent', 'codex-bash', 'gemini-sdk', 'stdin-fallback'].includes(r));
-  } finally {
-    // restore
-    for (const [k, v] of Object.entries(saved)) {
-      if (v !== undefined) process.env[k] = v; else delete process.env[k];
-    }
-  }
+test('adapterForHost keeps unsupported compatibility hosts on stdin fallback', () => {
+  assert.strictEqual(adapterForHost('claude-code'), 'claude-agent');
+  assert.strictEqual(adapterForHost('codex'), 'codex-bash');
+  assert.strictEqual(adapterForHost('gemini-cli'), 'gemini-sdk');
+  assert.strictEqual(adapterForHost('cursor'), 'stdin-fallback');
+  assert.strictEqual(adapterForHost('(other)'), 'stdin-fallback');
 });
 
 test('llm-bridge ADAPTER_NAMES is the allowlist (R3 P14)', () => {

@@ -4,7 +4,32 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { run, resolveMemoryRoot, projectId } = require('../scripts/init');
+const { run, resolveMemoryRoot, projectId, safeGit } = require('../scripts/init');
+
+test('safeGit passes a fixed argument array and cwd to the shared git process helper', () => {
+  const calls = [];
+  const gitProcess = (args, options) => {
+    calls.push({ args, options });
+    return ' https://example.com/deep-memory.git ';
+  };
+  const cwd = 'C:\\Users\\me\\repo path Ω';
+
+  assert.strictEqual(
+    safeGit(['config', '--get', 'remote.origin.url'], cwd, gitProcess),
+    'https://example.com/deep-memory.git',
+  );
+  assert.deepStrictEqual(calls, [{
+    args: ['config', '--get', 'remote.origin.url'],
+    options: { cwd },
+  }]);
+});
+
+test('safeGit preserves empty metadata on git process failure', () => {
+  assert.strictEqual(safeGit(['rev-parse', 'HEAD'], '/missing', () => null), '');
+  assert.strictEqual(safeGit(['rev-parse', 'HEAD'], '/missing', () => {
+    throw Object.assign(new Error('git missing'), { code: 'ENOENT' });
+  }), '');
+});
 
 test('init creates memory_root subdirectories + config.yaml + project-profile', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-init-'));

@@ -3,65 +3,101 @@
 // process.cwd() get the correct repo's git state.
 const test = require('node:test');
 const assert = require('node:assert');
-const { execSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
 const { wrap, gitStateSafe } = require('../scripts/lib/envelope');
+const { runGit } = require('../scripts/lib/git-command');
 
 /**
  * Create a minimal git repo in `dir` with one commit, so gitStateSafe(dir) returns
  * a valid non-null result. Returns the HEAD commit hash.
  */
 function initGitRepoWithCommit(dir, remoteName, remoteUrl) {
-  const run = (cmd) => execSync(cmd, {
-    cwd: dir,
-    env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@t.com',
-           GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 't@t.com' },
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).toString().trim();
-  run('git init');
-  run('git config user.email "t@t.com"');
-  run('git config user.name "Test"');
-  run(`git remote add ${remoteName} ${remoteUrl}`);
+  const run = (args) => {
+    const result = spawnSync('git', args, {
+      cwd: dir,
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@t.com',
+             GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 't@t.com' },
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    assert.strictEqual(result.status, 0, `git ${args.join(' ')} failed: ${result.error || ''}`);
+    return result.stdout.trim();
+  };
+  run(['init']);
+  run(['config', 'user.email', 't@t.com']);
+  run(['config', 'user.name', 'Test']);
+  run(['remote', 'add', remoteName, remoteUrl]);
   // Write a dummy file so we can commit
   fs.writeFileSync(path.join(dir, 'README.md'), `# ${path.basename(dir)}\n`);
-  run('git add README.md');
-  run('git commit -m "init"');
-  return run('git rev-parse HEAD');
+  run(['add', 'README.md']);
+  run(['commit', '-m', 'init']);
+  return run(['rev-parse', 'HEAD']);
 }
 
-test('ITEM-4-r5: gitStateSafe(cwd) returns state for the specified repo, not process.cwd()', () => {
-  const tmp1 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-git-cwd1-'));
-  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-git-cwd2-'));
+test('gitStateSafe passes fixed argument arrays and cwd through the shared helper', () => {
+  const calls = [];
+  const values = new Map([
+    ['rev-parse\0HEAD', '0123456789abcdef0123456789abcdef01234567'],
+    ['rev-parse\0--abbrev-ref\0HEAD', 'feature/windows'],
+    ['status\0--porcelain', ' M scripts/lib/envelope.js'],
+  ]);
+  const gitProcess = (args, options) => {
+    calls.push({ args, options });
+    return values.get(args.join('\0')) ?? null;
+  };
+  const cwd = 'C:\\Users\\me\\repo path Ω';
+
+  assert.deepStrictEqual(gitStateSafe(cwd, gitProcess), {
+    head: '0123456789abcdef0123456789abcdef01234567',
+    branch: 'feature/windows',
+    dirty: true,
+  });
+  assert.deepStrictEqual(calls, [
+    { args: ['rev-parse', 'HEAD'], options: { cwd } },
+    { args: ['rev-parse', '--abbrev-ref', 'HEAD'], options: { cwd } },
+    { args: ['status', '--porcelain'], options: { cwd } },
+  ]);
+});
+
+test('gitStateSafe omits git metadata when any shared git probe has no result', () => {
+  assert.strictEqual(gitStateSafe('/repo', (args) => (
+    args[0] === 'status' ? null : '0123456789abcdef0123456789abcdef01234567'
+  )), null);
+});
+
+test('runGit uses the cwd repository when poisoned parent Git environment points at another repo', () => {
+  const tmp1 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm git cwd1 Ω '));
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm git cwd2 Ω '));
+  const originalGitDir = process.env.GIT_DIR;
+  const originalGitWorkTree = process.env.GIT_WORK_TREE;
   try {
     const head1 = initGitRepoWithCommit(tmp1, 'origin', 'https://example.com/repo1.git');
     const head2 = initGitRepoWithCommit(tmp2, 'origin', 'https://example.com/repo2.git');
-    // Verify the two repos have different HEAD commits
     assert.notStrictEqual(head1, head2, 'Two repos should have different HEAD hashes (timing may rarely clash)');
 
-    // From process.cwd() (the deep-memory repo), call gitStateSafe with cwd=tmp1
-    // → should return tmp1's HEAD, NOT process.cwd()'s HEAD
-    const state1 = gitStateSafe(tmp1);
-    assert.ok(state1 !== null, 'gitStateSafe(tmp1) must return non-null for a valid git repo');
-    assert.strictEqual(state1.head, head1,
-      `Expected head=${head1} (tmp1), got ${state1.head}`);
-
-    // Same with tmp2
-    const state2 = gitStateSafe(tmp2);
-    assert.ok(state2 !== null, 'gitStateSafe(tmp2) must return non-null for a valid git repo');
-    assert.strictEqual(state2.head, head2,
-      `Expected head=${head2} (tmp2), got ${state2.head}`);
+    process.env.GIT_DIR = path.join(tmp2, '.git');
+    process.env.GIT_WORK_TREE = tmp2;
+    assert.strictEqual(runGit(['rev-parse', 'HEAD'], { cwd: tmp1 }), head1,
+      'explicit cwd must outrank inherited repository selectors');
   } finally {
+    if (originalGitDir === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = originalGitDir;
+    if (originalGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+    else process.env.GIT_WORK_TREE = originalGitWorkTree;
     fs.rmSync(tmp1, { recursive: true, force: true });
     fs.rmSync(tmp2, { recursive: true, force: true });
   }
 });
 
 test('ITEM-4-r5: wrap({..., cwd}) threads cwd to gitStateSafe → envelope.git.head matches target repo', () => {
-  const tmp1 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-wrap-cwd1-'));
-  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-wrap-cwd2-'));
+  const tmp1 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm wrap cwd1 Ω '));
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dm wrap cwd2 Ω '));
   try {
     const head1 = initGitRepoWithCommit(tmp1, 'origin', 'https://example.com/repo1.git');
     const head2 = initGitRepoWithCommit(tmp2, 'origin', 'https://example.com/repo2.git');

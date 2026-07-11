@@ -3,6 +3,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+function isNetworkPath(value, platform = process.platform) {
+  if (platform === 'win32') return /^(?:\\\\\?\\UNC\\[^\\]+\\[^\\]+|\\\\(?![?.]\\)[^\\]+\\[^\\]+)/i.test(value);
+  return /^\/(Volumes|mnt|net)\//.test(value);
+}
+
 function preflight(memoryRoot, { allowNetworkRoot = false } = {}) {
   const result = { ok: true, warnings: [], errors: [], resolved: null, network: false, readOnly: false };
   fs.mkdirSync(memoryRoot, { recursive: true });
@@ -18,7 +23,7 @@ function preflight(memoryRoot, { allowNetworkRoot = false } = {}) {
     result.readOnly = true;
     result.warnings.push(`memory_root read-only: ${e.message}. brief-only mode.`);
   }
-  if (/^\/Volumes\//.test(result.resolved) || /^\/mnt\//.test(result.resolved) || /^\/net\//.test(result.resolved)) {
+  if (isNetworkPath(result.resolved)) {
     result.network = true;
     if (!allowNetworkRoot) {
       result.ok = false;
@@ -30,4 +35,4 @@ function preflight(memoryRoot, { allowNetworkRoot = false } = {}) {
   return result;
 }
 
-module.exports = { preflight };
+module.exports = { preflight, isNetworkPath };

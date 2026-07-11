@@ -231,6 +231,6 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
 
 // ---- host detection (PR1-W8) ------------------------------------------------
 
-export function detectHost() {
-  return detectRuntimeHost(process.env);
+export function detectHost(env = process.env) {
+  return detectRuntimeHost(env);
 }

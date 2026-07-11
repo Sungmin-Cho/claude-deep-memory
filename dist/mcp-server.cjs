@@ -38197,25 +38197,35 @@ var require_distill_hook_session = __commonJS({
   }
 });
 
+// scripts/lib/runtime-context.js
+var require_runtime_context = __commonJS({
+  "scripts/lib/runtime-context.js"(exports2, module2) {
+    "use strict";
+    function detectHost(env = process.env) {
+      if (env.PLUGIN_ROOT) return "codex";
+      if (env.CURSOR_PLUGIN_ROOT) return "cursor";
+      if (env.GEMINI_CLI_ROOT || env.GEMINI_API_KEY) return "gemini-cli";
+      if (env.CLINE_PLUGIN_ROOT) return "cline";
+      if (env.CLAUDE_PLUGIN_ROOT) return "claude-code";
+      return "(other)";
+    }
+    function adapterForHost(host) {
+      if (host === "claude-code") return "claude-agent";
+      if (host === "codex") return "codex-bash";
+      if (host === "gemini-cli") return "gemini-sdk";
+      return "stdin-fallback";
+    }
+    module2.exports = { detectHost, adapterForHost };
+  }
+});
+
 // scripts/lib/adapter-registry.js
 var require_adapter_registry = __commonJS({
   "scripts/lib/adapter-registry.js"(exports2, module2) {
     "use strict";
-    var { execSync } = require("node:child_process");
-    function detect(adapter = "auto") {
-      if (adapter !== "auto") return adapter;
-      if (process.env.CLAUDE_PLUGIN_ROOT) return "claude-agent";
-      if (process.env.CODEX_PLUGIN_ROOT || hasCmd("codex")) return "codex-bash";
-      if (process.env.GEMINI_API_KEY) return "gemini-sdk";
-      return "stdin-fallback";
-    }
-    function hasCmd(name) {
-      try {
-        execSync(`command -v ${name}`, { stdio: "ignore" });
-        return true;
-      } catch {
-        return false;
-      }
+    var { detectHost, adapterForHost } = require_runtime_context();
+    function detect(adapter = "auto", { env = process.env } = {}) {
+      return adapter === "auto" ? adapterForHost(detectHost(env)) : adapter;
     }
     module2.exports = { detect };
   }
