@@ -27,6 +27,17 @@ const DENY_PATTERNS = [
   /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi,
 ];
 
+// Complete native-Windows absolute path forms. Extended/device prefixes must
+// run before ordinary UNC/drive forms. Drive-relative `C:notes\todo.txt` does
+// not match because the drive rule requires a backslash after the colon.
+const WINDOWS_ABSOLUTE_PATH_PATTERNS = [
+  /\\\\\?\\UNC\\[^\s'"<>]+/gi,
+  /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
+  /\\\\\.\\[^\s'"<>]+/g,
+  /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
+  /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g,
+];
+
 // PR1-E (R-011) — env-var assignment masking. Matches `$VAR`, `process.env.VAR`,
 // `export VAR=...`, and BARE `VAR=...` (W3 bare-assignment fix). Value is
 // replaced with <REDACTED>; variable name preserved for context. Only
@@ -64,18 +75,22 @@ function applyEnvVarRedaction(s) {
  *   1) HOME_RE (current runner homedir → ~)
  *   2) applyGenericHomedir (any /Users/<name>/ or /home/<name>/ → ~)
  *   3) applyEnvVarRedaction (sensitive env-var value → <REDACTED>, name preserved)
- *   4) DENY_PATTERNS (credentials, email, db-URI, RFC1918, internal hosts → REDACT_TAG)
- *   5) allowPatterns restoration (existing v0.1.x logic, unchanged)
+ *   4) WINDOWS_ABSOLUTE_PATH_PATTERNS (native absolute paths → REDACT_TAG)
+ *   5) DENY_PATTERNS (credentials, email, db-URI, RFC1918, internal hosts → REDACT_TAG)
+ *   6) allowPatterns restoration (existing v0.1.x logic, unchanged)
  */
 function redactString(input, { allowPatterns = [] } = {}) {
   if (typeof input !== 'string') return input;
   let out = input.replace(HOME_RE, '~');     // 1: current homedir
   out = applyGenericHomedir(out);            // 2: PR1-E (a)
   out = applyEnvVarRedaction(out);           // 3: PR1-E (b)
-  for (const re of DENY_PATTERNS) {          // 4: existing patterns
+  for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) { // 4: native Windows paths
     out = out.replace(re, REDACT_TAG);
   }
-  for (const allow of allowPatterns) {       // 5: existing allow logic
+  for (const re of DENY_PATTERNS) {          // 5: existing patterns
+    out = out.replace(re, REDACT_TAG);
+  }
+  for (const allow of allowPatterns) {       // 6: existing allow logic
     const allowRe = new RegExp(allow, 'g');
     if (allowRe.test(input)) {
       const matches = input.match(allowRe) || [];
@@ -104,4 +119,11 @@ function redactObject(value, opts = {}) {
   return value;
 }
 
-module.exports = { redactString, redactObject, REDACT_TAG, DENY_PATTERNS, HOME_RE };
+module.exports = {
+  redactString,
+  redactObject,
+  REDACT_TAG,
+  DENY_PATTERNS,
+  WINDOWS_ABSOLUTE_PATH_PATTERNS,
+  HOME_RE,
+};

@@ -15,16 +15,14 @@
 //         schema violation is a typed throw (code: SCHEMA_VIOLATION) so
 //         harvest can fall back to candidate (spec §7.2).
 'use strict';
-const fs = require('node:fs');
-const path = require('node:path');
 const Ajv = require('ajv/dist/2020');
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 const { detect } = require('./adapter-registry');
+const { getSchema } = require('./schema-registry');
 
 const ajv = new Ajv({ strict: true });
 addFormats(ajv);
-const schemaPath = path.join(__dirname, '../../schemas/memory-card-distill-output.schema.json');
-const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+const schema = getSchema('memory-card-distill-output');
 const validate = ajv.compile(schema);
 
 const ADAPTERS = Object.freeze({

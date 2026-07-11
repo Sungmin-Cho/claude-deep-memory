@@ -1,6 +1,4 @@
 'use strict';
-const fs = require('node:fs');
-const path = require('node:path');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const {
@@ -17,6 +15,8 @@ const { resolveProjectScope } = require('./project-resolver');
 const { makeFtsSearch } = require('./mcp-fts-search');
 const { runHybridRetrieve } = require('./retrieve-hybrid');
 const { redactString } = require('./redact');
+const { listResources, readResource } = require('./mcp-resources');
+const { redactMcpPayload } = require('./mcp-output-redaction');
 
 const TOOLS = Object.freeze([
   ['deep_memory_brief', 'Top-N task-specific memory brief.', { task: { type: 'string' }, limit: { type: 'integer' } }, ['task']],
@@ -35,14 +35,6 @@ const TOOLS = Object.freeze([
   inputSchema: { type: 'object', properties, required },
 })));
 
-const RESOURCES = Object.freeze([
-  { uri: 'deep-memory://status', name: 'status', description: 'Capture state and index health' },
-  { uri: 'deep-memory://recent-briefs', name: 'recent-briefs', description: 'Latest project brief' },
-  { uri: 'deep-memory://cards-stats', name: 'cards-stats', description: 'Visible per-type card counts' },
-  { uri: 'deep-memory://config', name: 'config', description: 'Effective redacted config' },
-  { uri: 'deep-memory://latest-distill', name: 'latest-distill', description: 'Latest project distill summary' },
-]);
-
 const PROMPTS = Object.freeze([
   {
     name: 'recall_for_task',
@@ -52,12 +44,9 @@ const PROMPTS = Object.freeze([
   { name: 'reflect_on_session', description: 'Reflect on the current session', arguments: [] },
 ]);
 
-function redactText(value) {
-  return redactString(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
-}
-
 function textResult(value, isError = false) {
-  const result = { content: [{ type: 'text', text: redactText(value) }] };
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const result = { content: [{ type: 'text', text }] };
   if (isError) result.isError = true;
   return result;
 }
@@ -82,7 +71,7 @@ function writeGateViolation(memoryRoot, name, args) {
       host: process.env.DEEP_MEMORY_HOST || 'unknown',
       payload: {
         tool: name.replace('deep_memory_', ''),
-        requested_scope: JSON.stringify(args || {}).slice(0, 200),
+        requested_scope: redactString(JSON.stringify(args || {})).slice(0, 200),
         denial_reason: 'gate2',
         error: 'slash_only_in_v030',
       },
@@ -111,71 +100,71 @@ async function runLazyDistill(memoryRoot, projectId) {
       config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } },
     });
   } catch (error) {
-    return { warnings: [`stage_0a_failed: ${redactText(error && error.message)}`] };
+    return { warnings: [`stage_0a_failed: ${error && error.message ? error.message : 'unknown'}`] };
   }
 }
 
-function readTextFile(file, fallback) {
-  try { return fs.readFileSync(file, 'utf8'); }
-  catch { return fallback; }
-}
-
-function visibleCardStats(memoryRoot, projectScope) {
-  const cardsRoot = path.join(memoryRoot, 'cards');
-  const counts = {};
-  let types = [];
-  try { types = fs.readdirSync(cardsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()); }
-  catch { return counts; }
-  const scopes = ['global'];
-  if (projectScope.projectId) scopes.push(projectScope.projectId);
-  for (const type of types.sort((a, b) => a.name.localeCompare(b.name))) {
-    let count = 0;
-    for (const scope of scopes) {
-      const dir = path.join(cardsRoot, type.name, scope);
-      try {
-        count += fs.readdirSync(dir, { withFileTypes: true })
-          .filter((entry) => entry.isFile() && entry.name.endsWith('.json')).length;
-      } catch {}
-    }
-    counts[type.name] = count;
+function validateToolArguments(tool, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return { valid: false, missing: [], invalid: ['arguments'] };
   }
-  return counts;
+  const missing = tool.inputSchema.required.filter((name) => !Object.hasOwn(args, name));
+  const invalid = [];
+  for (const [name, value] of Object.entries(args)) {
+    const rule = tool.inputSchema.properties[name];
+    if (!rule) continue;
+    if (rule.type === 'string' && typeof value !== 'string') invalid.push(name);
+    if (rule.type === 'integer' && !Number.isInteger(value)) invalid.push(name);
+  }
+  return { valid: missing.length === 0 && invalid.length === 0, missing, invalid };
 }
 
-function resourceReader({ memoryRoot, workspaceRoot, projectScope }) {
-  const trustedWorkspaceRoot = projectScope.scope === 'project' && projectScope.projectId
-    ? workspaceRoot
-    : null;
-  return (uri) => {
-    let mimeType = 'application/json';
-    let value;
-    if (uri === 'deep-memory://config') {
-      mimeType = 'text/yaml';
-      value = readTextFile(path.join(memoryRoot, 'config.yaml'), '# config.yaml not present');
-    } else if (uri === 'deep-memory://status') {
-      const config = readTextFile(path.join(memoryRoot, 'config.yaml'), '');
-      value = {
-        capture_enabled: /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m.test(config),
-        scope: projectScope.scope,
-        project_id: projectScope.projectId,
-      };
-    } else if (uri === 'deep-memory://cards-stats') {
-      value = visibleCardStats(memoryRoot, projectScope);
-    } else if (uri === 'deep-memory://recent-briefs') {
-      value = trustedWorkspaceRoot
-        ? readTextFile(path.join(trustedWorkspaceRoot, '.deep-memory', 'latest-brief.json'), '{}')
-        : '{}';
-    } else if (uri === 'deep-memory://latest-distill') {
-      value = trustedWorkspaceRoot
-        ? readTextFile(path.join(trustedWorkspaceRoot, '.deep-memory', 'latest-distill.json'), '{}')
-        : '{}';
-    } else {
-      mimeType = 'text/plain';
-      value = 'unknown resource';
+async function dispatchTool({ roots, projectScope, name, args }) {
+  const tool = TOOLS.find((item) => item.name === name);
+  if (!tool) return textResult({ error: 'unknown_tool', tool: name }, true);
+  const checked = validateToolArguments(tool, args);
+  if (!checked.valid) {
+    return textResult({
+      error: 'invalid_tool_arguments',
+      tool: name,
+      missing: checked.missing,
+      invalid: checked.invalid,
+    }, true);
+  }
+  if (!isAutonomousAllowed(name, args)) return slashOnly(roots.memoryRoot, name, args);
+
+  if (['deep_memory_brief', 'deep_memory_smart_search', 'deep_memory_recall'].includes(name)) {
+    const distill = await runLazyDistill(roots.memoryRoot, projectScope.projectId);
+    try {
+      const result = await runHybridRetrieve({
+        query: args.query || args.task || '',
+        currentProjectId: projectScope.projectId,
+        root: roots.memoryRoot,
+        ftsSearch: makeFtsSearch(roots.memoryRoot),
+        topN: args.limit || 5,
+        useVector: name !== 'deep_memory_recall',
+      });
+      result.distill = distill;
+      return textResult(result);
+    } catch (error) {
+      return textResult({ error: 'retrieval_failed', message: error && error.message }, true);
     }
-    const text = typeof value === 'string' ? redactText(value) : redactText(value);
-    return { contents: [{ uri, mimeType, text }] };
-  };
+  }
+  if (name === 'deep_memory_save') {
+    return notImplemented(name, 'Manual card creation is not implemented. Run deep-memory-harvest.');
+  }
+  if (name === 'deep_memory_harvest') {
+    return notImplemented(name, 'Autonomous harvest is not implemented. Run the deep-memory-harvest skill.');
+  }
+  if (name === 'deep_memory_audit' && args.mode === 'check') {
+    return notImplemented(name, 'Autonomous audit check is not implemented. Run the deep-memory-audit skill.');
+  }
+  if (name === 'deep_memory_sessions') return notImplemented(name, 'Session enumeration is not implemented.');
+  if (name === 'deep_memory_profile') return notImplemented(name, 'Profile update/display is not implemented.');
+  if (name === 'deep_memory_export') {
+    return notImplemented(name, 'Autonomous export is not implemented. Run the deep-memory-export skill.');
+  }
+  return textResult({ error: 'unknown_tool', tool: name }, true);
 }
 
 function createServer({ roots, projectScope }) {
@@ -183,51 +172,43 @@ function createServer({ roots, projectScope }) {
     { name: 'deep-memory', version: pkg.version },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
-  const readResource = resourceReader({
-    memoryRoot: roots.memoryRoot,
-    workspaceRoot: roots.workspaceRoot,
-    projectScope,
-  });
-
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args = {} } = request.params;
-    if (!isAutonomousAllowed(name, args)) return slashOnly(roots.memoryRoot, name, args);
-
-    if (['deep_memory_brief', 'deep_memory_smart_search', 'deep_memory_recall'].includes(name)) {
-      const distill = await runLazyDistill(roots.memoryRoot, projectScope.projectId);
-      try {
-        const result = await runHybridRetrieve({
-          query: args.query || args.task || '',
-          currentProjectId: projectScope.projectId,
-          root: roots.memoryRoot,
-          ftsSearch: makeFtsSearch(roots.memoryRoot),
-          topN: args.limit || 5,
-          useVector: name !== 'deep_memory_recall',
-        });
-        result.distill = distill;
-        return textResult(result);
-      } catch (error) {
-        return textResult({ error: 'retrieval_failed', message: error && error.message }, true);
-      }
+    let result;
+    try {
+      const params = request && request.params ? request.params : {};
+      result = await dispatchTool({
+        roots,
+        projectScope,
+        name: params.name,
+        args: params.arguments === undefined ? {} : params.arguments,
+      });
+    } catch {
+      result = textResult({ error: 'internal_tool_error' }, true);
     }
-
-    if (name === 'deep_memory_save') {
-      return notImplemented(name, 'Manual card creation is not implemented. Run deep-memory-harvest.');
-    }
-    if (name === 'deep_memory_harvest') {
-      return notImplemented(name, 'Autonomous harvest is not implemented. Run the deep-memory-harvest skill.');
-    }
-    if (name === 'deep_memory_audit' && args.mode === 'check') {
-      return notImplemented(name, 'Autonomous audit check is not implemented. Run the deep-memory-audit skill.');
-    }
-    if (name === 'deep_memory_sessions') return notImplemented(name, 'Session enumeration is not implemented.');
-    if (name === 'deep_memory_profile') return notImplemented(name, 'Profile update/display is not implemented.');
-    return textResult({ error: 'unknown_tool', tool: name }, true);
+    return redactMcpPayload(result);
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: RESOURCES }));
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => readResource(request.params.uri));
+  server.setRequestHandler(ListResourcesRequestSchema, async () => listResources());
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    let result;
+    try {
+      result = await readResource(request.params.uri, {
+        memoryRoot: roots.memoryRoot,
+        workspaceRoot: roots.workspaceRoot,
+        projectScope,
+      });
+    } catch {
+      result = {
+        contents: [{
+          uri: 'deep-memory://error',
+          mimeType: 'application/json',
+          text: JSON.stringify({ available: false, reason: 'resource_unavailable' }),
+        }],
+      };
+    }
+    return redactMcpPayload(result);
+  });
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -248,4 +229,4 @@ async function startMcpServer({ entryDir } = {}) {
   return { server, roots, projectScope };
 }
 
-module.exports = { startMcpServer, createServer, TOOLS, RESOURCES, PROMPTS };
+module.exports = { startMcpServer, createServer, TOOLS, PROMPTS };

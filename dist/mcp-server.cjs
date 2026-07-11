@@ -34877,7 +34877,7 @@ var require_package = __commonJS({
         "deep-suite"
       ],
       scripts: {
-        "build:mcp": "esbuild scripts/mcp-server.cjs --bundle --platform=node --format=cjs --target=node22 --external:better-sqlite3 --external:@xenova/transformers --outfile=dist/mcp-server.cjs && node scripts/normalize-generated-bundle.js dist/mcp-server.cjs",
+        "build:mcp": "esbuild scripts/mcp-server.cjs --bundle --platform=node --format=cjs --target=node22 --loader:.json=json --external:better-sqlite3 --external:@xenova/transformers --outfile=dist/mcp-server.cjs && node scripts/normalize-generated-bundle.js dist/mcp-server.cjs",
         test: "node --test tests/*.test.js tests/runtime-contract/*.test.js tests/hooks/*.test.js tests/mcp-tools/*.test.js",
         "test:envelope": "node --test tests/envelope-emit.test.js",
         "test:redaction": "node --test tests/redaction.test.js",
@@ -35948,6 +35948,13 @@ var require_redact = __commonJS({
       /\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/g,
       /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi
     ];
+    var WINDOWS_ABSOLUTE_PATH_PATTERNS = [
+      /\\\\\?\\UNC\\[^\s'"<>]+/gi,
+      /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
+      /\\\\\.\\[^\s'"<>]+/g,
+      /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
+      /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g
+    ];
     var SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
     var HOME_RE = new RegExp(
       os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
@@ -35964,6 +35971,9 @@ var require_redact = __commonJS({
       let out = input.replace(HOME_RE, "~");
       out = applyGenericHomedir(out);
       out = applyEnvVarRedaction(out);
+      for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) {
+        out = out.replace(re, REDACT_TAG);
+      }
       for (const re of DENY_PATTERNS) {
         out = out.replace(re, REDACT_TAG);
       }
@@ -35989,7 +35999,14 @@ var require_redact = __commonJS({
       }
       return value;
     }
-    module2.exports = { redactString, redactObject, REDACT_TAG, DENY_PATTERNS, HOME_RE };
+    module2.exports = {
+      redactString,
+      redactObject,
+      REDACT_TAG,
+      DENY_PATTERNS,
+      WINDOWS_ABSOLUTE_PATH_PATTERNS,
+      HOME_RE
+    };
   }
 });
 
@@ -36546,6 +36563,412 @@ var require_retrieve_hybrid = __commonJS({
   }
 });
 
+// scripts/lib/validate-project-id.js
+var require_validate_project_id = __commonJS({
+  "scripts/lib/validate-project-id.js"(exports2, module2) {
+    "use strict";
+    var PROJECT_ID_RE = /^proj_[a-f0-9]{12}$/;
+    function validateProjectId(id) {
+      if (typeof id !== "string" || !PROJECT_ID_RE.test(id)) {
+        throw Object.assign(
+          new Error(`Invalid project_id: ${JSON.stringify(id)} \u2014 must match /^proj_[a-f0-9]{12}$/`),
+          { code: "INVALID_PROJECT_ID" }
+        );
+      }
+      return id;
+    }
+    function isValidProjectId(id) {
+      return typeof id === "string" && PROJECT_ID_RE.test(id);
+    }
+    module2.exports = { validateProjectId, isValidProjectId, PROJECT_ID_RE };
+  }
+});
+
+// scripts/lib/card-paths.js
+var require_card_paths = __commonJS({
+  "scripts/lib/card-paths.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var { isValidProjectId } = require_validate_project_id();
+    function pathApi(platform) {
+      return platform === "win32" ? path.win32 : path;
+    }
+    function isContainedPath(parent, child, { platform = process.platform } = {}) {
+      const api = pathApi(platform);
+      let base = api.resolve(parent);
+      let candidate = api.resolve(child);
+      if (platform === "win32") {
+        base = base.toLowerCase();
+        candidate = candidate.toLowerCase();
+      }
+      return candidate.startsWith(`${base}${api.sep}`);
+    }
+    function realpathNative(io, value) {
+      const impl = io.realpathSync && (io.realpathSync.native || io.realpathSync);
+      if (typeof impl !== "function") throw Object.assign(new Error("realpath unavailable"), { code: "ENOSYS" });
+      return impl.call(io.realpathSync, value);
+    }
+    function isLink(stat) {
+      return Boolean(stat && typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink());
+    }
+    function safeName(value) {
+      return typeof value === "string" && value.length > 0 && value !== "." && value !== ".." && path.basename(value) === value && !value.includes("/") && !value.includes("\\");
+    }
+    function addWarning(state, code) {
+      state.warnings.add(code);
+    }
+    function lstatDirectory(io, lexical, parentPhysical, state, { missingIsClean = false } = {}) {
+      let stat;
+      try {
+        stat = io.lstatSync(lexical);
+      } catch (error) {
+        if (!(missingIsClean && error && error.code === "ENOENT")) addWarning(state, "card_path_unavailable");
+        return null;
+      }
+      if (isLink(stat)) {
+        addWarning(state, "card_path_link_rejected");
+        return null;
+      }
+      if (!stat.isDirectory()) {
+        addWarning(state, "card_path_not_directory");
+        return null;
+      }
+      let physical;
+      try {
+        physical = realpathNative(io, lexical);
+      } catch {
+        addWarning(state, "card_path_unavailable");
+        return null;
+      }
+      if (parentPhysical && !isContainedPath(parentPhysical, physical, { platform: state.platform })) {
+        addWarning(state, "card_path_outside_scope");
+        return null;
+      }
+      return physical;
+    }
+    function resolveRootAndCards(root, io, state) {
+      const rootLexical = path.resolve(root);
+      const rootPhysical = lstatDirectory(io, rootLexical, null, state);
+      if (!rootPhysical) return null;
+      const cardsLexical = path.join(rootPhysical, "cards");
+      const cardsPhysical = lstatDirectory(io, cardsLexical, rootPhysical, state, { missingIsClean: true });
+      if (!cardsPhysical) return null;
+      return { rootPhysical, cardsPhysical };
+    }
+    function resolveTypeAndScope({ root, type, scope, currentProjectId, io, state }) {
+      if (!safeName(type)) {
+        addWarning(state, "card_path_outside_scope");
+        return null;
+      }
+      if (scope !== "global" && scope !== currentProjectId) {
+        addWarning(state, "project_scope_invalid");
+        return null;
+      }
+      const base = resolveRootAndCards(root, io, state);
+      if (!base) return null;
+      const typeLexical = path.join(base.cardsPhysical, type);
+      const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
+      if (!typePhysical) return null;
+      const scopeLexical = path.join(typePhysical, scope);
+      const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
+      if (!scopePhysical) return null;
+      return { ...base, typePhysical, scopePhysical };
+    }
+    function finalize(state, visited) {
+      return { visited, warnings: [...state.warnings].sort() };
+    }
+    function walkContainedCards({
+      root,
+      currentProjectId = null,
+      maxFiles = 5e3,
+      onCard,
+      io = fs,
+      platform = process.platform
+    } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
+        addWarning(state, "project_scope_invalid");
+        return finalize(state, 0);
+      }
+      if (typeof onCard !== "function") throw new TypeError("walkContainedCards requires onCard");
+      const boundedMax = Number.isInteger(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, 5e3) : 5e3;
+      const base = resolveRootAndCards(root, io, state);
+      if (!base) return finalize(state, 0);
+      let entries;
+      try {
+        entries = io.readdirSync(base.cardsPhysical, { withFileTypes: true });
+      } catch {
+        addWarning(state, "card_path_unavailable");
+        return finalize(state, 0);
+      }
+      let visited = 0;
+      for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!safeName(entry.name)) {
+          addWarning(state, "card_path_outside_scope");
+          continue;
+        }
+        const typeLexical = path.join(base.cardsPhysical, entry.name);
+        const typePhysical = lstatDirectory(io, typeLexical, base.cardsPhysical, state, { missingIsClean: true });
+        if (!typePhysical) continue;
+        const scopes = currentProjectId === null ? ["global"] : ["global", currentProjectId];
+        for (const scope of scopes) {
+          const scopeLexical = path.join(typePhysical, scope);
+          const scopePhysical = lstatDirectory(io, scopeLexical, typePhysical, state, { missingIsClean: true });
+          if (!scopePhysical) continue;
+          let files;
+          try {
+            files = io.readdirSync(scopePhysical, { withFileTypes: true });
+          } catch {
+            addWarning(state, "card_path_unavailable");
+            continue;
+          }
+          for (const file of [...files].sort((a, b) => a.name.localeCompare(b.name))) {
+            if (!safeName(file.name) || !file.name.endsWith(".json")) continue;
+            if (visited >= boundedMax) {
+              addWarning(state, "card_scan_limit_reached");
+              return finalize(state, visited);
+            }
+            const fileLexical = path.join(scopePhysical, file.name);
+            let stat;
+            try {
+              stat = io.lstatSync(fileLexical);
+            } catch {
+              addWarning(state, "card_path_unavailable");
+              continue;
+            }
+            if (isLink(stat)) {
+              addWarning(state, "card_path_link_rejected");
+              continue;
+            }
+            if (!stat.isFile()) {
+              addWarning(state, "card_path_not_regular");
+              continue;
+            }
+            let filePhysical;
+            try {
+              filePhysical = realpathNative(io, fileLexical);
+            } catch {
+              addWarning(state, "card_path_unavailable");
+              continue;
+            }
+            if (!isContainedPath(scopePhysical, filePhysical, { platform })) {
+              addWarning(state, "card_path_outside_scope");
+              continue;
+            }
+            onCard(Object.freeze({
+              root: base.rootPhysical,
+              currentProjectId,
+              type: entry.name,
+              scope,
+              file: file.name,
+              path: filePhysical
+            }));
+            visited += 1;
+          }
+        }
+      }
+      return finalize(state, visited);
+    }
+    function readContainedCard(descriptor, { io = fs, platform = process.platform } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (!descriptor || typeof descriptor !== "object") {
+        return { value: null, warning: "card_path_invalid_descriptor" };
+      }
+      const { root, currentProjectId = null, type, scope, file } = descriptor;
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
+        return { value: null, warning: "project_scope_invalid" };
+      }
+      if (!safeName(file) || !file.endsWith(".json")) {
+        return { value: null, warning: "card_path_invalid_descriptor" };
+      }
+      const chain = resolveTypeAndScope({ root, type, scope, currentProjectId, io, state });
+      if (!chain) return { value: null, warning: [...state.warnings].sort()[0] || "card_path_unavailable" };
+      const lexical = path.join(chain.scopePhysical, file);
+      let stat;
+      try {
+        stat = io.lstatSync(lexical);
+      } catch {
+        return { value: null, warning: "card_path_unavailable" };
+      }
+      if (isLink(stat)) return { value: null, warning: "card_path_link_rejected" };
+      if (!stat.isFile()) return { value: null, warning: "card_path_not_regular" };
+      let physical;
+      try {
+        physical = realpathNative(io, lexical);
+      } catch {
+        return { value: null, warning: "card_path_unavailable" };
+      }
+      if (!isContainedPath(chain.scopePhysical, physical, { platform })) {
+        return { value: null, warning: "card_path_outside_scope" };
+      }
+      if (descriptor.path && path.resolve(descriptor.path) !== path.resolve(physical)) {
+        return { value: null, warning: "card_path_outside_scope" };
+      }
+      try {
+        return { value: JSON.parse(io.readFileSync(physical, "utf8")), warning: null };
+      } catch {
+        return { value: null, warning: "card_json_invalid" };
+      }
+    }
+    module2.exports = { isContainedPath, walkContainedCards, readContainedCard };
+  }
+});
+
+// scripts/lib/mcp-resources.js
+var require_mcp_resources = __commonJS({
+  "scripts/lib/mcp-resources.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var { isValidProjectId } = require_validate_project_id();
+    var { walkContainedCards, readContainedCard } = require_card_paths();
+    var { redactString } = require_redact();
+    var RESOURCES = Object.freeze([
+      Object.freeze({ uri: "deep-memory://status", name: "status", description: "Capture state and index health" }),
+      Object.freeze({ uri: "deep-memory://config", name: "config", description: "Effective redacted config" }),
+      Object.freeze({ uri: "deep-memory://cards-stats", name: "cards-stats", description: "Visible per-type card counts" })
+    ]);
+    function listResources() {
+      return { resources: RESOURCES };
+    }
+    function normalizeProjectScope(projectScope) {
+      if (projectScope && projectScope.scope === "global" && projectScope.projectId === null) {
+        return { valid: true, projectId: null, scope: "global" };
+      }
+      if (projectScope && projectScope.scope === "project" && isValidProjectId(projectScope.projectId)) {
+        return { valid: true, projectId: projectScope.projectId, scope: "project" };
+      }
+      return { valid: false };
+    }
+    function redactConfigText(value) {
+      return redactString(String(value));
+    }
+    function countVisibleCards({
+      memoryRoot,
+      projectScope,
+      io = fs,
+      platform = process.platform,
+      maxFiles = 5e3
+    } = {}) {
+      const normalized = normalizeProjectScope(projectScope);
+      if (!normalized.valid) return { available: false, reason: "project_scope_invalid" };
+      const counts = /* @__PURE__ */ new Map();
+      const warnings = /* @__PURE__ */ new Set();
+      const walked = walkContainedCards({
+        root: memoryRoot,
+        currentProjectId: normalized.projectId,
+        maxFiles,
+        io,
+        platform,
+        onCard(descriptor) {
+          const read = readContainedCard(descriptor, { io, platform });
+          if (read.warning) {
+            warnings.add(read.warning);
+            if (read.warning !== "card_json_invalid") return;
+          }
+          counts.set(descriptor.type, (counts.get(descriptor.type) || 0) + 1);
+        }
+      });
+      for (const warning of walked.warnings) warnings.add(warning);
+      const byType = {};
+      for (const type of [...counts.keys()].sort((a, b) => a.localeCompare(b))) byType[type] = counts.get(type);
+      const result = {
+        available: true,
+        total: Object.values(byType).reduce((sum, count) => sum + count, 0),
+        by_type: byType
+      };
+      if (warnings.size > 0) result.warnings = [...warnings].sort();
+      return result;
+    }
+    function content(uri, mimeType, value) {
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      return { contents: [{ uri, mimeType, text }] };
+    }
+    async function readResource(uri, {
+      memoryRoot,
+      workspaceRoot: _workspaceRoot,
+      projectScope,
+      io = fs,
+      platform = process.platform
+    } = {}) {
+      const normalized = normalizeProjectScope(projectScope);
+      if (!normalized.valid) {
+        return content("deep-memory://cards-stats", "application/json", {
+          available: false,
+          reason: "project_scope_invalid"
+        });
+      }
+      if (uri === "deep-memory://config") {
+        let value;
+        try {
+          value = io.readFileSync(path.join(memoryRoot, "config.yaml"), "utf8");
+        } catch (error) {
+          if (error && error.code === "ENOENT") {
+            return content(uri, "application/json", { available: false, reason: "config_missing" });
+          }
+          return content(uri, "application/json", { available: false, reason: "config_unavailable" });
+        }
+        return content(uri, "text/yaml", redactConfigText(value));
+      }
+      if (uri === "deep-memory://status") {
+        let config = "";
+        try {
+          config = io.readFileSync(path.join(memoryRoot, "config.yaml"), "utf8");
+        } catch {
+        }
+        return content(uri, "application/json", {
+          available: true,
+          capture_enabled: /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m.test(config),
+          scope: normalized.scope,
+          project_id: normalized.projectId
+        });
+      }
+      if (uri === "deep-memory://cards-stats") {
+        return content(uri, "application/json", countVisibleCards({
+          memoryRoot,
+          projectScope,
+          io,
+          platform
+        }));
+      }
+      return content("deep-memory://unknown", "application/json", {
+        available: false,
+        reason: "unknown_resource"
+      });
+    }
+    module2.exports = { listResources, readResource, countVisibleCards, redactConfigText };
+  }
+});
+
+// scripts/lib/mcp-output-redaction.js
+var require_mcp_output_redaction = __commonJS({
+  "scripts/lib/mcp-output-redaction.js"(exports2, module2) {
+    "use strict";
+    var { redactObject } = require_redact();
+    function redactMcpPayload(value) {
+      try {
+        return redactObject(value);
+      } catch {
+        if (value && Array.isArray(value.contents)) {
+          return {
+            contents: [{
+              uri: "deep-memory://error",
+              mimeType: "application/json",
+              text: '{"available":false,"reason":"output_redaction_failed"}'
+            }]
+          };
+        }
+        return {
+          isError: true,
+          content: [{ type: "text", text: '{"error":"output_redaction_failed"}' }]
+        };
+      }
+    }
+    module2.exports = { redactMcpPayload };
+  }
+});
+
 // schemas/audit-log-entry.schema.json
 var require_audit_log_entry_schema = __commonJS({
   "schemas/audit-log-entry.schema.json"(exports2, module2) {
@@ -36741,6 +37164,499 @@ var require_audit_log_entry_schema = __commonJS({
   }
 });
 
+// schemas/memory-card.schema.json
+var require_memory_card_schema = __commonJS({
+  "schemas/memory-card.schema.json"(exports2, module2) {
+    module2.exports = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card.schema.json",
+      title: "Memory Card",
+      type: "object",
+      required: ["schema_version", "envelope", "payload"],
+      additionalProperties: false,
+      properties: {
+        $schema: { type: "string" },
+        schema_version: { const: "1.0" },
+        envelope: {
+          type: "object",
+          required: ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "provenance"],
+          additionalProperties: false,
+          properties: {
+            producer: { const: "deep-memory" },
+            producer_version: { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" },
+            artifact_kind: { const: "memory-card" },
+            run_id: { type: "string", minLength: 1 },
+            generated_at: { type: "string", format: "date-time" },
+            schema: {
+              type: "object",
+              required: ["name", "version"],
+              additionalProperties: false,
+              properties: {
+                name: { const: "memory-card" },
+                version: { type: "string" }
+              }
+            },
+            git: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                head: { type: "string" },
+                branch: { type: "string" },
+                dirty: {
+                  oneOf: [
+                    { type: "boolean" },
+                    { type: "string" }
+                  ]
+                }
+              }
+            },
+            provenance: {
+              type: "object",
+              required: ["source_artifacts"],
+              additionalProperties: false,
+              properties: {
+                source_artifacts: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["path"],
+                    additionalProperties: false,
+                    properties: {
+                      path: { type: "string", minLength: 1 },
+                      run_id: { type: "string" }
+                    }
+                  }
+                },
+                tool_versions: { type: "object" }
+              }
+            }
+          }
+        },
+        payload: {
+          type: "object",
+          required: [
+            "memory_id",
+            "memory_type",
+            "dedupe_key",
+            "privacy_level",
+            "title",
+            "claim",
+            "evidence_summary",
+            "applicability",
+            "non_applicability",
+            "recommended_action",
+            "search_keywords",
+            "confidence",
+            "status",
+            "status_history",
+            "tags",
+            "created_at",
+            "last_seen_at",
+            "review_after",
+            "feedback",
+            "deep_memory_provenance"
+          ],
+          additionalProperties: false,
+          properties: {
+            memory_id: { type: "string", pattern: "^mem_[a-z_]+_[a-f0-9]+$" },
+            memory_type: { enum: ["pattern", "failure-case", "architecture-decision", "experiment-outcome", "coding-style"] },
+            dedupe_key: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+            privacy_level: { enum: ["local", "global"], default: "local" },
+            title: { type: "string", minLength: 1, maxLength: 200 },
+            claim: { type: "string", minLength: 1, maxLength: 600 },
+            evidence_summary: {
+              type: "array",
+              minItems: 0,
+              maxItems: 5,
+              items: { type: "string", minLength: 1, maxLength: 200 }
+            },
+            applicability: {
+              type: "array",
+              minItems: 0,
+              items: {
+                type: "object",
+                required: ["value", "source_id", "confidence"],
+                additionalProperties: false,
+                properties: {
+                  value: { type: "string", minLength: 1 },
+                  source_id: { type: "string", pattern: "^src_\\d+$" },
+                  confidence: { type: "number", minimum: 0, maximum: 1 }
+                }
+              }
+            },
+            non_applicability: { $ref: "#/properties/payload/properties/applicability" },
+            recommended_action: {
+              type: "array",
+              minItems: 0,
+              items: { type: "string" }
+            },
+            search_keywords: {
+              type: "array",
+              minItems: 0,
+              maxItems: 15,
+              items: { type: "string", minLength: 1, maxLength: 40 }
+            },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            status: { enum: ["candidate", "validated", "contradicted", "deprecated"] },
+            status_history: {
+              type: "array",
+              minItems: 0,
+              maxItems: 10,
+              items: {
+                type: "object",
+                required: ["from", "to", "at", "by"],
+                additionalProperties: false,
+                properties: {
+                  from: { type: "string" },
+                  to: { type: "string" },
+                  at: { type: "string", format: "date-time" },
+                  by: { type: "string" }
+                }
+              }
+            },
+            tags: { type: "array", items: { type: "string" } },
+            created_at: { type: "string", format: "date-time" },
+            last_seen_at: { type: "string", format: "date-time" },
+            review_after: { type: "string", format: "date-time" },
+            feedback: {
+              type: "object",
+              required: ["accepted_count", "rejected_count", "inaccurate_count"],
+              additionalProperties: false,
+              properties: {
+                accepted_count: { type: "integer", minimum: 0 },
+                rejected_count: { type: "integer", minimum: 0 },
+                inaccurate_count: { type: "integer", minimum: 0 }
+              }
+            },
+            redaction_metadata: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                rules_matched: { type: "integer", minimum: 0 },
+                chars_masked: { type: "integer", minimum: 0 },
+                preview: { type: "string" }
+              }
+            },
+            deep_memory_provenance: {
+              type: "array",
+              minItems: 0,
+              description: "deep-memory specific per-source provenance. Cross-refs envelope.provenance.source_artifacts[source_index]. Option (b) per .deep-review/decisions/2026-05-20-envelope-compat.md.",
+              items: {
+                type: "object",
+                required: ["id", "content_hash", "captured_at", "artifact_kind", "schema_version", "source_index"],
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string", pattern: "^src_\\d+$" },
+                  content_hash: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+                  captured_at: { type: "string", format: "date-time" },
+                  artifact_kind: { type: "string" },
+                  schema_version: { type: "string" },
+                  source_index: {
+                    type: "integer",
+                    minimum: 0,
+                    description: "Index into envelope.provenance.source_artifacts[]. JSON Schema cannot enforce this is a valid index \u2014 runtime invariant tested in Task 4.6 cross-reference test."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
+});
+
+// schemas/memory-card-distill-output.schema.json
+var require_memory_card_distill_output_schema = __commonJS({
+  "schemas/memory-card-distill-output.schema.json"(exports2, module2) {
+    module2.exports = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card-distill-output.schema.json",
+      title: "Memory Card Distill Output (Step B sub-agent response)",
+      description: "Step B sub-agent output (LLM-derived fields only). The orchestrator (harvest.js Step C) maps non_applicability items into the full memory-card.schema shape by back-filling source_id from the originating source artifact's deep_memory_provenance.id. Do not add source_id at this stage.",
+      type: "object",
+      required: ["claim_refined", "non_applicability", "recommended_action", "search_keywords"],
+      additionalProperties: false,
+      properties: {
+        claim_refined: { type: "string", minLength: 1, maxLength: 600 },
+        non_applicability: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["value", "confidence"],
+            additionalProperties: false,
+            properties: {
+              value: { type: "string", minLength: 1 },
+              confidence: { type: "number", minimum: 0, maximum: 1 }
+            }
+          }
+        },
+        recommended_action: {
+          type: "array",
+          items: { type: "string" }
+        },
+        search_keywords: {
+          type: "array",
+          maxItems: 15,
+          items: { type: "string", minLength: 1, maxLength: 40 }
+        }
+      }
+    };
+  }
+});
+
+// schemas/memory-event.schema.json
+var require_memory_event_schema = __commonJS({
+  "schemas/memory-event.schema.json"(exports2, module2) {
+    module2.exports = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-event.schema.json",
+      title: "Memory Event",
+      type: "object",
+      required: ["schema_version", "envelope", "payload"],
+      additionalProperties: false,
+      properties: {
+        schema_version: { const: "1.0" },
+        envelope: {
+          type: "object",
+          required: ["producer", "producer_version", "artifact_kind", "run_id", "generated_at", "schema", "git", "provenance"],
+          additionalProperties: false,
+          properties: {
+            producer: { const: "deep-memory" },
+            producer_version: { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" },
+            artifact_kind: { const: "memory-event" },
+            run_id: { type: "string", minLength: 1 },
+            generated_at: { type: "string", format: "date-time" },
+            schema: {
+              type: "object",
+              required: ["name", "version"],
+              additionalProperties: false,
+              properties: {
+                name: { const: "memory-event" },
+                version: { type: "string" }
+              }
+            },
+            git: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                head: { type: "string" },
+                branch: { type: "string" },
+                dirty: { type: "string" }
+              }
+            },
+            provenance: {
+              type: "object",
+              required: ["source_artifacts"],
+              additionalProperties: false,
+              properties: {
+                source_artifacts: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["path"],
+                    additionalProperties: false,
+                    properties: {
+                      path: { type: "string", minLength: 1 },
+                      run_id: { type: "string" }
+                    }
+                  }
+                },
+                tool_versions: { type: "object" }
+              }
+            }
+          }
+        },
+        payload: {
+          type: "object",
+          required: ["event_key", "source_artifact_id", "event_kind", "cards_count", "at"],
+          additionalProperties: false,
+          properties: {
+            event_key: {
+              type: "string",
+              pattern: "^[a-f0-9]{64}$",
+              description: "sha256 hex (no prefix) of (path + content_hash + run_id) \u2014 see spec \xA7state-machine event keys."
+            },
+            source_artifact_id: {
+              type: "string",
+              pattern: "^src_\\d+$",
+              description: "Cross-ref to deep-memory provenance src id."
+            },
+            event_kind: {
+              enum: ["harvested", "merged", "promoted", "demoted"]
+            },
+            cards_count: { type: "integer", minimum: 0 },
+            at: { type: "string", format: "date-time" }
+          }
+        }
+      }
+    };
+  }
+});
+
+// schemas/memory-hook-event.schema.json
+var require_memory_hook_event_schema = __commonJS({
+  "schemas/memory-hook-event.schema.json"(exports2, module2) {
+    module2.exports = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-hook-event.schema.json",
+      title: "Memory Hook Event",
+      type: "object",
+      required: ["schema_version", "envelope", "payload"],
+      additionalProperties: false,
+      properties: {
+        schema_version: { const: "1.0" },
+        envelope: {
+          type: "object",
+          required: [
+            "producer",
+            "producer_version",
+            "artifact_kind",
+            "run_id",
+            "generated_at",
+            "schema",
+            "git",
+            "provenance",
+            "host",
+            "session_id",
+            "project_id"
+          ],
+          additionalProperties: false,
+          properties: {
+            producer: { const: "deep-memory" },
+            producer_version: {
+              type: "string",
+              pattern: "^\\d+\\.\\d+\\.\\d+$"
+            },
+            artifact_kind: { const: "memory-hook-event" },
+            run_id: { type: "string", minLength: 1 },
+            generated_at: { type: "string", format: "date-time" },
+            schema: {
+              type: "object",
+              required: ["name", "version"],
+              additionalProperties: false,
+              properties: {
+                name: { const: "memory-hook-event" },
+                version: { type: "string" }
+              }
+            },
+            git: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                head: { type: "string" },
+                branch: { type: "string" },
+                dirty: { type: "string" }
+              }
+            },
+            provenance: {
+              type: "object",
+              required: ["source_artifacts"],
+              additionalProperties: false,
+              properties: {
+                source_artifacts: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["path"],
+                    additionalProperties: false,
+                    properties: {
+                      path: { type: "string", minLength: 1 },
+                      run_id: { type: "string" }
+                    }
+                  }
+                },
+                tool_versions: { type: "object" }
+              }
+            },
+            host: {
+              enum: ["claude-code", "codex", "cursor", "gemini-cli", "cline", "(other)"]
+            },
+            session_id: { type: "string", minLength: 1 },
+            project_id: { type: "string", minLength: 1 }
+          }
+        },
+        payload: {
+          type: "object",
+          required: [
+            "source_kind",
+            "event_key",
+            "dedupe_window_key",
+            "captured_at",
+            "raw_chars_in",
+            "raw_chars_out",
+            "redaction"
+          ],
+          additionalProperties: false,
+          properties: {
+            source_kind: {
+              enum: [
+                "hook-session-start",
+                "hook-user-prompt",
+                "hook-post-tool-use",
+                "hook-tool-failure",
+                "hook-pre-compact",
+                "hook-session-end"
+              ]
+            },
+            event_key: {
+              type: "string",
+              pattern: "^[a-f0-9]{64}$",
+              description: "sha256 hex (no prefix) of (essence + captured_at) per spec \xA73.4 / PR1-J."
+            },
+            dedupe_window_key: {
+              type: "string",
+              pattern: "^[a-f0-9]{64}$",
+              description: "sha256 hex (no prefix) of essence WITHOUT timestamp \u2014 used for 5-min sliding dedup."
+            },
+            captured_at: { type: "string", format: "date-time" },
+            tool_name: { type: "string" },
+            tool_input_summary: { type: "string" },
+            tool_output_summary: { type: "string" },
+            raw_chars_in: { type: "integer", minimum: 0 },
+            raw_chars_out: { type: "integer", minimum: 0 },
+            redaction: {
+              type: "object",
+              required: ["rules_matched", "chars_masked", "passes"],
+              additionalProperties: false,
+              properties: {
+                rules_matched: { type: "integer", minimum: 0 },
+                chars_masked: { type: "integer", minimum: 0 },
+                passes: {
+                  type: "array",
+                  items: { enum: ["pass0", "pass1", "pass2", "pass3"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
+});
+
+// scripts/lib/schema-registry.js
+var require_schema_registry = __commonJS({
+  "scripts/lib/schema-registry.js"(exports2, module2) {
+    "use strict";
+    var schemas = Object.freeze({
+      "audit-log-entry": Object.freeze(require_audit_log_entry_schema()),
+      "memory-card": Object.freeze(require_memory_card_schema()),
+      "memory-card-distill-output": Object.freeze(require_memory_card_distill_output_schema()),
+      "memory-event": Object.freeze(require_memory_event_schema()),
+      "memory-hook-event": Object.freeze(require_memory_hook_event_schema()),
+      "project-profile": require_project_profile_validator().PROJECT_PROFILE_SCHEMA
+    });
+    function getSchema(name) {
+      if (!Object.hasOwn(schemas, name)) {
+        throw Object.assign(new Error(`Unknown schema: ${name}`), { code: "UNKNOWN_SCHEMA" });
+      }
+      return schemas[name];
+    }
+    module2.exports = { getSchema, SCHEMA_NAMES: Object.freeze(Object.keys(schemas)) };
+  }
+});
+
 // scripts/lib/audit-log.js
 var require_audit_log = __commonJS({
   "scripts/lib/audit-log.js"(exports2, module2) {
@@ -36750,7 +37666,8 @@ var require_audit_log = __commonJS({
     var crypto = require("node:crypto");
     var Ajv = require__().default;
     var addFormats = require_dist().default || require_dist();
-    var schema = require_audit_log_entry_schema();
+    var { getSchema } = require_schema_registry();
+    var schema = getSchema("audit-log-entry");
     var ajv = new Ajv({ strict: true, allErrors: true });
     addFormats(ajv);
     var validate = ajv.compile(schema);
@@ -36904,17 +37821,13 @@ var require_event_dispatcher = __commonJS({
     "use strict";
     var Ajv = require__().default;
     var addFormats = require_dist().default;
-    var fs = require("node:fs");
-    var path = require("node:path");
     var { wrapLegacy } = require_legacy_adapter();
+    var { getSchema } = require_schema_registry();
     var _validateEvent = null;
     var _validateHook = null;
     function getEventValidator() {
       if (_validateEvent) return _validateEvent;
-      const schema = JSON.parse(fs.readFileSync(
-        path.join(__dirname, "..", "..", "schemas", "memory-event.schema.json"),
-        "utf8"
-      ));
+      const schema = getSchema("memory-event");
       const ajv = new Ajv({ strict: true, allErrors: true });
       addFormats(ajv);
       _validateEvent = ajv.compile(schema);
@@ -36922,10 +37835,7 @@ var require_event_dispatcher = __commonJS({
     }
     function getHookValidator() {
       if (_validateHook) return _validateHook;
-      const schema = JSON.parse(fs.readFileSync(
-        path.join(__dirname, "..", "..", "schemas", "memory-hook-event.schema.json"),
-        "utf8"
-      ));
+      const schema = getSchema("memory-hook-event");
       const ajv = new Ajv({ strict: true, allErrors: true });
       addFormats(ajv);
       _validateHook = ajv.compile(schema);
@@ -37327,15 +38237,13 @@ var require_stdin_fallback = __commonJS({
 var require_llm_bridge = __commonJS({
   "scripts/lib/llm-bridge.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs");
-    var path = require("node:path");
     var Ajv = require__();
     var addFormats = require_dist().default || require_dist();
     var { detect } = require_adapter_registry();
+    var { getSchema } = require_schema_registry();
     var ajv = new Ajv({ strict: true });
     addFormats(ajv);
-    var schemaPath = path.join(__dirname, "../../schemas/memory-card-distill-output.schema.json");
-    var schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+    var schema = getSchema("memory-card-distill-output");
     var validate = ajv.compile(schema);
     var ADAPTERS = Object.freeze({
       "claude-agent": () => require_claude_agent(),
@@ -37614,8 +38522,6 @@ var require_distill_pipeline = __commonJS({
 var require_mcp_server_runtime = __commonJS({
   "scripts/lib/mcp-server-runtime.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs");
-    var path = require("node:path");
     var { Server } = require_server2();
     var { StdioServerTransport } = require_stdio2();
     var {
@@ -37632,6 +38538,8 @@ var require_mcp_server_runtime = __commonJS({
     var { makeFtsSearch } = require_mcp_fts_search();
     var { runHybridRetrieve } = require_retrieve_hybrid();
     var { redactString } = require_redact();
+    var { listResources, readResource } = require_mcp_resources();
+    var { redactMcpPayload } = require_mcp_output_redaction();
     var TOOLS = Object.freeze([
       ["deep_memory_brief", "Top-N task-specific memory brief.", { task: { type: "string" }, limit: { type: "integer" } }, ["task"]],
       ["deep_memory_smart_search", "Hybrid operational-memory search.", { query: { type: "string" }, limit: { type: "integer" } }, ["query"]],
@@ -37648,13 +38556,6 @@ var require_mcp_server_runtime = __commonJS({
       description,
       inputSchema: { type: "object", properties, required }
     })));
-    var RESOURCES = Object.freeze([
-      { uri: "deep-memory://status", name: "status", description: "Capture state and index health" },
-      { uri: "deep-memory://recent-briefs", name: "recent-briefs", description: "Latest project brief" },
-      { uri: "deep-memory://cards-stats", name: "cards-stats", description: "Visible per-type card counts" },
-      { uri: "deep-memory://config", name: "config", description: "Effective redacted config" },
-      { uri: "deep-memory://latest-distill", name: "latest-distill", description: "Latest project distill summary" }
-    ]);
     var PROMPTS = Object.freeze([
       {
         name: "recall_for_task",
@@ -37663,11 +38564,9 @@ var require_mcp_server_runtime = __commonJS({
       },
       { name: "reflect_on_session", description: "Reflect on the current session", arguments: [] }
     ]);
-    function redactText(value) {
-      return redactString(typeof value === "string" ? value : JSON.stringify(value, null, 2));
-    }
     function textResult(value, isError = false) {
-      const result = { content: [{ type: "text", text: redactText(value) }] };
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      const result = { content: [{ type: "text", text }] };
       if (isError) result.isError = true;
       return result;
     }
@@ -37689,7 +38588,7 @@ var require_mcp_server_runtime = __commonJS({
           host: process.env.DEEP_MEMORY_HOST || "unknown",
           payload: {
             tool: name.replace("deep_memory_", ""),
-            requested_scope: JSON.stringify(args || {}).slice(0, 200),
+            requested_scope: redactString(JSON.stringify(args || {})).slice(0, 200),
             denial_reason: "gate2",
             error: "slash_only_in_v030"
           }
@@ -37715,115 +38614,110 @@ var require_mcp_server_runtime = __commonJS({
           config: { skip_llm: true, distill: { detectors: { session_summary: { always_emit: false } } } }
         });
       } catch (error) {
-        return { warnings: [`stage_0a_failed: ${redactText(error && error.message)}`] };
+        return { warnings: [`stage_0a_failed: ${error && error.message ? error.message : "unknown"}`] };
       }
     }
-    function readTextFile(file, fallback) {
-      try {
-        return fs.readFileSync(file, "utf8");
-      } catch {
-        return fallback;
+    function validateToolArguments(tool, args) {
+      if (!args || typeof args !== "object" || Array.isArray(args)) {
+        return { valid: false, missing: [], invalid: ["arguments"] };
       }
+      const missing = tool.inputSchema.required.filter((name) => !Object.hasOwn(args, name));
+      const invalid = [];
+      for (const [name, value] of Object.entries(args)) {
+        const rule = tool.inputSchema.properties[name];
+        if (!rule) continue;
+        if (rule.type === "string" && typeof value !== "string") invalid.push(name);
+        if (rule.type === "integer" && !Number.isInteger(value)) invalid.push(name);
+      }
+      return { valid: missing.length === 0 && invalid.length === 0, missing, invalid };
     }
-    function visibleCardStats(memoryRoot, projectScope) {
-      const cardsRoot = path.join(memoryRoot, "cards");
-      const counts = {};
-      let types = [];
-      try {
-        types = fs.readdirSync(cardsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-      } catch {
-        return counts;
+    async function dispatchTool({ roots, projectScope, name, args }) {
+      const tool = TOOLS.find((item) => item.name === name);
+      if (!tool) return textResult({ error: "unknown_tool", tool: name }, true);
+      const checked = validateToolArguments(tool, args);
+      if (!checked.valid) {
+        return textResult({
+          error: "invalid_tool_arguments",
+          tool: name,
+          missing: checked.missing,
+          invalid: checked.invalid
+        }, true);
       }
-      const scopes = ["global"];
-      if (projectScope.projectId) scopes.push(projectScope.projectId);
-      for (const type of types.sort((a, b) => a.name.localeCompare(b.name))) {
-        let count = 0;
-        for (const scope of scopes) {
-          const dir = path.join(cardsRoot, type.name, scope);
-          try {
-            count += fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
-          } catch {
-          }
+      if (!isAutonomousAllowed(name, args)) return slashOnly(roots.memoryRoot, name, args);
+      if (["deep_memory_brief", "deep_memory_smart_search", "deep_memory_recall"].includes(name)) {
+        const distill = await runLazyDistill(roots.memoryRoot, projectScope.projectId);
+        try {
+          const result = await runHybridRetrieve({
+            query: args.query || args.task || "",
+            currentProjectId: projectScope.projectId,
+            root: roots.memoryRoot,
+            ftsSearch: makeFtsSearch(roots.memoryRoot),
+            topN: args.limit || 5,
+            useVector: name !== "deep_memory_recall"
+          });
+          result.distill = distill;
+          return textResult(result);
+        } catch (error) {
+          return textResult({ error: "retrieval_failed", message: error && error.message }, true);
         }
-        counts[type.name] = count;
       }
-      return counts;
-    }
-    function resourceReader({ memoryRoot, workspaceRoot, projectScope }) {
-      const trustedWorkspaceRoot = projectScope.scope === "project" && projectScope.projectId ? workspaceRoot : null;
-      return (uri) => {
-        let mimeType = "application/json";
-        let value;
-        if (uri === "deep-memory://config") {
-          mimeType = "text/yaml";
-          value = readTextFile(path.join(memoryRoot, "config.yaml"), "# config.yaml not present");
-        } else if (uri === "deep-memory://status") {
-          const config = readTextFile(path.join(memoryRoot, "config.yaml"), "");
-          value = {
-            capture_enabled: /^capture:[ \t]*\r?\n[ \t]+enabled:[ \t]*true\b/m.test(config),
-            scope: projectScope.scope,
-            project_id: projectScope.projectId
-          };
-        } else if (uri === "deep-memory://cards-stats") {
-          value = visibleCardStats(memoryRoot, projectScope);
-        } else if (uri === "deep-memory://recent-briefs") {
-          value = trustedWorkspaceRoot ? readTextFile(path.join(trustedWorkspaceRoot, ".deep-memory", "latest-brief.json"), "{}") : "{}";
-        } else if (uri === "deep-memory://latest-distill") {
-          value = trustedWorkspaceRoot ? readTextFile(path.join(trustedWorkspaceRoot, ".deep-memory", "latest-distill.json"), "{}") : "{}";
-        } else {
-          mimeType = "text/plain";
-          value = "unknown resource";
-        }
-        const text = typeof value === "string" ? redactText(value) : redactText(value);
-        return { contents: [{ uri, mimeType, text }] };
-      };
+      if (name === "deep_memory_save") {
+        return notImplemented(name, "Manual card creation is not implemented. Run deep-memory-harvest.");
+      }
+      if (name === "deep_memory_harvest") {
+        return notImplemented(name, "Autonomous harvest is not implemented. Run the deep-memory-harvest skill.");
+      }
+      if (name === "deep_memory_audit" && args.mode === "check") {
+        return notImplemented(name, "Autonomous audit check is not implemented. Run the deep-memory-audit skill.");
+      }
+      if (name === "deep_memory_sessions") return notImplemented(name, "Session enumeration is not implemented.");
+      if (name === "deep_memory_profile") return notImplemented(name, "Profile update/display is not implemented.");
+      if (name === "deep_memory_export") {
+        return notImplemented(name, "Autonomous export is not implemented. Run the deep-memory-export skill.");
+      }
+      return textResult({ error: "unknown_tool", tool: name }, true);
     }
     function createServer({ roots, projectScope }) {
       const server = new Server(
         { name: "deep-memory", version: pkg.version },
         { capabilities: { tools: {}, resources: {}, prompts: {} } }
       );
-      const readResource = resourceReader({
-        memoryRoot: roots.memoryRoot,
-        workspaceRoot: roots.workspaceRoot,
-        projectScope
-      });
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
       server.setRequestHandler(CallToolRequestSchema, async (request) => {
-        const { name, arguments: args = {} } = request.params;
-        if (!isAutonomousAllowed(name, args)) return slashOnly(roots.memoryRoot, name, args);
-        if (["deep_memory_brief", "deep_memory_smart_search", "deep_memory_recall"].includes(name)) {
-          const distill = await runLazyDistill(roots.memoryRoot, projectScope.projectId);
-          try {
-            const result = await runHybridRetrieve({
-              query: args.query || args.task || "",
-              currentProjectId: projectScope.projectId,
-              root: roots.memoryRoot,
-              ftsSearch: makeFtsSearch(roots.memoryRoot),
-              topN: args.limit || 5,
-              useVector: name !== "deep_memory_recall"
-            });
-            result.distill = distill;
-            return textResult(result);
-          } catch (error) {
-            return textResult({ error: "retrieval_failed", message: error && error.message }, true);
-          }
+        let result;
+        try {
+          const params = request && request.params ? request.params : {};
+          result = await dispatchTool({
+            roots,
+            projectScope,
+            name: params.name,
+            args: params.arguments === void 0 ? {} : params.arguments
+          });
+        } catch {
+          result = textResult({ error: "internal_tool_error" }, true);
         }
-        if (name === "deep_memory_save") {
-          return notImplemented(name, "Manual card creation is not implemented. Run deep-memory-harvest.");
-        }
-        if (name === "deep_memory_harvest") {
-          return notImplemented(name, "Autonomous harvest is not implemented. Run the deep-memory-harvest skill.");
-        }
-        if (name === "deep_memory_audit" && args.mode === "check") {
-          return notImplemented(name, "Autonomous audit check is not implemented. Run the deep-memory-audit skill.");
-        }
-        if (name === "deep_memory_sessions") return notImplemented(name, "Session enumeration is not implemented.");
-        if (name === "deep_memory_profile") return notImplemented(name, "Profile update/display is not implemented.");
-        return textResult({ error: "unknown_tool", tool: name }, true);
+        return redactMcpPayload(result);
       });
-      server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: RESOURCES }));
-      server.setRequestHandler(ReadResourceRequestSchema, async (request) => readResource(request.params.uri));
+      server.setRequestHandler(ListResourcesRequestSchema, async () => listResources());
+      server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        let result;
+        try {
+          result = await readResource(request.params.uri, {
+            memoryRoot: roots.memoryRoot,
+            workspaceRoot: roots.workspaceRoot,
+            projectScope
+          });
+        } catch {
+          result = {
+            contents: [{
+              uri: "deep-memory://error",
+              mimeType: "application/json",
+              text: JSON.stringify({ available: false, reason: "resource_unavailable" })
+            }]
+          };
+        }
+        return redactMcpPayload(result);
+      });
       server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
       server.setRequestHandler(GetPromptRequestSchema, async (request) => {
         const { name, arguments: args } = request.params;
@@ -37840,7 +38734,7 @@ var require_mcp_server_runtime = __commonJS({
       await server.connect(transport);
       return { server, roots, projectScope };
     }
-    module2.exports = { startMcpServer, createServer, TOOLS, RESOURCES, PROMPTS };
+    module2.exports = { startMcpServer, createServer, TOOLS, PROMPTS };
   }
 });
 

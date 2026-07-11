@@ -29,6 +29,7 @@ const { writeMutationPair } = require('./lib/audit-log');
 const { hashFile } = require('./lib/source-hash');
 const { validateProjectId } = require('./lib/validate-project-id');
 const { resolveProjectScope } = require('./lib/project-resolver');
+const { getSchema } = require('./lib/schema-registry');
 
 let ftsLib = null;
 try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
@@ -48,8 +49,7 @@ function expandTilde(p) {
 
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
-const cardSchemaPath = path.join(__dirname, '../schemas/memory-card.schema.json');
-const cardSchema = JSON.parse(fs.readFileSync(cardSchemaPath, 'utf8'));
+const cardSchema = getSchema('memory-card');
 const validateCardSchema = ajv.compile(cardSchema);
 
 function* allCardFiles(cardsRoot, { projectId = null, includeGlobal = true } = {}) {
