@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Cross-project semantic operational memory — harvests deep-suite artifacts, distills reusable patterns/failures/decisions/experiment outcomes (Hybrid: rule-based + sub-agent LLM), and injects task-specific memory briefs into future work. Skill-based entry surfaces (Claude Code slash + Codex/Copilot CLI/Gemini CLI/SDK via Skill()).",
   "author": { "name": "sungmin" },
   "license": "MIT",

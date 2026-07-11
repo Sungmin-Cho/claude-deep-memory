@@ -46,12 +46,22 @@ Harvest deep-suite sibling artifacts, distill them through the two-step pipeline
 전체 절차는 `scripts/harvest.js` 가 단일 진입점으로 수행합니다. v0.1.0 CLI는 아티팩트 1개를 직접 지정하는 방식입니다:
 
 ```
-node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]
+node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>] [--skip-distill-step-b]
 ```
 
 `sourceKind`: `review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index`
 
 config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
+
+### Step B host dispatch
+
+- The Claude Code host mediator invokes the named `memory-distiller` agent and passes only the redacted request fields.
+- The Codex host mediator spawns a generic subagent. Its first action is to read `${PLUGIN_ROOT}/agents/memory-distiller.md`; it must preserve the agent's `Read, Glob, Grep only; no write` restriction and return JSON only.
+- The mediator implements `deep-memory-host-distill-v1` through an executable process spec. Missing mediation is an explicit candidate fallback, never a hidden no-op.
+- Gemini and other hosts retain their configured SDK or stdin adapter and state when they fall back.
+- Every result passes contract verification and `llm-bridge` Ajv validation. Invalid or timeout output remains a candidate fallback.
+
+`--skip-distill-step-b` is an explicit offline opt-out. Without it, the CLI attempts Step B and records any typed fallback warning in `latest-harvest.json`.
 
 ## Invariants (spec §7.3 reference)
 

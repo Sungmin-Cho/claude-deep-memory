@@ -1,12 +1,12 @@
 // scripts/lib/adapters/codex-bash.js
 // Codex CLI adapter for the memory-distiller sub-agent.
 //
-// MVP exercises the recordedFixture path. Production dispatch wires `codex review
-// --json` via spawn, captures stdout, JSON.parse — same envelope as claude-agent.
-// Until that lands, liveCodex:true throws ADAPTER_NOT_WIRED so harvest falls back
-// to candidate (spec §7.2) instead of crashing.
+// Recorded fixtures remain available for deterministic characterization. Live
+// refinement is mediated by a host-provided executable process spec with no
+// free-form shell command.
 'use strict';
 const fs = require('node:fs');
+const { dispatchHostMediated } = require('../host-mediated-dispatch');
 
 function readRecordedFixture(fixturePath) {
   const text = fs.readFileSync(fixturePath, 'utf8').trim();
@@ -27,21 +27,25 @@ function readRecordedFixture(fixturePath) {
   return rec.output;
 }
 
-async function refine(eventDraft, sourceExcerpt, { recordedFixture = null, liveCodex = false } = {}) {
+async function refine(eventDraft, sourceExcerpt, options = {}) {
+  const { recordedFixture = null, hostProcessSpec, hostDispatchTimeoutMs } = options;
   if (recordedFixture) {
     return readRecordedFixture(recordedFixture);
   }
-  if (liveCodex) {
-    // Future: spawn('codex', ['review', '--json'], {input: prompt + envelope JSON, timeout})
-    throw Object.assign(
-      new Error('codex-bash live dispatch not yet wired — pass {recordedFixture: ...} for MVP'),
-      { code: 'ADAPTER_NOT_WIRED' }
-    );
+  try {
+    return await dispatchHostMediated({
+      host: 'codex',
+      eventDraft,
+      sourceExcerpt,
+      processSpec: hostProcessSpec,
+      timeoutMs: hostDispatchTimeoutMs || 30000,
+    });
+  } catch (error) {
+    if (error && error.code === 'host_dispatch_unavailable') {
+      throw Object.assign(new Error(error.message), { code: 'ADAPTER_NOT_WIRED', cause: error });
+    }
+    throw error;
   }
-  throw Object.assign(
-    new Error('codex-bash: no recorded fixture and live codex CLI disabled'),
-    { code: 'ADAPTER_NOT_WIRED' }
-  );
 }
 
 module.exports = { refine };

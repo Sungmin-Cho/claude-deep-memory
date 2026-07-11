@@ -14,11 +14,24 @@ const { hashFile } = require('./lib/source-hash');
 const { acquire, release } = require('./lib/lock');
 const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
 const { validateProjectId } = require('./lib/validate-project-id');
+const { truncateUtf8 } = require('./lib/utf8-truncate');
 
 const REVIEW_AFTER_DAYS = 90;
 const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
 const PASS2_EXCERPT_BYTES = 4096; // spec §7.2 — bounded LLM input
-const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER']);
+const STEP_B_FALLBACK_CODES = new Set([
+  'SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER',
+  'host_dispatch_unavailable', 'host_dispatch_failed', 'host_dispatch_timeout',
+  'host_dispatch_contract_mismatch', 'host_dispatch_invalid_output',
+]);
+
+function stepBWarning(error) {
+  const code = STEP_B_FALLBACK_CODES.has(error && error.code)
+    ? error.code
+    : 'host_dispatch_failed';
+  const detail = redactString(error && error.message ? error.message : 'Step B refinement failed');
+  return truncateUtf8(`${code}: ${detail.replace(/[\r\n]+/g, ' ')}`, 512);
+}
 
 // FTS5 index module — graceful degradation (v0.1.2). On Node v26+ where
 // better-sqlite3 prebuilt binaries are unavailable AND the plugin cache is
@@ -573,6 +586,8 @@ async function harvestArtifact({
   liveAgent = false,
   liveCodex = false,
   batchMode = false,
+  llmHostProcessSpec,
+  llmHostDispatchTimeoutMs = 30000,
   cwd = null,  // ITEM-4-r5: optional cwd for gitStateSafe in envelope
 }) {
   // ITEM-2-r4: validate projectId at entry boundary before any path.join site
@@ -619,23 +634,33 @@ async function harvestArtifact({
 
   // Step B (LLM refinement) — Pass 2 redaction + llm-bridge.refine + graceful fallback.
   // spec §7.2: SCHEMA_VIOLATION / TIMEOUT / ADAPTER_NOT_WIRED → candidate fallback.
+  const stepBWarnings = [];
   if (!skipDistillStepB) {
     // Pass 2 redaction — payload excerpt sent to the sub-agent, bounded to 4 KiB.
-    const sourceExcerpt = JSON.stringify(redactObject(raw.payload || {})).slice(0, PASS2_EXCERPT_BYTES);
+    const sourceExcerpt = truncateUtf8(
+      JSON.stringify(redactObject(raw.payload || {})),
+      PASS2_EXCERPT_BYTES,
+    );
+    if (Buffer.byteLength(sourceExcerpt, 'utf8') > PASS2_EXCERPT_BYTES) {
+      throw new Error('Step B source excerpt exceeded its UTF-8 byte boundary');
+    }
     for (const d of drafts) {
       let stepB = null;
       try {
-        stepB = await llmBridgeRefine(d, sourceExcerpt, {
+        stepB = await llmBridgeRefine(redactObject(d), sourceExcerpt, {
           adapter: llmAdapter,
           recordedFixture: llmRecordedFixture,
           timeoutMs: llmTimeoutMs,
-          liveAgent,
-          liveCodex,
           batchMode,
+          hostProcessSpec: llmHostProcessSpec,
+          hostDispatchTimeoutMs: llmHostDispatchTimeoutMs,
+          ...(liveAgent ? { liveAgent: true } : {}),
+          ...(liveCodex ? { liveCodex: true } : {}),
         });
       } catch (e) {
         if (STEP_B_FALLBACK_CODES.has(e.code)) {
           stepB = null; // candidate fallback (spec §7.2)
+          stepBWarnings.push(stepBWarning(e));
         } else {
           throw e; // unexpected — surface to caller
         }
@@ -654,13 +679,17 @@ async function harvestArtifact({
   // `Cannot find module '/Users/.../better-sqlite3.node'`). Route through
   // redactString to honor the repo's 3-pass privacy invariant before the
   // message is mirrored to disk in `latest-harvest.json`.
+  const warnings = [...stepBWarnings];
   if (!fts) {
     const causeRedacted = ftsLoadError ? redactString(ftsLoadError) : '';
+    warnings.push(FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : ''));
+  }
+  if (warnings.length > 0) {
     Object.defineProperty(cards, 'warnings', {
       enumerable: false,
       configurable: true,
       writable: true,
-      value: [FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : '')],
+      value: warnings,
     });
   }
   return cards;
@@ -858,6 +887,7 @@ module.exports = {
   mergeStepB,
   PASS2_EXCERPT_BYTES,
   STEP_B_FALLBACK_CODES,
+  stepBWarning,
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
   FTS_DEGRADED_WARNING,
@@ -888,8 +918,9 @@ if (require.main === module) {
   const artifactPath = remainingArgs[0] || null;
   const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
   const rebuildFromEvents = args.includes('--rebuild-from-events');
+  const skipDistillStepB = args.includes('--skip-distill-step-b');
   if (!rebuildFromEvents && (!artifactPath || !sourceKind)) {
-    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
+    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>] [--skip-distill-step-b]');
     console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
     console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
     console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
@@ -934,7 +965,7 @@ if (require.main === module) {
     return;
   }
 
-  harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
+  harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB })
     .then((cards) => {
       const warnings = Array.isArray(cards.warnings) ? cards.warnings : [];
       const wasSkipped = cards.skipped === true;

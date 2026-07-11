@@ -45,10 +45,21 @@ async function refine(
       { code: 'UNKNOWN_ADAPTER' }
     );
   }
+  // Preserve the bridge's historical immediate-timeout contract without ever
+  // starting a mediator that would need cancellation. Positive live timeouts
+  // below are owned exclusively by the host dispatcher.
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw Object.assign(
+      new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`),
+      { code: 'TIMEOUT' },
+    );
+  }
   const mod = loader();
+  const hostMediated = (chosen === 'claude-agent' || chosen === 'codex-bash')
+    && !adapterOpts.recordedFixture;
 
   let timer;
-  const timeoutPromise = new Promise((_, rej) => {
+  const timeoutPromise = hostMediated ? null : new Promise((_, rej) => {
     timer = setTimeout(
       () => rej(Object.assign(
         new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`),
@@ -60,12 +71,39 @@ async function refine(
 
   let out;
   try {
-    out = await Promise.race([mod.refine(eventDraft, sourceExcerpt, adapterOpts), timeoutPromise]);
+    const effectiveAdapterOpts = hostMediated
+      ? {
+          ...adapterOpts,
+          hostDispatchTimeoutMs: Math.min(
+            timeoutMs,
+            adapterOpts.hostDispatchTimeoutMs || timeoutMs,
+          ),
+        }
+      : adapterOpts;
+    const operation = mod.refine(eventDraft, sourceExcerpt, effectiveAdapterOpts);
+    // Host mediation owns process lifetime and its hard timeout. Racing it with
+    // a second timer here would reject without a cancellation handle and leave
+    // the child alive. Recorded/compatibility adapters retain the bridge timer.
+    out = hostMediated ? await operation : await Promise.race([operation, timeoutPromise]);
+  } catch (error) {
+    if (hostMediated && error && error.code === 'ADAPTER_NOT_WIRED') {
+      throw Object.assign(new Error(error.message), {
+        code: 'host_dispatch_unavailable',
+        cause: error.cause || error,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 
   if (!validate(out)) {
+    if (hostMediated) {
+      throw Object.assign(
+        new Error(`Host dispatch output schema violation: ${ajv.errorsText(validate.errors)}`),
+        { code: 'host_dispatch_invalid_output', errors: validate.errors }
+      );
+    }
     throw Object.assign(
       new Error(`Step B output schema violation: ${ajv.errorsText(validate.errors)}`),
       { code: 'SCHEMA_VIOLATION', errors: validate.errors }
