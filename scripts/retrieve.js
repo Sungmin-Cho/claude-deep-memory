@@ -23,6 +23,7 @@
 const fs = require('node:fs');
 const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
 const { scanCards } = require('./lib/card-scan-search');
+const { createCardFilesystemBudget } = require('./lib/card-paths');
 const { isValidProjectId } = require('./lib/validate-project-id');
 // v0.1.2 — FTS5 graceful degradation. If better-sqlite3 native binding is
 // unavailable (Node v26+ with immutable plugin cache), retrieve returns an
@@ -150,9 +151,11 @@ async function runRetrieve({
   }
 
   // Stage 3 — load full payloads (deprecated/stale filtering reads card metadata)
+  const budget = createCardFilesystemBudget(5000);
   const loaded = rows
-    .map((row) => ({ row, card: loadCard(memoryRoot, row, { currentProjectId: projectId }) }))
+    .map((row) => ({ row, card: loadCard(memoryRoot, row, { currentProjectId: projectId, budget }) }))
     .filter((x) => x.card);
+  if (budget.exhausted) warnings.push('card_filesystem_budget_exhausted');
   if (loaded.length === 0) {
     warnings.push('FTS index references cards no longer on disk — consider /deep-memory-audit');
     return { task, memories: [], warnings };

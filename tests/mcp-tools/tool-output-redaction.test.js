@@ -11,18 +11,25 @@ const { openMcpSession } = require('../helpers/mcp-session');
 const { writeValidProjectProfile } = require('../helpers/project-profile-fixtures');
 
 const root = path.resolve(__dirname, '../..');
+const WINDOWS_PATHS = [
+  String.raw`C:\Users\O'Neil Smith\private docs\secret.txt`,
+  String.raw`\\?\C:\Program Files\O'Neil Corp\token file.txt`,
+  String.raw`\\?\UNC\server\O'Neil shared folder\secret file.txt`,
+  String.raw`\\.\O'Neil Device Name\secret file.txt`,
+  String.raw`\\server\O'Neil shared folder\secret file.txt`,
+];
 const RAW_SENSITIVE = [
   '/Users/Alice/private/secret.txt',
-  String.raw`C:\Users\Alice\secret.txt`,
-  String.raw`\\?\C:\Users\Alice\secret.txt`,
-  String.raw`\\?\UNC\server\share\secret.txt`,
-  String.raw`\\.\PhysicalDrive0`,
-  String.raw`\\server\share\secret.txt`,
+  ...WINDOWS_PATHS,
   'api_key=abcdefghijklmnop',
   'token: abcdefghijklmnop',
   'Bearer abcdefghijklmnop',
 ];
 const LEAK_TEXT = RAW_SENSITIVE.join(' | ');
+const NATIVE_WINDOWS_DIAGNOSTICS = WINDOWS_PATHS.map(
+  (value) => `ENOENT: no such file or directory, open '${value}'`,
+);
+const NATIVE_DIAGNOSTIC_TEXT = NATIVE_WINDOWS_DIAGNOSTICS.join(' | ');
 
 function fixture(t, prefix) {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -80,13 +87,24 @@ function assertNoLeaks(value, label) {
   const strings = allStrings(value);
   for (const text of strings) {
     for (const raw of RAW_SENSITIVE) assert.equal(text.includes(raw), false, `${label}: leaked ${raw}`);
+    assert.doesNotMatch(text,
+      /O'Neil|Neil Smith|private docs|Program Files|shared folder|Device Name|secret file/,
+      `${label}: leaked a Windows path suffix`);
   }
 }
 
 test('shared output boundary recursively redacts structured MCP fields', () => {
+  const pathContexts = WINDOWS_PATHS.flatMap((value) => [
+    value,
+    `"${value}"`,
+    `'${value.replaceAll("'", "''")}'`,
+    `windows_path: '${value.replaceAll("'", "''")}'`,
+    `windows_path=${value} | status=failed`,
+    `ENOENT: no such file or directory, open '${value}'`,
+  ]);
   const result = redactMcpPayload({
     structuredContent: {
-      nested: [{ diagnostic: LEAK_TEXT }],
+      nested: [{ diagnostic: LEAK_TEXT, pathContexts }],
     },
     content: [{ type: 'text', text: `safe marker ${LEAK_TEXT}` }],
   });
@@ -174,6 +192,14 @@ test('every advertised tool success and failure result is redacted at the real s
     assert.equal(unknown.result.isError, true, entry);
     assert.match(unknown.result.content[0].text, /unknown_tool/, entry);
     assertNoLeaks(unknown, `${entry} unknown tool`);
+
+    const nativeUnknown = await session.request('tools/call', {
+      name: `deep_memory_unknown ${NATIVE_DIAGNOSTIC_TEXT}`,
+      arguments: { raw: NATIVE_DIAGNOSTIC_TEXT },
+    });
+    assert.equal(nativeUnknown.result.isError, true, entry);
+    assert.match(nativeUnknown.result.content[0].text, /unknown_tool/, entry);
+    assertNoLeaks(nativeUnknown, `${entry} native diagnostic unknown tool`);
     assert.deepEqual(session.protocolErrors, [], entry);
     await session.close();
   }
@@ -184,7 +210,7 @@ test('caught native-search diagnostics containing paths and secrets are redacted
   const memoryRoot = fixture(t, 'dm-tool-error-memory-');
   writeValidProjectProfile(workspaceRoot);
   const preload = path.join(memoryRoot, 'throwing-fs-preload.cjs');
-  fs.writeFileSync(preload, `'use strict';\nconst fs = require('node:fs');\nconst original = fs.existsSync;\nfs.existsSync = function (value) {\n  if (String(value).includes('indexes${path.sep}v2${path.sep}lexical.sqlite')) {\n    throw new Error(${JSON.stringify(`native search failed ${LEAK_TEXT}`)});\n  }\n  return original.call(this, value);\n};\n`);
+  fs.writeFileSync(preload, `'use strict';\nconst fs = require('node:fs');\nconst original = fs.existsSync;\nfs.existsSync = function (value) {\n  if (String(value).includes('indexes${path.sep}v2${path.sep}lexical.sqlite')) {\n    throw new Error(${JSON.stringify(`native search failed ${NATIVE_DIAGNOSTIC_TEXT}`)});\n  }\n  return original.call(this, value);\n};\n`);
   const session = await start(t, workspaceRoot, memoryRoot, {
     NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`.trim(),
   });

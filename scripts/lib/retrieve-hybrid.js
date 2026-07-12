@@ -17,6 +17,7 @@ const { rrfFuse } = require('./rrf-fusion');
 const { embedText, probeModelVersion } = require('./embed-model');
 const { openIndex, searchVector } = require('./vector-index');
 const { locateCard, isNotDeprecated, passesApplicabilityGuard, tokenize } = require('./card-filters');
+const { createCardFilesystemBudget } = require('./card-paths');
 
 /**
  * γ.6 — session_id diversification (Stage 8 of 6-stage rerank extension).
@@ -139,10 +140,11 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
   // memory content the user removed. The skew is surfaced as ONE bounded
   // warning (no card content echoed) pointing at the audit repair path.
   const taskTokens = tokenize(query);
+  const budget = createCardFilesystemBudget(5000);
   let unlocatable = 0;
   const filtered = [];
   for (const row of fused) {
-    const card = locateCard(root, row, { currentProjectId });
+    const card = locateCard(root, row, { currentProjectId, budget });
     if (!card) { unlocatable += 1; continue; }
     if (!(isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens))) continue;
     // R4 #3 — rrfFuse may pick a vector row (ids/score only) as the duplicate
@@ -162,6 +164,7 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
       `(index/card skew?) — run /deep-memory-audit`
     );
   }
+  if (budget.exhausted) warnings.push('card_filesystem_budget_exhausted');
 
   // Stage 8 — session diversification (γ.6)
   const maxPerSession = (config.brief && config.brief.max_per_session) || 3;

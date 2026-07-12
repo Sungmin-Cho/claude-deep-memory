@@ -23,13 +23,19 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
-const { acquire, release, isStale: lockIsStale, breakLock } = require('./lib/lock');
+const { acquire, release, inspectLock, isStale: lockIsStale, breakLock } = require('./lib/lock');
 // IMPL-R2-Δ1 — wire audit-log mutation emission for --unlock + --promote.
 const { writeMutationPair } = require('./lib/audit-log');
 const { hashFile } = require('./lib/source-hash');
 const { validateProjectId } = require('./lib/validate-project-id');
 const { resolveProjectScope } = require('./lib/project-resolver');
 const { getSchema } = require('./lib/schema-registry');
+const {
+  walkAllContainedCards,
+  mutateContainedCard,
+  writeContainedCard,
+  unlinkContainedCard,
+} = require('./lib/card-paths');
 
 let ftsLib = null;
 try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
@@ -52,28 +58,59 @@ addFormats(ajv);
 const cardSchema = getSchema('memory-card');
 const validateCardSchema = ajv.compile(cardSchema);
 
-function* allCardFiles(cardsRoot, { projectId = null, includeGlobal = true } = {}) {
+function allCardFiles(cardsRoot, { projectId = null, includeGlobal = true } = {}) {
   if (projectId !== null) validateProjectId(projectId);
-  if (!fs.existsSync(cardsRoot)) return;
-  const allowedScopes = [];
-  if (projectId !== null) allowedScopes.push(projectId);
-  if (includeGlobal) allowedScopes.push('global');
-  for (const type of fs.readdirSync(cardsRoot)) {
-    const td = path.join(cardsRoot, type);
-    if (!fs.statSync(td).isDirectory()) continue;
-    // Scope names are derived, never enumerated. This keeps the two 1.0.1
-    // project-card namespaces sealed from every v2 audit path.
-    for (const scope of allowedScopes) {
-      const sd = path.join(td, scope);
-      let scopeStat;
-      try { scopeStat = fs.statSync(sd); }
-      catch { continue; }
-      if (!scopeStat.isDirectory()) continue;
-      for (const f of fs.readdirSync(sd)) {
-        if (f.endsWith('.json')) yield { path: path.join(sd, f), type, scope, file: f };
-      }
+  const root = path.basename(path.resolve(cardsRoot)) === 'cards'
+    ? path.dirname(path.resolve(cardsRoot))
+    : path.resolve(cardsRoot);
+  const entries = [];
+  const scan = walkAllContainedCards({
+    root,
+    currentProjectId: projectId,
+    onCard(descriptor) {
+      if (descriptor.scope === 'global' && !includeGlobal) return;
+      entries.push(descriptor);
+    },
+  });
+  Object.defineProperty(entries, 'warnings', { value: scan.warnings, enumerable: false });
+  return entries;
+}
+
+const INCOMPLETE_CARD_SCAN_WARNINGS = new Set([
+  'card_scan_limit_reached', 'card_filesystem_budget_exhausted',
+]);
+
+function cardScanFailure(warning) {
+  const incomplete = INCOMPLETE_CARD_SCAN_WARNINGS.has(warning);
+  return Object.assign(new Error(`${incomplete ? 'incomplete card scan' : 'unsafe card path'}: ${warning}`), {
+    code: incomplete ? 'CARD_SCAN_INCOMPLETE' : 'CARD_PATH_UNSAFE',
+    warning,
+  });
+}
+
+function assertSafeCardScan(entries) {
+  const warning = (entries.warnings || [])[0];
+  if (warning) throw cardScanFailure(warning);
+}
+
+function readAuditCard(entry) {
+  try {
+    const result = mutateContainedCard(entry, { action: 'read' });
+    if (!result.exists) throw cardScanFailure('card_path_unavailable');
+    return { card: result.value, parse_error: null };
+  } catch (error) {
+    if (error && error.warning === 'card_json_invalid') {
+      return { card: null, parse_error: error.message };
     }
+    if (error && error.warning) throw cardScanFailure(error.warning);
+    throw error;
   }
+}
+
+function scanAuditCards(cardsRoot, options) {
+  const entries = allCardFiles(cardsRoot, options);
+  assertSafeCardScan(entries);
+  return entries.map((entry) => ({ entry, ...readAuditCard(entry) }));
 }
 
 /**
@@ -88,7 +125,7 @@ function* allCardFiles(cardsRoot, { projectId = null, includeGlobal = true } = {
  *   }
  *
  * Cards that fail JSON.parse are also reported as violations (with `parse_error`
- * marker). The check never throws — partial-failure audit is the whole point.
+ * marker). Unsafe/incomplete traversal or card I/O fails before totals publish.
  */
 function validateAllCards(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
@@ -98,17 +135,15 @@ function validateAllCards(memoryRoot, { projectId = null } = {}) {
     invalid: 0,
     schema_violations: [],
   };
-  for (const entry of allCardFiles(cardsRoot, { projectId })) {
+  const scanned = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card, parse_error } of scanned) {
     result.total += 1;
-    let card;
-    try {
-      card = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
-    } catch (e) {
+    if (parse_error) {
       result.invalid += 1;
       result.schema_violations.push({
         path: entry.path,
         memory_id: null,
-        parse_error: e.message,
+        parse_error,
       });
       continue;
     }
@@ -150,14 +185,10 @@ function validateAllCards(memoryRoot, { projectId = null } = {}) {
 function applyAutoTransitions(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const out = { total: 0, transitioned: 0, transitions: [] };
-  for (const entry of allCardFiles(cardsRoot, { projectId })) {
+  const scanned = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of scanned) {
     out.total += 1;
-    let card;
-    try {
-      card = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
-    } catch {
-      continue; // schema validation surfaces this separately
-    }
+    if (!card) continue; // schema validation surfaces malformed JSON separately
     // The state-machine lib expects a flat view with status at top level;
     // we project the wrapped shape into that view (audit-only, no mutation).
     const view = {
@@ -178,7 +209,7 @@ function applyAutoTransitions(memoryRoot, { projectId = null } = {}) {
     if (card.payload.status_history.length > 10) {
       card.payload.status_history = card.payload.status_history.slice(-10);
     }
-    writeJsonAtomic(entry.path, card);
+    writeContainedCard(entry, card);
     out.transitioned += 1;
     out.transitions.push({
       memory_id: card.payload?.memory_id || null,
@@ -209,10 +240,9 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const lockPath = path.join(memoryRoot, '.lock');
   const out = { locks: [], broken: [] };
   if (!fs.existsSync(lockPath)) return out;
-  let meta = null;
-  try {
-    meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
-  } catch {
+  const claim = inspectLock(lockPath);
+  let meta = claim && claim.meta;
+  if (!meta) {
     // malformed lock dir — surface as stale (no recoverable metadata)
     meta = { created_at: new Date(0).toISOString(), pid: null, host: null, operation: 'unknown' };
   }
@@ -220,8 +250,7 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const stale = lockIsStale(meta);
   out.locks.push({ path: lockPath, meta, stale, age_ms });
   if (stale && unlock) {
-    breakLock(lockPath);
-    out.broken.push(lockPath);
+    if (claim && breakLock(lockPath, claim)) out.broken.push(lockPath);
   }
   return out;
 }
@@ -251,11 +280,10 @@ function detectDedupeCollisions(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const buckets = new Map(); // dedupe_key → [{card, path, memory_id}]
   let scanned = 0;
-  for (const entry of allCardFiles(cardsRoot, { projectId })) {
+  const entries = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of entries) {
     scanned += 1;
-    let card;
-    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-    catch { continue; }
+    if (!card) continue;
     const dk = card.payload?.dedupe_key;
     if (!dk) continue;
     if (!buckets.has(dk)) buckets.set(dk, []);
@@ -320,11 +348,10 @@ function setsEqual(a, b) {
 function detectSourceRenames(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const out = { scanned: 0, unresolved: [] };
-  for (const entry of allCardFiles(cardsRoot, { projectId })) {
+  const entries = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of entries) {
     out.scanned += 1;
-    let card;
-    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-    catch { continue; }
+    if (!card) continue;
     const sa = card.envelope?.provenance?.source_artifacts || [];
     const dp = card.payload?.deep_memory_provenance || [];
     for (const d of dp) {
@@ -467,19 +494,18 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
   try {
     const cardsRoot = path.join(memoryRoot, 'cards');
 
-    const matches = [];
-    for (const entry of allCardFiles(cardsRoot, { projectId, includeGlobal: false })) {
-      let card;
-      try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-      catch { continue; }
-      if (card.payload?.memory_id === memoryId) {
-        matches.push({ entry, card });
-      }
-    }
+    const localEntries = allCardFiles(cardsRoot, { projectId, includeGlobal: false });
+    assertSafeCardScan(localEntries);
+    const globalEntries = allCardFiles(cardsRoot);
+    assertSafeCardScan(globalEntries);
+    const localCards = localEntries.map((entry) => ({ entry, ...readAuditCard(entry) }));
+    const globalCards = globalEntries.map((entry) => ({ entry, ...readAuditCard(entry) }));
+
+    const matches = localCards.filter(({ card }) => card?.payload?.memory_id === memoryId);
 
     // Global is authoritative. Check it even when a duplicate local copy
     // exists so promotion cannot overwrite or unlink either copy silently.
-    for (const entry of allCardFiles(cardsRoot)) {
+    for (const { entry, card } of globalCards) {
       if (entry.file === `${memoryId}.json`) {
         throw Object.assign(new Error(`Card already global: ${memoryId}`), {
           code: 'ALREADY_GLOBAL',
@@ -487,10 +513,7 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
           path: entry.path,
         });
       }
-      let card;
-      try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-      catch { continue; }
-      if (card.payload?.memory_id === memoryId) {
+      if (card?.payload?.memory_id === memoryId) {
         throw Object.assign(new Error(`Card already global: ${memoryId}`), {
           code: 'ALREADY_GLOBAL',
           memory_id: memoryId,
@@ -525,13 +548,18 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
       found.card.payload.status_history = found.card.payload.status_history.slice(-10);
     }
 
-    const newDir = path.join(memoryRoot, 'cards', found.entry.type, 'global');
-    fs.mkdirSync(newDir, { recursive: true });
-    const newPath = path.join(newDir, memoryId + '.json');
-    writeJsonAtomic(newPath, found.card);
+    const globalDescriptor = {
+      root: memoryRoot,
+      currentProjectId: projectId,
+      type: found.entry.type,
+      scope: 'global',
+      file: memoryId + '.json',
+    };
+    const written = writeContainedCard(globalDescriptor, found.card);
+    const newPath = written.path;
 
     if (newPath !== found.entry.path) {
-      try { fs.unlinkSync(found.entry.path); } catch { /* best-effort */ }
+      unlinkContainedCard(found.entry);
     }
 
     if (ftsLib && ftsLib.openIndex && ftsLib.upsertCard) {
@@ -588,17 +616,20 @@ async function run({ memoryRoot, projectDir } = {}) {
   // If the lock is stale, the report still contains the stale-lock entry above.
   let transitions;
   const lockPath = path.join(memoryRoot, '.lock');
+  let lockHandle = null;
   try {
-    const lockHandle = await acquire(lockPath, { operation: 'audit' });
+    lockHandle = await acquire(lockPath, { operation: 'audit' });
+  } catch (e) {
+    // Lock unavailable (likely STALE_LOCK or retry exhaustion).
+    // detectStaleLocks already captured it; record + skip transitions.
+    transitions = { total: 0, transitioned: 0, transitions: [], skipped_due_to_lock: e.code || e.message };
+  }
+  if (lockHandle) {
     try {
       transitions = applyAutoTransitions(memoryRoot, scopeOptions);
     } finally {
       release(lockHandle);
     }
-  } catch (e) {
-    // Lock unavailable (likely STALE_LOCK or retry exhaustion).
-    // detectStaleLocks already captured it; record + skip transitions.
-    transitions = { total: 0, transitioned: 0, transitions: [], skipped_due_to_lock: e.code || e.message };
   }
 
   const issues =

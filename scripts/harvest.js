@@ -15,6 +15,7 @@ const { acquire, release } = require('./lib/lock');
 const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
 const { validateProjectId } = require('./lib/validate-project-id');
 const { truncateUtf8 } = require('./lib/utf8-truncate');
+const { mutateContainedCard, writeContainedCard } = require('./lib/card-paths');
 
 const REVIEW_AFTER_DAYS = 90;
 const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
@@ -36,9 +37,8 @@ function stepBWarning(error) {
 // FTS5 index module — graceful degradation (v0.1.2). On Node v26+ where
 // better-sqlite3 prebuilt binaries are unavailable AND the plugin cache is
 // immutable, harvest must still write cards/events to disk; only the FTS5
-// upsert is skipped and an explicit warning surfaces. /deep-memory-brief
-// returns empty + warning in the same regime. sql.js WASM fallback is the
-// proper fix and is deferred to v0.2.0 (see docs/handoff-phase-4-6.md).
+// upsert is skipped and an explicit warning surfaces. Retrieval continues
+// through the bounded privacy-scoped card scan.
 //
 // Round-5 ITEM-4 (hard-throw on FTS5 require failure) had the right intent
 // for environments where the user CAN fix the build, but was the wrong
@@ -48,8 +48,8 @@ function stepBWarning(error) {
 const FTS_DEGRADED_WARNING =
   'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
   'environment). harvest continues — cards and events are written to disk — ' +
-  'but /deep-memory-brief will return empty results until the index is ' +
-  'restored (use Node 22 LTS, or wait for v0.2.0 sql.js fallback). ' +
+  '/deep-memory-brief continues through a bounded privacy-scoped card scan. ' +
+  'Use Node 22 LTS to restore native indexed retrieval. ' +
   'See README.md > Troubleshooting.';
 let fts = null;
 let ftsLoadError = null;
@@ -786,25 +786,20 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
     // R2 partial fix (Phase 6 dispatch) — full spec §6.4 union-merge deferred to v0.1.x
     // ITEM-1-r2: check global/ scope first to prevent shadowing promoted cards
     for (const c of cards) {
-      const localDir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
-      const globalDir = path.join(memoryRoot, 'cards', c.payload.memory_type, 'global');
-      const localPath = path.join(localDir, c.payload.memory_id + '.json');
-      const globalPath = path.join(globalDir, c.payload.memory_id + '.json');
-
-      let existing = null, writePath = null, writeDir = null;
-      if (fs.existsSync(globalPath)) {
-        existing = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
-        writePath = globalPath;
-        writeDir = globalDir;
-      } else if (fs.existsSync(localPath)) {
-        existing = JSON.parse(fs.readFileSync(localPath, 'utf8'));
-        writePath = localPath;
-        writeDir = localDir;
-      } else {
-        writePath = localPath;
-        writeDir = localDir;
-      }
-      fs.mkdirSync(writeDir, { recursive: true });
+      const baseDescriptor = {
+        root: memoryRoot,
+        currentProjectId: projectId,
+        type: c.payload.memory_type,
+        file: c.payload.memory_id + '.json',
+      };
+      const globalDescriptor = { ...baseDescriptor, scope: 'global' };
+      const localDescriptor = { ...baseDescriptor, scope: projectId };
+      const globalRead = mutateContainedCard(globalDescriptor, { action: 'read' });
+      const localRead = globalRead.exists
+        ? { exists: false, value: null }
+        : mutateContainedCard(localDescriptor, { action: 'read' });
+      const existing = globalRead.value || localRead.value || null;
+      const writeDescriptor = globalRead.exists ? globalDescriptor : localDescriptor;
 
       if (existing && existing.payload) {
         // Preserve user-accumulated state; refresh source-driven fields + last_seen_at
@@ -834,7 +829,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
           c.payload.privacy_level = 'global';
         }
       }
-      writeJsonAtomic(writePath, c);
+      writeContainedCard(writeDescriptor, c);
     }
 
     // 5. FTS5 upsert in same lock window (v0.1.2 — graceful degradation:

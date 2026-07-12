@@ -30,13 +30,68 @@ const DENY_PATTERNS = [
 // Complete native-Windows absolute path forms. Extended/device prefixes must
 // run before ordinary UNC/drive forms. Drive-relative `C:notes\todo.txt` does
 // not match because the drive rule requires a backslash after the colon.
-const WINDOWS_ABSOLUTE_PATH_PATTERNS = [
-  /\\\\\?\\UNC\\[^\s'"<>]+/gi,
-  /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
-  /\\\\\.\\[^\s'"<>]+/g,
-  /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
-  /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g,
-];
+const WINDOWS_ABSOLUTE_PATH_START_RE =
+  /(?:\\{2,}\?\\+(?:UNC\\+|[A-Za-z]:\\+)|\\{2,}\.\\+|\\{2,}(?![?.])[^\\\s"'<>|]+\\+|(?<![A-Za-z0-9_])[A-Za-z]:\\+)/gi;
+const WINDOWS_ABSOLUTE_PATH_PATTERNS = [WINDOWS_ABSOLUTE_PATH_START_RE];
+
+function isSingleQuoteClosureFollower(input, index) {
+  if (index >= input.length) return true;
+  const ch = input[index];
+  return /\s/.test(ch) || '"<>|,;:.!?)]}'.includes(ch);
+}
+
+// A Windows filename may legally contain spaces, so whitespace cannot be the
+// end delimiter. MCP values reach this function as either a complete string
+// leaf, a quoted JSON/YAML value, a line field, or a ` | `-joined diagnostic.
+// Stop only at those structural delimiters; for otherwise-unquoted prose we
+// conservatively redact the remainder instead of leaking a path suffix.
+function redactWindowsAbsolutePaths(input) {
+  const re = new RegExp(WINDOWS_ABSOLUTE_PATH_START_RE.source, WINDOWS_ABSOLUTE_PATH_START_RE.flags);
+  let output = '';
+  let cursor = 0;
+  for (let match = re.exec(input); match; match = re.exec(input)) {
+    output += input.slice(cursor, match.index);
+    let contextIndex = match.index - 1;
+    while (contextIndex >= 0 && (input[contextIndex] === ' ' || input[contextIndex] === '\t')) {
+      contextIndex -= 1;
+    }
+    const quoteContext = input[contextIndex] === '"' || input[contextIndex] === "'"
+      ? input[contextIndex]
+      : null;
+    let end = match.index + match[0].length;
+    let lastSingleQuoteClosure = -1;
+    while (end < input.length) {
+      const ch = input[end];
+      if (quoteContext === "'" && ch === "'") {
+        // YAML single-quoted scalars escape a literal apostrophe as two
+        // adjacent apostrophes. Both characters are part of the path; only an
+        // unmatched apostrophe closes the scalar.
+        if (input[end + 1] === "'") {
+          end += 2;
+          continue;
+        }
+        // Native fs/OS diagnostics quote raw filenames without YAML-escaping
+        // a legal apostrophe inside the path. Treat only the last structurally
+        // plausible singleton as the closer; otherwise keep masking until a
+        // hard delimiter. YAML doubled apostrophes remain non-candidates.
+        if (isSingleQuoteClosureFollower(input, end + 1)) lastSingleQuoteClosure = end;
+        end += 1;
+        continue;
+      }
+      if (quoteContext === '"' && ch === '"') break;
+      if (quoteContext === "'" && ch === '"') break;
+      if (quoteContext === null && ch === '"') break;
+      if (ch === '<' || ch === '>' || ch === '\r' || ch === '\n') break;
+      if (input.startsWith(' | ', end)) break;
+      end += 1;
+    }
+    if (quoteContext === "'" && lastSingleQuoteClosure >= 0) end = lastSingleQuoteClosure;
+    output += REDACT_TAG;
+    cursor = end;
+    re.lastIndex = end;
+  }
+  return output + input.slice(cursor);
+}
 
 // PR1-E (R-011) — env-var assignment masking. Matches `$VAR`, `process.env.VAR`,
 // `export VAR=...`, and BARE `VAR=...` (W3 bare-assignment fix). Value is
@@ -84,9 +139,7 @@ function redactString(input, { allowPatterns = [] } = {}) {
   let out = input.replace(HOME_RE, '~');     // 1: current homedir
   out = applyGenericHomedir(out);            // 2: PR1-E (a)
   out = applyEnvVarRedaction(out);           // 3: PR1-E (b)
-  for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) { // 4: native Windows paths
-    out = out.replace(re, REDACT_TAG);
-  }
+  out = redactWindowsAbsolutePaths(out);       // 4: native Windows paths
   for (const re of DENY_PATTERNS) {          // 5: existing patterns
     out = out.replace(re, REDACT_TAG);
   }
@@ -125,5 +178,6 @@ module.exports = {
   REDACT_TAG,
   DENY_PATTERNS,
   WINDOWS_ABSOLUTE_PATH_PATTERNS,
+  redactWindowsAbsolutePaths,
   HOME_RE,
 };

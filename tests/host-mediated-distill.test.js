@@ -9,7 +9,11 @@ const { spawnSync } = require('node:child_process');
 const { harvestArtifact } = require('../scripts/harvest');
 const { redactObject } = require('../scripts/lib/redact');
 const { truncateUtf8 } = require('../scripts/lib/utf8-truncate');
-const { terminateOwnedProcessTree } = require('../scripts/lib/host-mediated-dispatch');
+const {
+  dispatchHostMediated,
+  ownedMediatorProcessSpec,
+  terminateOwnedProcessTree,
+} = require('../scripts/lib/host-mediated-dispatch');
 
 const root = path.resolve(__dirname, '..');
 const harvestScript = path.join(root, 'scripts', 'harvest.js');
@@ -215,6 +219,83 @@ test('hard timeout kills mediator descendants before fallback resolves', async (
   await assertNoLateActivity(t, {
     label: 'descendant', mode: 'descendant', timeoutMs: 300,
   });
+});
+
+async function dispatchDescendantFixture(t, mode) {
+  const markerRoot = tmp(t, `dm-host-${mode}-`);
+  const marker = path.join(markerRoot, 'late.txt');
+  const output = dispatchHostMediated({
+    host: 'codex',
+    eventDraft: { claim: 'fixture' },
+    sourceExcerpt: 'safe fixture',
+    processSpec: { command: process.execPath, args: [mediator, `--mode=${mode}`] },
+    timeoutMs: 2000,
+    env: { ...process.env, HOST_MEDIATED_LATE_MARKER: marker },
+  });
+  return { marker, output };
+}
+
+test('valid zero-exit response completes the entire owned helper tree before success', async (t) => {
+  const { marker, output } = await dispatchDescendantFixture(t, 'success-descendant');
+  const result = await output;
+  assert.equal(result.claim_refined, 'Host-mediated refinement executed');
+  assert.equal(fs.existsSync(marker), false, 'no descendant activity may precede success');
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(fs.existsSync(marker), false, 'no descendant may survive successful dispatch');
+});
+
+test('post-exit invalid response completes the entire owned helper tree before rejection', async (t) => {
+  const { marker, output } = await dispatchDescendantFixture(t, 'malformed-descendant');
+  await assert.rejects(output, (error) => error && error.code === 'host_dispatch_invalid_output');
+  assert.equal(fs.existsSync(marker), false, 'no descendant activity may precede rejection');
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(fs.existsSync(marker), false, 'no descendant may survive invalid output');
+});
+
+test('mediator IPC decodes every split boundary of two-, three-, and four-byte UTF-8 losslessly', async (t) => {
+  const boundaries = [
+    ['é', 1],
+    ['한', 1], ['한', 2],
+    ['🧠', 1], ['🧠', 2], ['🧠', 3],
+  ];
+  for (const mode of ['utf8-split-valid', 'utf8-split-invalid']) {
+    for (const [character, boundary] of boundaries) {
+      await t.test(`${mode} ${character} byte ${boundary}`, async () => {
+        const result = await dispatchHostMediated({
+          host: 'codex',
+          eventDraft: { claim: 'fixture' },
+          sourceExcerpt: 'safe fixture',
+          processSpec: {
+            command: process.execPath,
+            args: [
+              mediator,
+              `--mode=${mode}`,
+              `--split-character=${Buffer.from(character).toString('base64url')}`,
+              `--split-boundary=${boundary}`,
+            ],
+          },
+          timeoutMs: 2000,
+        });
+        assert.equal(result.claim_refined, `Chunk ${character} response`);
+        if (mode === 'utf8-split-invalid') {
+          assert.equal(result.non_applicability, 'invalid-response-shape');
+        } else {
+          assert.ok(Array.isArray(result.non_applicability));
+        }
+      });
+    }
+  }
+});
+
+test('POSIX and Windows dispatch both interpose the live owned mediator launcher', () => {
+  const raw = { command: process.execPath, args: [mediator] };
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const owned = ownedMediatorProcessSpec(raw, { platform });
+    assert.equal(owned.command, process.execPath, platform);
+    assert.match(owned.args[0], /host-mediator-launcher\.js$/, platform);
+    assert.equal(typeof owned.args[1], 'string', platform);
+    assert.ok(owned.args[1].length > 0, platform);
+  }
 });
 
 test('stdout and stderr bound failures also terminate the owned mediator tree', async (t) => {

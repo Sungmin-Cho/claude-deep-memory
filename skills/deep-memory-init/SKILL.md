@@ -1,6 +1,6 @@
 ---
 name: deep-memory-init
-description: "Initialize the deep-memory plugin for first use — preflight memory_root (realpath / writability / NFS / sqlite probe), write config.yaml with schema validation, create ~/.deep-memory/projects/<project_id>.json + project-local .deep-memory/project-profile.json. Triggers on `/deep-memory-init`, \"init memory\", \"deep memory setup\", \"메모리 초기화\", \"deep-memory 셋업\". Optional arg: `<memory_root>` (default ~/.deep-memory/, override via DEEP_MEMORY_ROOT env), `--allow-network-root` to explicitly allow NFS/network mounts, and `--enable-capture` / `--disable-capture` to toggle automatic hook capture (default OFF)."
+description: "Initialize the deep-memory plugin for first use — preflight memory_root (realpath / writability / filesystem write probe / network-root guard), write config.yaml with schema validation, create ~/.deep-memory/projects/<project_id>.json + project-local .deep-memory/project-profile.json. Triggers on `/deep-memory-init`, \"init memory\", \"deep memory setup\", \"메모리 초기화\", \"deep-memory 셋업\". Optional arg: `<memory_root>` (default ~/.deep-memory/, override via DEEP_MEMORY_ROOT env), `--allow-network-root` to explicitly allow NFS/network mounts, and `--enable-capture` / `--disable-capture` to toggle automatic hook capture (default OFF)."
 user-invocable: true
 ---
 
@@ -29,8 +29,8 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 
 ## Prerequisites
 
-- Node.js ≥ 18 (`node:fs`, `node:crypto` 등 stable API 사용)
-- 선택: `better-sqlite3` (FTS5 lexical index — 없으면 `sql.js` fallback, 두 어댑터 모두 없으면 retrieve 가 lexical 검색을 disable 한 채 동작)
+- Node.js 22 이상 (`package.json#engines` 계약)
+- 선택: `better-sqlite3` (native FTS5 lexical index). 로드할 수 없으면 retrieval 은 bounded privacy-scoped card scan 으로 안전하게 fallback.
 
 ## Steps
 
@@ -40,12 +40,12 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 2. **preflight 호출** — `scripts/lib/preflight.js` 의 `preflight(memoryRoot, { allowNetworkRoot })` 가 다음을 검증:
    - realpath / 쓰기 가능 / 부모 디렉토리 존재
    - NFS · 네트워크 마운트 차단 (`--allow-network-root` 없으면)
-   - sqlite adapter 가용성 probe (`better-sqlite3` → `sql.js` → 둘 다 없으면 warning)
+   - memory root 자체의 쓰기 가능성 probe (native FTS5 adapter 가용성은 harvest/retrieve 시 별도 판단)
    - error 발생 시 사용자 안내 후 종료 (exit 1)
 3. **memory_root 하위 디렉토리 보장**: `cards/`, `events/`, `indexes/`, `projects/`, `.leases/` (`mkdir -p` 동작).
 4. **`config.yaml` 작성** — `~/.deep-memory/config.yaml` 이 없으면 default config 작성 후 schema 검증 (versions / paths / privacy block 필수). default 에는 `capture: {enabled: false, eager_distill: false}` 블록이 포함됨 (capture 기본 OFF).
 5. **project-profile 생성** —
-   - `proj_<sha256(remote_url_hash + root_path_hash)[:12]>` 형식의 `project_id` 계산
+   - canonical physical root 문자열만을 해시하는 root-only `proj_<sha256(canonical_root)[:12]>` 형식의 `project_id` 계산
    - `.deep-memory/project-profile.json` (project-local) + `~/.deep-memory/projects/<project_id>.json` (global mirror) 양쪽에 atomic write
    - languages / runtimes / suite plugins 등 signature 필드는 shallow scan 으로 채움
 6. **capture 토글** (`--enable-capture` / `--disable-capture` 지정 시) — `scripts/lib/capture-toggle.js` 의 `setCaptureEnabled` 가 `config.yaml#capture.enabled` 를 in-place 편집 (기존 config 도 덮어쓰지 않고 해당 줄만 수정). 실제 상태 전이(true↔false)가 일어날 때만 `audit-log/YYYY-MM.jsonl` 에 `{kind:'capture-toggle', by:'cli-flag', payload:{from,to,method:'cli-flag'}}` 1건 기록 (멱등 — 이미 같은 상태면 무변경·무기록).
@@ -69,7 +69,7 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 
 ## Error handling
 
-- `preflight failed: <reason>` — memory_root 미작성, sqlite probe 실패, NFS 경로 거부 등. 안내 메시지에 fix step 포함.
+- `preflight failed: <reason>` — memory_root 미작성, filesystem write probe 실패, NFS/UNC network root 거부 등. 안내 메시지에 fix step 포함. Native FTS5 adapter 가용성은 init preflight 가 아니라 harvest/retrieve 시 별도 판단.
 - `config.yaml schema invalid` — 사용자가 손으로 수정한 config 가 schema 와 어긋날 때. 변경 직전 위치 + 예상 타입 안내.
 - network-mount 경고는 `--allow-network-root` 로 우회 가능하지만 default behavior 가 변하지 않도록 explicit opt-in 유지.
 

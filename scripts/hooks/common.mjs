@@ -87,6 +87,34 @@ function summarizeToolOutput(toolOutput) {
   return s.slice(0, 300);
 }
 
+function normalizedToolOutput(sourceKind, hookPayload) {
+  const isFailure = sourceKind === 'hook-tool-failure'
+    || hookPayload.hook_event_name === 'PostToolUseFailure';
+  if (!isFailure) return hookPayload.tool_response ?? hookPayload.tool_output;
+
+  // Claude Code documents PostToolUseFailure's result at the top level rather
+  // than under tool_response. Capture only those documented result fields so
+  // unrelated process environment or host state can never enter the event.
+  if (Object.hasOwn(hookPayload, 'error')) {
+    const failure = {
+      error: typeof hookPayload.error === 'string'
+        ? hookPayload.error
+        : String(hookPayload.error ?? ''),
+    };
+    if (typeof hookPayload.is_interrupt === 'boolean') {
+      failure.is_interrupt = hookPayload.is_interrupt;
+    }
+    if (Number.isFinite(hookPayload.duration_ms) && hookPayload.duration_ms >= 0) {
+      failure.duration_ms = hookPayload.duration_ms;
+    }
+    return failure;
+  }
+
+  // Preserve compatibility with pre-documentation adapters that nested the
+  // failure result in the same fields as PostToolUse.
+  return hookPayload.tool_response ?? hookPayload.tool_output;
+}
+
 // ---- dedupe window (PR1-J + Plan-Round-2 PR2-C raw-essence dedupe) ---------
 
 function checkDedupeWindow(dedupeKey, projectId) {
@@ -114,13 +142,20 @@ function recordDedupeWindow(dedupeKey, projectId) {
 export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
   if (!isCaptureEnabled()) return { skipped: true, reason: 'capture-disabled' };
 
-  const projectScope = resolveProjectScope(process.env.PROJECT_CWD || null);
+  // Claude Code's documented common hook payload carries the workspace in
+  // stdin as `cwd`; Codex and older adapters may still provide an explicit
+  // environment fallback. Normalize the host shape once at this boundary.
+  const projectCwd = typeof hookPayload.cwd === 'string' && hookPayload.cwd.trim()
+    ? hookPayload.cwd
+    : (process.env.PROJECT_CWD || process.env.INIT_CWD || process.cwd());
+  const toolOutput = normalizedToolOutput(sourceKind, hookPayload);
+  const projectScope = resolveProjectScope(projectCwd);
   if (projectScope.scope !== 'project' || !projectScope.projectId) {
     return { skipped: true, reason: projectScope.warning || 'project_profile_untrusted' };
   }
   const projectId = projectScope.projectId;
   const toolInputSummary = summarizeToolInput(hookPayload.tool_input);
-  const toolOutputSummary = summarizeToolOutput(hookPayload.tool_output);
+  const toolOutputSummary = summarizeToolOutput(toolOutput);
 
   // Pass 0: redact the assembled normalized payload.
   const preRedacted = {
@@ -136,7 +171,7 @@ export async function normalizeAndAppend(sourceKind, hookPayload, hostHint) {
 
   // PR2-C: dedupe by HASH OF RAW (redacted) tool_input/output essence — not lossy summary.
   const rawIn = JSON.stringify(hookPayload.tool_input || '');
-  const rawOut = JSON.stringify(hookPayload.tool_output || '').slice(0, 1024);
+  const rawOut = JSON.stringify(toolOutput ?? '').slice(0, 1024);
   const redactedIn = redactString(rawIn);
   const redactedOut = redactString(rawOut);
   const essence = `${sourceKind}|${redactedPayload.session_id}|${redactedPayload.tool_name}|${redactedIn}|${redactedOut}`;

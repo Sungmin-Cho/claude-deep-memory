@@ -13,6 +13,22 @@ const TREE_UTILITY_TIMEOUT_MS = 500;
 const TREE_UTILITY_ATTEMPTS = 2;
 const NEVER = new Promise(() => {});
 
+function resolveMediatorLauncherPath(moduleDir = __dirname, io = fs) {
+  const absoluteDir = path.resolve(moduleDir);
+  const leaf = path.basename(absoluteDir).toLowerCase();
+  const parentLeaf = path.basename(path.dirname(absoluteDir)).toLowerCase();
+  let pluginRoot = null;
+  if (leaf === 'lib' && parentLeaf === 'scripts') pluginRoot = path.resolve(absoluteDir, '..', '..');
+  else if (leaf === 'dist') pluginRoot = path.resolve(absoluteDir, '..');
+  const candidate = pluginRoot
+    ? path.join(pluginRoot, 'scripts', 'lib', 'host-mediator-launcher.js')
+    : null;
+  try {
+    if (candidate && io.statSync(candidate).isFile()) return candidate;
+  } catch { /* typed unavailable below */ }
+  throw dispatchError('host_dispatch_unavailable', 'owned mediator launcher is missing');
+}
+
 function resolveAgentContractPath(moduleDir = __dirname, io = fs) {
   const absoluteDir = path.resolve(moduleDir);
   const leaf = path.basename(absoluteDir).toLowerCase();
@@ -33,6 +49,7 @@ function resolveAgentContractPath(moduleDir = __dirname, io = fs) {
 }
 
 const AGENT_CONTRACT_PATH = resolveAgentContractPath();
+const MEDIATOR_LAUNCHER_PATH = resolveMediatorLauncherPath();
 
 function dispatchError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -61,6 +78,19 @@ function processSpecFrom(value, env = process.env) {
     );
   }
   return { command: candidate.command, args: [...candidate.args] };
+}
+
+function ownedMediatorProcessSpec(spec, { platform = process.platform } = {}) {
+  // The launcher is used on every platform. POSIX makes it a process-group
+  // leader; Windows taskkill /T keeps a live root PID for descendant proof.
+  void platform;
+  return {
+    command: process.execPath,
+    args: [
+      MEDIATOR_LAUNCHER_PATH,
+      Buffer.from(JSON.stringify(spec), 'utf8').toString('base64url'),
+    ],
+  };
 }
 
 function agentContract() {
@@ -213,12 +243,13 @@ async function dispatchHostMediated({
 
   const responseText = await new Promise((resolve, reject) => {
     let child;
+    const ownedSpec = ownedMediatorProcessSpec(spec);
     try {
-      child = spawn(spec.command, spec.args, {
+      child = spawn(ownedSpec.command, ownedSpec.args, {
         shell: false,
         windowsHide: true,
         detached: process.platform !== 'win32',
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
         env,
       });
     } catch {
@@ -227,15 +258,20 @@ async function dispatchHostMediated({
     }
 
     let settled = false;
-    let stdout = '';
+    const stdoutChunks = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
     const directExit = directExitPromise(child);
-    const finish = (fn, value) => {
+    const finishAfterTreeCompletion = (fn, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      fn(value);
+      terminateOwnedProcessTree(child, { ...processLifecycle, env, directExit })
+        .then(() => fn(value))
+        .catch(() => reject(dispatchError(
+          'host_dispatch_failed',
+          'host mediator process tree could not be terminated',
+        )));
     };
     const fail = (code, message) => {
       if (settled) return;
@@ -255,27 +291,39 @@ async function dispatchHostMediated({
     );
 
     child.once('error', () => fail('host_dispatch_failed', 'host mediator process failed'));
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdoutBytes += Buffer.byteLength(chunk, 'utf8');
-      if (stdoutBytes > maxStdoutBytes) {
-        fail('host_dispatch_failed', 'host mediator stdout exceeded its bound');
-        return;
+    child.on('message', (message) => {
+      if (!message || typeof message !== 'object') return;
+      if (message.type === 'mediator-stdout') {
+        const chunk = Buffer.from(String(message.data || ''), 'base64');
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > maxStdoutBytes) {
+          fail('host_dispatch_failed', 'host mediator stdout exceeded its bound');
+          return;
+        }
+        stdoutChunks.push(chunk);
+      } else if (message.type === 'mediator-stderr') {
+        stderrBytes += Buffer.from(String(message.data || ''), 'base64').length;
+        if (stderrBytes > maxStderrBytes) {
+          fail('host_dispatch_failed', 'host mediator stderr exceeded its bound');
+        }
+      } else if (message.type === 'mediator-error') {
+        fail('host_dispatch_failed', 'host mediator process failed');
+      } else if (message.type === 'mediator-close') {
+        if (message.code !== 0 || message.signal) {
+          fail('host_dispatch_failed', 'host mediator exited unsuccessfully');
+          return;
+        }
+        // IPC messages may split a UTF-8 code point at any byte boundary.
+        // Preserve the raw bytes until the complete response has arrived, then
+        // decode exactly once so multi-byte characters remain lossless.
+        finishAfterTreeCompletion(
+          resolve,
+          Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
+        );
       }
-      stdout += chunk;
     });
-    child.stderr.on('data', (chunk) => {
-      stderrBytes += Buffer.byteLength(chunk);
-      if (stderrBytes > maxStderrBytes) {
-        fail('host_dispatch_failed', 'host mediator stderr exceeded its bound');
-      }
-    });
-    child.once('close', (code, signal) => {
-      if (code !== 0 || signal) {
-        fail('host_dispatch_failed', 'host mediator exited unsuccessfully');
-        return;
-      }
-      finish(resolve, stdout);
+    child.once('close', () => {
+      if (!settled) fail('host_dispatch_failed', 'owned mediator launcher exited unexpectedly');
     });
     child.stdin.once('error', () => fail('host_dispatch_failed', 'host mediator stdin failed'));
     child.stdin.end(JSON.stringify(request));
@@ -311,8 +359,11 @@ module.exports = {
   processSpecFrom,
   agentContract,
   resolveAgentContractPath,
+  resolveMediatorLauncherPath,
+  ownedMediatorProcessSpec,
   CONTRACT_VERSION,
   AGENT_CONTRACT_PATH,
+  MEDIATOR_LAUNCHER_PATH,
   DEFAULT_TIMEOUT_MS,
   MAX_STDOUT_BYTES,
   MAX_STDERR_BYTES,

@@ -9,24 +9,56 @@ const { openMcpSession } = require('../helpers/mcp-session');
 
 const root = path.resolve(__dirname, '../..');
 const WINDOWS_PATHS = [
-  String.raw`C:\Users\Alice\secret.txt`,
-  String.raw`\\?\C:\Users\Alice\secret.txt`,
-  String.raw`\\?\UNC\server\share\secret.txt`,
-  String.raw`\\.\PhysicalDrive0`,
-  String.raw`\\server\share\secret.txt`,
+  String.raw`C:\Users\O'Neil Smith\private docs\secret.txt`,
+  String.raw`\\?\C:\Program Files\O'Neil Corp\token file.txt`,
+  String.raw`\\?\UNC\server\O'Neil shared folder\secret file.txt`,
+  String.raw`\\.\O'Neil Device Name\secret file.txt`,
+  String.raw`\\server\O'Neil shared folder\secret file.txt`,
 ];
 
-test('redactString removes complete Windows absolute path forms without matching relative text', () => {
+const WINDOWS_LEAK_MARKERS = /O'Neil|Neil Smith|private docs|Program Files|shared folder|Device Name|secret file/;
+const NATIVE_WINDOWS_DIAGNOSTICS = WINDOWS_PATHS.map(
+  (value) => `ENOENT: no such file or directory, open '${value}'`,
+);
+
+function pathContexts(value) {
+  const yamlSingleQuoted = `'${value.replaceAll("'", "''")}'`;
+  return [
+    value,
+    `"${value}"`,
+    yamlSingleQuoted,
+    `windows_path: ${yamlSingleQuoted}\nnormal_marker: readable-text`,
+    `windows_path=${value} | status=failed`,
+    `ENOENT: no such file or directory, open '${value}'`,
+    `before ${value} after`,
+  ];
+}
+
+test('redactString removes apostrophe-bearing spaced Windows paths in every structured text context', () => {
   for (const value of WINDOWS_PATHS) {
-    const redacted = redactString(`before ${value} after`);
-    assert.doesNotMatch(redacted, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    assert.match(redacted, new RegExp(REDACT_TAG.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    assert.match(redacted, /^before /);
-    assert.match(redacted, / after$/);
+    for (const sample of pathContexts(value)) {
+      const redacted = redactString(sample);
+      assert.doesNotMatch(redacted, WINDOWS_LEAK_MARKERS, sample);
+      assert.match(redacted, new RegExp(REDACT_TAG.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    assert.equal(
+      redactString(`ENOENT: no such file or directory, open '${value}'`),
+      `ENOENT: no such file or directory, open '${REDACT_TAG}'`,
+    );
+    assert.equal(
+      redactString(`windows_path: '${value.replaceAll("'", "''")}'\nnormal_marker: readable-text`),
+      `windows_path: '${REDACT_TAG}'\nnormal_marker: readable-text`,
+    );
+    assert.equal(
+      redactString(`windows_path=${value} | status=failed`),
+      `windows_path=${REDACT_TAG} | status=failed`,
+    );
   }
   for (const value of [
     String.raw`C:notes\todo.txt`,
     String.raw`ordinary\backslash\text`,
+    String.raw`ordinary\O'Neil\backslash text`,
+    "owner O'Neil wrote ordinary prose",
     'https://server.example/share/resource',
     'deep-memory://cards-stats',
   ]) {
@@ -43,7 +75,13 @@ test('every advertised resource crosses the shared Windows path redaction bounda
   fs.mkdirSync(memoryRoot, { recursive: true });
   const configText = [
     'normal_marker: readable-text',
-    ...WINDOWS_PATHS.map((value, index) => `windows_path_${index}: ${value}`),
+    ...WINDOWS_PATHS.flatMap((value, index) => [
+      `windows_path_${index}_plain: ${value}`,
+      `windows_path_${index}_double: "${value}"`,
+      `windows_path_${index}_single: '${value.replaceAll("'", "''")}'`,
+      `windows_path_${index}_diagnostic: ${value} | status=failed`,
+      `windows_path_${index}_native: ${NATIVE_WINDOWS_DIAGNOSTICS[index]}`,
+    ]),
     '',
   ].join('\n');
   fs.writeFileSync(path.join(memoryRoot, 'config.yaml'), configText);
@@ -74,6 +112,7 @@ test('every advertised resource crosses the shared Windows path redaction bounda
       const read = await session.request('resources/read', { uri });
       const text = read.result.contents.map((item) => item.text).join('\n');
       for (const raw of WINDOWS_PATHS) assert.equal(text.includes(raw), false, `${entry} ${uri}: ${raw}`);
+      assert.doesNotMatch(text, WINDOWS_LEAK_MARKERS, `${entry} ${uri}`);
       if (uri === 'deep-memory://config') configResponse = text;
     }
     assert.match(configResponse, /readable-text/, entry);

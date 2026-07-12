@@ -8,6 +8,7 @@ const {
   isContainedPath,
   walkContainedCards,
   readContainedCard,
+  createCardFilesystemBudget,
 } = require('../scripts/lib/card-paths');
 const { locateCard } = require('../scripts/lib/card-filters');
 
@@ -93,6 +94,22 @@ function instrumentIo({ forbidden = [], forbiddenReaddir = [], realpathOverride 
   realpath.native = (...args) => realpathImpl(...args);
   io.realpathSync = realpath;
   return { io, accesses };
+}
+
+function countingIo() {
+  const counts = { lstat: 0, readdir: 0, read: 0, realpath: 0 };
+  const paths = { readdir: [] };
+  const io = Object.create(fs);
+  io.lstatSync = (...args) => { counts.lstat += 1; return fs.lstatSync(...args); };
+  io.readdirSync = (...args) => {
+    counts.readdir += 1;
+    paths.readdir.push(path.resolve(args[0]));
+    return fs.readdirSync(...args);
+  };
+  io.readFileSync = (...args) => { counts.read += 1; return fs.readFileSync(...args); };
+  const realpathImpl = (...args) => { counts.realpath += 1; return fs.realpathSync.native(...args); };
+  io.realpathSync = Object.assign((...args) => realpathImpl(...args), { native: (...args) => realpathImpl(...args) });
+  return { io, counts, paths, total: () => Object.values(counts).reduce((sum, value) => sum + value, 0) };
 }
 
 function scan(root, currentProjectId, options = {}) {
@@ -354,5 +371,73 @@ test('FTS-backed locateCard never traverses cards, type, or scope directory alia
       privacy_level: 'local',
     }, { currentProjectId: PROJECT_ID });
     assert.equal(result, null);
+  }
+});
+
+test('known-type FTS lookup performs one direct contained descriptor read', (t) => {
+  const root = fixture(t, 'dm-card-direct-known-');
+  for (let index = 0; index < 200; index += 1) {
+    const memoryId = `mem_${String(index).padStart(3, '0')}`;
+    writeJson(path.join(root, 'cards', 'pattern', PROJECT_ID, `${memoryId}.json`), {
+      payload: { memory_id: memoryId, memory_type: 'pattern', claim: memoryId },
+    });
+  }
+  const counted = countingIo();
+  const card = locateCard(root, {
+    memory_id: 'mem_199', memory_type: 'pattern', project_id: PROJECT_ID, privacy_level: 'local',
+  }, { currentProjectId: PROJECT_ID, io: counted.io });
+  assert.equal(card.payload.claim, 'mem_199');
+  assert.equal(counted.counts.read, 1);
+  assert.equal(counted.counts.readdir, 0, 'known type and identity require no directory enumeration');
+  assert.ok(counted.counts.lstat <= 5, JSON.stringify(counted.counts));
+  assert.ok(counted.counts.realpath <= 5, JSON.stringify(counted.counts));
+});
+
+test('missing-type FTS lookup enumerates only type names and stops after the direct hit', (t) => {
+  const root = fixture(t, 'dm-card-direct-fallback-');
+  writeJson(path.join(root, 'cards', 'failure-case', PROJECT_ID, 'other.json'), {
+    payload: { memory_id: 'other', memory_type: 'failure-case' },
+  });
+  writeJson(path.join(root, 'cards', 'pattern', PROJECT_ID, 'mem_target.json'), {
+    payload: { memory_id: 'mem_target', memory_type: 'pattern', claim: 'target' },
+  });
+  writeJson(path.join(root, 'cards', 'recipe', PROJECT_ID, 'later.json'), {
+    payload: { memory_id: 'later', memory_type: 'recipe' },
+  });
+  const counted = countingIo();
+  const card = locateCard(root, {
+    memory_id: 'mem_target', project_id: PROJECT_ID, privacy_level: 'local',
+  }, { currentProjectId: PROJECT_ID, io: counted.io });
+  assert.equal(card.payload.claim, 'target');
+  assert.equal(counted.counts.read, 1, 'missing candidates must not be parsed');
+  assert.equal(counted.counts.readdir, 1, 'only cards/<type-name> enumeration is allowed');
+  assert.deepEqual(counted.paths.readdir, [path.join(root, 'cards')]);
+  assert.ok(counted.total() <= 30, JSON.stringify(counted.counts));
+});
+
+test('one shared filesystem budget bounds all stale row lookups in a retrieval', (t) => {
+  const root = fixture(t, 'dm-card-shared-budget-');
+  fs.mkdirSync(path.join(root, 'cards', 'pattern', PROJECT_ID), { recursive: true });
+  const counted = countingIo();
+  const budget = createCardFilesystemBudget(18);
+  for (let index = 0; index < 20; index += 1) {
+    const card = locateCard(root, {
+      memory_id: `mem_missing_${index}`, memory_type: 'pattern',
+      project_id: PROJECT_ID, privacy_level: 'local',
+    }, { currentProjectId: PROJECT_ID, io: counted.io, budget });
+    assert.equal(card, null);
+  }
+  assert.equal(budget.exhausted, true);
+  assert.ok(budget.used <= 18, JSON.stringify(budget));
+  assert.ok(counted.total() <= 18, JSON.stringify(counted.counts));
+});
+
+test('retrieve callers allocate and share one card filesystem budget', () => {
+  const retrieve = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'retrieve.js'), 'utf8');
+  const hybrid = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'lib', 'retrieve-hybrid.js'), 'utf8');
+  for (const [label, source] of [['retrieve', retrieve], ['hybrid', hybrid]]) {
+    assert.match(source, /createCardFilesystemBudget\(/, label);
+    assert.match(source, /\bbudget\b/, label);
+    assert.match(source, /card_filesystem_budget_exhausted/, label);
   }
 });

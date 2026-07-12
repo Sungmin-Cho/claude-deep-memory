@@ -35954,13 +35954,86 @@ var require_validate_project_id = __commonJS({
   }
 });
 
+// scripts/lib/atomic-write.js
+var require_atomic_write = __commonJS({
+  "scripts/lib/atomic-write.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var crypto = require("node:crypto");
+    var UNSUPPORTED_DIRECTORY_FSYNC = /* @__PURE__ */ new Set(["EPERM", "EINVAL", "EBADF", "ENOTSUP"]);
+    function fsyncDirectoryBestEffort(dir, io = fs) {
+      let fd;
+      try {
+        fd = io.openSync(dir, "r");
+        io.fsyncSync(fd);
+        return true;
+      } catch (error) {
+        if (error && UNSUPPORTED_DIRECTORY_FSYNC.has(error.code)) return false;
+        throw error;
+      } finally {
+        if (fd !== void 0) io.closeSync(fd);
+      }
+    }
+    function privateTempPath(target) {
+      return `${target}.tmp.${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
+    }
+    function writePrivateTemp(target, contents, verify) {
+      const tmp = privateTempPath(target);
+      let owned = false;
+      let published = false;
+      try {
+        const fd = fs.openSync(tmp, "wx", 384);
+        owned = true;
+        try {
+          fs.writeSync(fd, contents);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        const wrote = fs.readFileSync(tmp, "utf8");
+        verify(wrote);
+        fs.renameSync(tmp, target);
+        published = true;
+        fsyncDirectoryBestEffort(path.dirname(target));
+      } finally {
+        if (owned && !published) {
+          try {
+            fs.unlinkSync(tmp);
+          } catch {
+          }
+        }
+      }
+    }
+    function writeJsonAtomic(target, data) {
+      const text = JSON.stringify(data, null, 2);
+      writePrivateTemp(target, text, (wrote) => {
+        if (wrote !== text) throw new Error("atomic JSON write readback mismatch (temp)");
+        try {
+          JSON.parse(wrote);
+        } catch (error) {
+          throw new Error(`atomic JSON write verify failed: ${error.message}`);
+        }
+      });
+    }
+    function writeTextAtomic(target, text) {
+      writePrivateTemp(target, text, (wrote) => {
+        if (wrote !== text) throw new Error("atomic text write readback mismatch (temp)");
+      });
+    }
+    module2.exports = { writeJsonAtomic, writeTextAtomic, fsyncDirectoryBestEffort };
+  }
+});
+
 // scripts/lib/card-paths.js
 var require_card_paths = __commonJS({
   "scripts/lib/card-paths.js"(exports2, module2) {
     "use strict";
     var fs = require("node:fs");
     var path = require("node:path");
+    var { writeJsonAtomic } = require_atomic_write();
     var { isValidProjectId } = require_validate_project_id();
+    var MAX_CARD_FILES = 5e3;
     function pathApi(platform) {
       return platform === "win32" ? path.win32 : path;
     }
@@ -35973,6 +36046,47 @@ var require_card_paths = __commonJS({
         candidate = candidate.toLowerCase();
       }
       return candidate.startsWith(`${base}${api.sep}`);
+    }
+    function samePath(left, right, platform) {
+      const api = pathApi(platform);
+      let a = api.resolve(left);
+      let b = api.resolve(right);
+      if (platform === "win32") {
+        a = a.toLowerCase();
+        b = b.toLowerCase();
+      }
+      return a === b;
+    }
+    function createCardFilesystemBudget(limit = MAX_CARD_FILES) {
+      if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError("card filesystem budget must be positive");
+      return { limit, used: 0, exhausted: false };
+    }
+    function consumeBudget(budget) {
+      if (!budget) return;
+      if (budget.used >= budget.limit) {
+        budget.exhausted = true;
+        throw Object.assign(new Error("card filesystem budget exhausted"), { code: "CARD_FILESYSTEM_BUDGET_EXHAUSTED" });
+      }
+      budget.used += 1;
+    }
+    function budgetedIo(io, budget) {
+      if (!budget) return io;
+      const wrapped = Object.create(io);
+      for (const name of ["lstatSync", "readdirSync", "readFileSync"]) {
+        wrapped[name] = (...args) => {
+          consumeBudget(budget);
+          return Reflect.apply(io[name], io, args);
+        };
+      }
+      const realpathImpl = (...args) => {
+        consumeBudget(budget);
+        const impl = io.realpathSync && (io.realpathSync.native || io.realpathSync);
+        return Reflect.apply(impl, io.realpathSync, args);
+      };
+      wrapped.realpathSync = Object.assign((...args) => realpathImpl(...args), {
+        native: (...args) => realpathImpl(...args)
+      });
+      return wrapped;
     }
     function realpathNative(io, value) {
       const impl = io.realpathSync && (io.realpathSync.native || io.realpathSync);
@@ -35996,7 +36110,8 @@ var require_card_paths = __commonJS({
       try {
         stat = io.lstatSync(lexical);
       } catch (error) {
-        if (!(missingIsClean && error && error.code === "ENOENT")) addWarning(state, "card_path_unavailable");
+        if (error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED") addWarning(state, "card_filesystem_budget_exhausted");
+        else if (!(missingIsClean && error && error.code === "ENOENT")) addWarning(state, "card_path_unavailable");
         return null;
       }
       if (isLink(stat)) {
@@ -36010,8 +36125,8 @@ var require_card_paths = __commonJS({
       let physical;
       try {
         physical = realpathNative(io, lexical);
-      } catch {
-        addWarning(state, "card_path_unavailable");
+      } catch (error) {
+        addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
         return null;
       }
       if (parentPhysical && !isContainedPath(parentPhysical, physical, { platform: state.platform })) {
@@ -36051,28 +36166,30 @@ var require_card_paths = __commonJS({
     function finalize(state, visited) {
       return { visited, warnings: [...state.warnings].sort() };
     }
-    function walkContainedCards({
+    function walkContainedCardsInternal({
       root,
       currentProjectId = null,
-      maxFiles = 5e3,
+      maxFiles = MAX_CARD_FILES,
       onCard,
       io = fs,
-      platform = process.platform
-    } = {}) {
+      platform = process.platform,
+      budget = null
+    } = {}, { exhaustive = false } = {}) {
       const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      io = budgetedIo(io, budget);
       if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
         addWarning(state, "project_scope_invalid");
         return finalize(state, 0);
       }
       if (typeof onCard !== "function") throw new TypeError("walkContainedCards requires onCard");
-      const boundedMax = Number.isInteger(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, 5e3) : 5e3;
+      const boundedMax = exhaustive ? null : Number.isInteger(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, MAX_CARD_FILES) : MAX_CARD_FILES;
       const base = resolveRootAndCards(root, io, state);
       if (!base) return finalize(state, 0);
       let entries;
       try {
         entries = io.readdirSync(base.cardsPhysical, { withFileTypes: true });
-      } catch {
-        addWarning(state, "card_path_unavailable");
+      } catch (error) {
+        addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
         return finalize(state, 0);
       }
       let visited = 0;
@@ -36092,13 +36209,13 @@ var require_card_paths = __commonJS({
           let files;
           try {
             files = io.readdirSync(scopePhysical, { withFileTypes: true });
-          } catch {
-            addWarning(state, "card_path_unavailable");
+          } catch (error) {
+            addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
             continue;
           }
           for (const file of [...files].sort((a, b) => lexicalCompare(a.name, b.name))) {
             if (!safeName(file.name) || !file.name.endsWith(".json")) continue;
-            if (visited >= boundedMax) {
+            if (boundedMax !== null && visited >= boundedMax) {
               addWarning(state, "card_scan_limit_reached");
               return finalize(state, visited);
             }
@@ -36106,8 +36223,8 @@ var require_card_paths = __commonJS({
             let stat;
             try {
               stat = io.lstatSync(fileLexical);
-            } catch {
-              addWarning(state, "card_path_unavailable");
+            } catch (error) {
+              addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
               continue;
             }
             if (isLink(stat)) {
@@ -36121,15 +36238,15 @@ var require_card_paths = __commonJS({
             let filePhysical;
             try {
               filePhysical = realpathNative(io, fileLexical);
-            } catch {
-              addWarning(state, "card_path_unavailable");
+            } catch (error) {
+              addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
               continue;
             }
             if (!isContainedPath(scopePhysical, filePhysical, { platform })) {
               addWarning(state, "card_path_outside_scope");
               continue;
             }
-            onCard(Object.freeze({
+            const shouldContinue = onCard(Object.freeze({
               root: base.rootPhysical,
               currentProjectId,
               type: entry.name,
@@ -36138,53 +36255,207 @@ var require_card_paths = __commonJS({
               path: filePhysical
             }));
             visited += 1;
+            if (shouldContinue === false) return finalize(state, visited);
           }
         }
       }
       return finalize(state, visited);
     }
-    function readContainedCard(descriptor, { io = fs, platform = process.platform } = {}) {
+    function walkContainedCards(options = {}) {
+      return walkContainedCardsInternal(options);
+    }
+    function walkAllContainedCards(options = {}) {
+      return walkContainedCardsInternal(options, { exhaustive: true });
+    }
+    function walkContainedCardTypes({
+      root,
+      onType,
+      io = fs,
+      platform = process.platform,
+      budget = null
+    } = {}) {
       const state = { platform, warnings: /* @__PURE__ */ new Set() };
-      if (!descriptor || typeof descriptor !== "object") {
-        return { value: null, warning: "card_path_invalid_descriptor" };
+      io = budgetedIo(io, budget);
+      if (typeof onType !== "function") throw new TypeError("walkContainedCardTypes requires onType");
+      const base = resolveRootAndCards(root, io, state);
+      if (!base) return finalize(state, 0);
+      let entries;
+      try {
+        entries = io.readdirSync(base.cardsPhysical, { withFileTypes: true });
+      } catch (error) {
+        addWarning(state, error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable");
+        return finalize(state, 0);
       }
+      let visited = 0;
+      for (const entry of [...entries].sort((a, b) => lexicalCompare(a.name, b.name))) {
+        if (!safeName(entry.name)) continue;
+        const typePhysical = lstatDirectory(
+          io,
+          path.join(base.cardsPhysical, entry.name),
+          base.cardsPhysical,
+          state,
+          { missingIsClean: true }
+        );
+        if (!typePhysical) continue;
+        visited += 1;
+        if (onType(Object.freeze({ root: base.rootPhysical, type: entry.name, path: typePhysical })) === false) break;
+      }
+      return finalize(state, visited);
+    }
+    function descriptorState(descriptor, { io = fs, platform = process.platform, budget = null } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (!descriptor || typeof descriptor !== "object") return { warning: "card_path_invalid_descriptor" };
       const { root, currentProjectId = null, type, scope, file } = descriptor;
-      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) {
-        return { value: null, warning: "project_scope_invalid" };
-      }
-      if (!safeName(file) || !file.endsWith(".json")) {
-        return { value: null, warning: "card_path_invalid_descriptor" };
-      }
-      const chain = resolveTypeAndScope({ root, type, scope, currentProjectId, io, state });
-      if (!chain) return { value: null, warning: [...state.warnings].sort()[0] || "card_path_unavailable" };
-      const lexical = path.join(chain.scopePhysical, file);
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) return { warning: "project_scope_invalid" };
+      if (!safeName(file) || !file.endsWith(".json")) return { warning: "card_path_invalid_descriptor" };
+      const boundedIo = budgetedIo(io, budget);
+      const chain = resolveTypeAndScope({ root, type, scope, currentProjectId, io: boundedIo, state });
+      if (!chain) return { warning: [...state.warnings].sort()[0] || "card_path_unavailable" };
+      return { state, io: boundedIo, chain, lexical: path.join(chain.scopePhysical, file) };
+    }
+    function readContainedCard(descriptor, options = {}) {
+      const resolved = descriptorState(descriptor, options);
+      if (resolved.warning) return { value: null, warning: resolved.warning };
+      const { io, chain, lexical, state } = resolved;
       let stat;
       try {
         stat = io.lstatSync(lexical);
-      } catch {
-        return { value: null, warning: "card_path_unavailable" };
+      } catch (error) {
+        if (error && error.code === "ENOENT") return { value: null, warning: null, missing: true };
+        return { value: null, warning: error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable" };
       }
       if (isLink(stat)) return { value: null, warning: "card_path_link_rejected" };
       if (!stat.isFile()) return { value: null, warning: "card_path_not_regular" };
       let physical;
       try {
         physical = realpathNative(io, lexical);
-      } catch {
-        return { value: null, warning: "card_path_unavailable" };
+      } catch (error) {
+        return { value: null, warning: error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_path_unavailable" };
       }
-      if (!isContainedPath(chain.scopePhysical, physical, { platform })) {
+      if (!isContainedPath(chain.scopePhysical, physical, { platform: state.platform })) {
         return { value: null, warning: "card_path_outside_scope" };
       }
-      if (descriptor.path && path.resolve(descriptor.path) !== path.resolve(physical)) {
+      if (descriptor.path && !samePath(descriptor.path, physical, state.platform)) {
         return { value: null, warning: "card_path_outside_scope" };
       }
       try {
-        return { value: JSON.parse(io.readFileSync(physical, "utf8")), warning: null };
-      } catch {
-        return { value: null, warning: "card_json_invalid" };
+        return { value: JSON.parse(io.readFileSync(physical, "utf8")), warning: null, path: physical };
+      } catch (error) {
+        return { value: null, warning: error && error.code === "CARD_FILESYSTEM_BUDGET_EXHAUSTED" ? "card_filesystem_budget_exhausted" : "card_json_invalid" };
       }
     }
-    module2.exports = { isContainedPath, walkContainedCards, readContainedCard };
+    function unsafeError(warning) {
+      return Object.assign(new Error(`unsafe card path: ${warning}`), { code: "CARD_PATH_UNSAFE", warning });
+    }
+    function ensureContainedDirectory(lexical, parentPhysical, state) {
+      let physical = lstatDirectory(fs, lexical, parentPhysical, state, { missingIsClean: true });
+      if (physical) return physical;
+      if (state.warnings.size > 0) return null;
+      try {
+        fs.mkdirSync(lexical);
+      } catch (error) {
+        if (!error || error.code !== "EEXIST") {
+          addWarning(state, "card_path_unavailable");
+          return null;
+        }
+      }
+      return lstatDirectory(fs, lexical, parentPhysical, state);
+    }
+    function resolveMutationChain(descriptor, { createDirectories = false, platform = process.platform } = {}) {
+      const state = { platform, warnings: /* @__PURE__ */ new Set() };
+      if (!descriptor || typeof descriptor !== "object") return { warning: "card_path_invalid_descriptor" };
+      const { root, currentProjectId = null, type, scope, file } = descriptor;
+      if (currentProjectId !== null && !isValidProjectId(currentProjectId)) return { warning: "project_scope_invalid" };
+      if (!safeName(type) || !safeName(file) || !file.endsWith(".json")) return { warning: "card_path_invalid_descriptor" };
+      if (scope !== "global" && scope !== currentProjectId) return { warning: "project_scope_invalid" };
+      const rootPhysical = lstatDirectory(fs, path.resolve(root), null, state);
+      if (!rootPhysical) return { warning: [...state.warnings][0] || "card_path_unavailable" };
+      let parent = rootPhysical;
+      for (const name of ["cards", type, scope]) {
+        const lexical = path.join(parent, name);
+        const physical = createDirectories ? ensureContainedDirectory(lexical, parent, state) : lstatDirectory(fs, lexical, parent, state, { missingIsClean: true });
+        if (!physical) return {
+          warning: [...state.warnings][0] || null,
+          missing: state.warnings.size === 0
+        };
+        parent = physical;
+      }
+      return { state, scopePhysical: parent, lexical: path.join(parent, file) };
+    }
+    function mutateContainedCard(descriptor, {
+      action,
+      value,
+      createDirectories = false,
+      platform = process.platform
+    } = {}) {
+      if (!["probe", "read", "write", "unlink"].includes(action)) throw new TypeError("invalid contained card action");
+      const resolved = resolveMutationChain(descriptor, { createDirectories, platform });
+      if (resolved.warning) throw unsafeError(resolved.warning);
+      if (resolved.missing) {
+        if (action === "write" && createDirectories) throw unsafeError("card_path_unavailable");
+        return { exists: false, value: null, path: null };
+      }
+      const { scopePhysical, lexical } = resolved;
+      let stat = null;
+      try {
+        stat = fs.lstatSync(lexical);
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") throw unsafeError("card_path_unavailable");
+      }
+      if (stat) {
+        if (isLink(stat)) throw unsafeError("card_path_link_rejected");
+        if (!stat.isFile()) throw unsafeError("card_path_not_regular");
+        let physical;
+        try {
+          physical = fs.realpathSync.native(lexical);
+        } catch {
+          throw unsafeError("card_path_unavailable");
+        }
+        if (!isContainedPath(scopePhysical, physical, { platform })) throw unsafeError("card_path_outside_scope");
+        if (descriptor.path && !samePath(descriptor.path, physical, platform)) throw unsafeError("card_path_outside_scope");
+        if (action === "probe") return { exists: true, value: null, path: physical };
+        if (action === "read") {
+          let source;
+          try {
+            source = fs.readFileSync(physical, "utf8");
+          } catch {
+            throw unsafeError("card_path_unavailable");
+          }
+          try {
+            return { exists: true, value: JSON.parse(source), path: physical };
+          } catch {
+            throw unsafeError("card_json_invalid");
+          }
+        }
+        if (action === "unlink") {
+          fs.unlinkSync(physical);
+          return { exists: false, value: null, path: physical };
+        }
+        writeJsonAtomic(physical, value);
+        return { exists: true, value, path: physical };
+      }
+      if (action !== "write") return { exists: false, value: null, path: lexical };
+      writeJsonAtomic(lexical, value);
+      return { exists: true, value, path: lexical };
+    }
+    function writeContainedCard(descriptor, value, options = {}) {
+      return mutateContainedCard(descriptor, { ...options, action: "write", value, createDirectories: true });
+    }
+    function unlinkContainedCard(descriptor, options = {}) {
+      return mutateContainedCard(descriptor, { ...options, action: "unlink" });
+    }
+    module2.exports = {
+      MAX_CARD_FILES,
+      isContainedPath,
+      createCardFilesystemBudget,
+      walkContainedCards,
+      walkAllContainedCards,
+      walkContainedCardTypes,
+      readContainedCard,
+      mutateContainedCard,
+      writeContainedCard,
+      unlinkContainedCard
+    };
   }
 });
 
@@ -36239,7 +36510,7 @@ var require_card_filters = __commonJS({
     var fs = require("node:fs");
     var { jaccard } = require_score();
     var { isValidProjectId } = require_validate_project_id();
-    var { walkContainedCards, readContainedCard } = require_card_paths();
+    var { walkContainedCardTypes, readContainedCard } = require_card_paths();
     var APPLICABILITY_GUARD_THRESHOLD = 0.5;
     function tokenize(text) {
       return String(text || "").toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter(Boolean);
@@ -36247,7 +36518,8 @@ var require_card_filters = __commonJS({
     function findContainedCard(memoryRoot, row, {
       io = fs,
       platform = process.platform,
-      currentProjectId
+      currentProjectId,
+      budget = null
     } = {}) {
       if (!row || typeof row !== "object" || typeof row.memory_id !== "string") return null;
       const isGlobalRow = row.privacy_level === "global" || !row.project_id;
@@ -36258,22 +36530,31 @@ var require_card_filters = __commonJS({
         if (!isGlobalRow && currentProjectId !== rowProjectId) return null;
       }
       const wantedScope = isGlobalRow ? "global" : rowProjectId;
+      const readType = (type) => {
+        const read = readContainedCard({
+          root: memoryRoot,
+          currentProjectId: rowProjectId,
+          type,
+          scope: wantedScope,
+          file: `${row.memory_id}.json`
+        }, { io, platform, budget });
+        if (!read.value) return null;
+        const payload = read.value.payload || read.value;
+        if (payload.memory_id !== row.memory_id || payload.memory_type !== type) return null;
+        return read.value;
+      };
+      if (typeof row.memory_type === "string" && row.memory_type) {
+        return readType(row.memory_type);
+      }
       let found = null;
-      walkContainedCards({
+      walkContainedCardTypes({
         root: memoryRoot,
-        currentProjectId: rowProjectId,
-        maxFiles: 5e3,
         io,
         platform,
-        onCard(descriptor) {
-          if (found || descriptor.scope !== wantedScope) return;
-          if (row.memory_type && descriptor.type !== row.memory_type) return;
-          const read = readContainedCard(descriptor, { io, platform });
-          if (!read.value) return;
-          const payload = read.value.payload || read.value;
-          if (payload.memory_id !== row.memory_id) return;
-          if (row.memory_type && payload.memory_type !== row.memory_type) return;
-          found = read.value;
+        budget,
+        onType(descriptor) {
+          found = readType(descriptor.type);
+          return found ? false : !(budget && budget.exhausted);
         }
       });
       return found;
@@ -36772,6 +37053,7 @@ var require_retrieve_hybrid = __commonJS({
     var { embedText, probeModelVersion } = require_embed_model();
     var { openIndex, searchVector } = require_vector_index();
     var { locateCard, isNotDeprecated, passesApplicabilityGuard, tokenize } = require_card_filters();
+    var { createCardFilesystemBudget } = require_card_paths();
     function sessionDiversify(cards, maxPerSession) {
       const sessionCounts = /* @__PURE__ */ new Map();
       const out = [];
@@ -36844,10 +37126,11 @@ var require_retrieve_hybrid = __commonJS({
       const streams = [ftsStream, vectorStream].filter((s) => s.length > 0);
       const fused = streams.length > 0 ? rrfFuse(streams) : [];
       const taskTokens = tokenize(query);
+      const budget = createCardFilesystemBudget(5e3);
       let unlocatable = 0;
       const filtered = [];
       for (const row of fused) {
-        const card = locateCard(root, row, { currentProjectId });
+        const card = locateCard(root, row, { currentProjectId, budget });
         if (!card) {
           unlocatable += 1;
           continue;
@@ -36866,6 +37149,7 @@ var require_retrieve_hybrid = __commonJS({
           `card_filter_dropped: ${unlocatable} index row(s) with no loadable card payload (index/card skew?) \u2014 run /deep-memory-audit`
         );
       }
+      if (budget.exhausted) warnings.push("card_filesystem_budget_exhausted");
       const maxPerSession = config.brief && config.brief.max_per_session || 3;
       const diversified = sessionDiversify(filtered, maxPerSession);
       return {
@@ -36893,13 +37177,51 @@ var require_redact = __commonJS({
       /\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/g,
       /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi
     ];
-    var WINDOWS_ABSOLUTE_PATH_PATTERNS = [
-      /\\\\\?\\UNC\\[^\s'"<>]+/gi,
-      /\\\\\?\\[A-Za-z]:\\[^\s'"<>]+/g,
-      /\\\\\.\\[^\s'"<>]+/g,
-      /\\\\(?![?.]\\)[^\\\s'"<>]+\\[^\s'"<>]+/g,
-      /(?<![A-Za-z0-9_])[A-Za-z]:\\[^\s'"<>]+/g
-    ];
+    var WINDOWS_ABSOLUTE_PATH_START_RE = /(?:\\{2,}\?\\+(?:UNC\\+|[A-Za-z]:\\+)|\\{2,}\.\\+|\\{2,}(?![?.])[^\\\s"'<>|]+\\+|(?<![A-Za-z0-9_])[A-Za-z]:\\+)/gi;
+    var WINDOWS_ABSOLUTE_PATH_PATTERNS = [WINDOWS_ABSOLUTE_PATH_START_RE];
+    function isSingleQuoteClosureFollower(input, index) {
+      if (index >= input.length) return true;
+      const ch = input[index];
+      return /\s/.test(ch) || '"<>|,;:.!?)]}'.includes(ch);
+    }
+    function redactWindowsAbsolutePaths(input) {
+      const re = new RegExp(WINDOWS_ABSOLUTE_PATH_START_RE.source, WINDOWS_ABSOLUTE_PATH_START_RE.flags);
+      let output = "";
+      let cursor = 0;
+      for (let match = re.exec(input); match; match = re.exec(input)) {
+        output += input.slice(cursor, match.index);
+        let contextIndex = match.index - 1;
+        while (contextIndex >= 0 && (input[contextIndex] === " " || input[contextIndex] === "	")) {
+          contextIndex -= 1;
+        }
+        const quoteContext = input[contextIndex] === '"' || input[contextIndex] === "'" ? input[contextIndex] : null;
+        let end = match.index + match[0].length;
+        let lastSingleQuoteClosure = -1;
+        while (end < input.length) {
+          const ch = input[end];
+          if (quoteContext === "'" && ch === "'") {
+            if (input[end + 1] === "'") {
+              end += 2;
+              continue;
+            }
+            if (isSingleQuoteClosureFollower(input, end + 1)) lastSingleQuoteClosure = end;
+            end += 1;
+            continue;
+          }
+          if (quoteContext === '"' && ch === '"') break;
+          if (quoteContext === "'" && ch === '"') break;
+          if (quoteContext === null && ch === '"') break;
+          if (ch === "<" || ch === ">" || ch === "\r" || ch === "\n") break;
+          if (input.startsWith(" | ", end)) break;
+          end += 1;
+        }
+        if (quoteContext === "'" && lastSingleQuoteClosure >= 0) end = lastSingleQuoteClosure;
+        output += REDACT_TAG;
+        cursor = end;
+        re.lastIndex = end;
+      }
+      return output + input.slice(cursor);
+    }
     var SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
     var HOME_RE = new RegExp(
       os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
@@ -36916,9 +37238,7 @@ var require_redact = __commonJS({
       let out = input.replace(HOME_RE, "~");
       out = applyGenericHomedir(out);
       out = applyEnvVarRedaction(out);
-      for (const re of WINDOWS_ABSOLUTE_PATH_PATTERNS) {
-        out = out.replace(re, REDACT_TAG);
-      }
+      out = redactWindowsAbsolutePaths(out);
       for (const re of DENY_PATTERNS) {
         out = out.replace(re, REDACT_TAG);
       }
@@ -36950,6 +37270,7 @@ var require_redact = __commonJS({
       REDACT_TAG,
       DENY_PATTERNS,
       WINDOWS_ABSOLUTE_PATH_PATTERNS,
+      redactWindowsAbsolutePaths,
       HOME_RE
     };
   }
@@ -38248,6 +38569,20 @@ var require_host_mediated_dispatch = __commonJS({
     var TREE_UTILITY_ATTEMPTS = 2;
     var NEVER = new Promise(() => {
     });
+    function resolveMediatorLauncherPath(moduleDir = __dirname, io = fs) {
+      const absoluteDir = path.resolve(moduleDir);
+      const leaf = path.basename(absoluteDir).toLowerCase();
+      const parentLeaf = path.basename(path.dirname(absoluteDir)).toLowerCase();
+      let pluginRoot = null;
+      if (leaf === "lib" && parentLeaf === "scripts") pluginRoot = path.resolve(absoluteDir, "..", "..");
+      else if (leaf === "dist") pluginRoot = path.resolve(absoluteDir, "..");
+      const candidate = pluginRoot ? path.join(pluginRoot, "scripts", "lib", "host-mediator-launcher.js") : null;
+      try {
+        if (candidate && io.statSync(candidate).isFile()) return candidate;
+      } catch {
+      }
+      throw dispatchError("host_dispatch_unavailable", "owned mediator launcher is missing");
+    }
     function resolveAgentContractPath(moduleDir = __dirname, io = fs) {
       const absoluteDir = path.resolve(moduleDir);
       const leaf = path.basename(absoluteDir).toLowerCase();
@@ -38266,6 +38601,7 @@ var require_host_mediated_dispatch = __commonJS({
       throw dispatchError("host_dispatch_unavailable", "authoritative memory-distiller contract is missing");
     }
     var AGENT_CONTRACT_PATH = resolveAgentContractPath();
+    var MEDIATOR_LAUNCHER_PATH = resolveMediatorLauncherPath();
     function dispatchError(code, message) {
       return Object.assign(new Error(message), { code });
     }
@@ -38289,6 +38625,16 @@ var require_host_mediated_dispatch = __commonJS({
         );
       }
       return { command: candidate.command, args: [...candidate.args] };
+    }
+    function ownedMediatorProcessSpec(spec, { platform = process.platform } = {}) {
+      void platform;
+      return {
+        command: process.execPath,
+        args: [
+          MEDIATOR_LAUNCHER_PATH,
+          Buffer.from(JSON.stringify(spec), "utf8").toString("base64url")
+        ]
+      };
     }
     function agentContract() {
       const content = fs.readFileSync(AGENT_CONTRACT_PATH);
@@ -38425,12 +38771,13 @@ var require_host_mediated_dispatch = __commonJS({
       };
       const responseText = await new Promise((resolve, reject) => {
         let child;
+        const ownedSpec = ownedMediatorProcessSpec(spec);
         try {
-          child = spawn(spec.command, spec.args, {
+          child = spawn(ownedSpec.command, ownedSpec.args, {
             shell: false,
             windowsHide: true,
             detached: process.platform !== "win32",
-            stdio: ["pipe", "pipe", "pipe"],
+            stdio: ["pipe", "pipe", "pipe", "ipc"],
             env
           });
         } catch {
@@ -38438,15 +38785,18 @@ var require_host_mediated_dispatch = __commonJS({
           return;
         }
         let settled = false;
-        let stdout = "";
+        const stdoutChunks = [];
         let stdoutBytes = 0;
         let stderrBytes = 0;
         const directExit = directExitPromise(child);
-        const finish = (fn, value) => {
+        const finishAfterTreeCompletion = (fn, value) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          fn(value);
+          terminateOwnedProcessTree(child, { ...processLifecycle, env, directExit }).then(() => fn(value)).catch(() => reject(dispatchError(
+            "host_dispatch_failed",
+            "host mediator process tree could not be terminated"
+          )));
         };
         const fail = (code, message) => {
           if (settled) return;
@@ -38463,27 +38813,36 @@ var require_host_mediated_dispatch = __commonJS({
           timeoutMs
         );
         child.once("error", () => fail("host_dispatch_failed", "host mediator process failed"));
-        child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (chunk) => {
-          stdoutBytes += Buffer.byteLength(chunk, "utf8");
-          if (stdoutBytes > maxStdoutBytes) {
-            fail("host_dispatch_failed", "host mediator stdout exceeded its bound");
-            return;
+        child.on("message", (message) => {
+          if (!message || typeof message !== "object") return;
+          if (message.type === "mediator-stdout") {
+            const chunk = Buffer.from(String(message.data || ""), "base64");
+            stdoutBytes += chunk.length;
+            if (stdoutBytes > maxStdoutBytes) {
+              fail("host_dispatch_failed", "host mediator stdout exceeded its bound");
+              return;
+            }
+            stdoutChunks.push(chunk);
+          } else if (message.type === "mediator-stderr") {
+            stderrBytes += Buffer.from(String(message.data || ""), "base64").length;
+            if (stderrBytes > maxStderrBytes) {
+              fail("host_dispatch_failed", "host mediator stderr exceeded its bound");
+            }
+          } else if (message.type === "mediator-error") {
+            fail("host_dispatch_failed", "host mediator process failed");
+          } else if (message.type === "mediator-close") {
+            if (message.code !== 0 || message.signal) {
+              fail("host_dispatch_failed", "host mediator exited unsuccessfully");
+              return;
+            }
+            finishAfterTreeCompletion(
+              resolve,
+              Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8")
+            );
           }
-          stdout += chunk;
         });
-        child.stderr.on("data", (chunk) => {
-          stderrBytes += Buffer.byteLength(chunk);
-          if (stderrBytes > maxStderrBytes) {
-            fail("host_dispatch_failed", "host mediator stderr exceeded its bound");
-          }
-        });
-        child.once("close", (code, signal) => {
-          if (code !== 0 || signal) {
-            fail("host_dispatch_failed", "host mediator exited unsuccessfully");
-            return;
-          }
-          finish(resolve, stdout);
+        child.once("close", () => {
+          if (!settled) fail("host_dispatch_failed", "owned mediator launcher exited unexpectedly");
         });
         child.stdin.once("error", () => fail("host_dispatch_failed", "host mediator stdin failed"));
         child.stdin.end(JSON.stringify(request));
@@ -38518,8 +38877,11 @@ var require_host_mediated_dispatch = __commonJS({
       processSpecFrom,
       agentContract,
       resolveAgentContractPath,
+      resolveMediatorLauncherPath,
+      ownedMediatorProcessSpec,
       CONTRACT_VERSION,
       AGENT_CONTRACT_PATH,
+      MEDIATOR_LAUNCHER_PATH,
       DEFAULT_TIMEOUT_MS,
       MAX_STDOUT_BYTES,
       MAX_STDERR_BYTES,

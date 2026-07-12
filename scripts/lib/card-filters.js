@@ -9,7 +9,7 @@
 const fs = require('node:fs');
 const { jaccard } = require('./score');
 const { isValidProjectId } = require('./validate-project-id');
-const { walkContainedCards, readContainedCard } = require('./card-paths');
+const { walkContainedCardTypes, readContainedCard } = require('./card-paths');
 
 const APPLICABILITY_GUARD_THRESHOLD = 0.5;
 
@@ -31,6 +31,7 @@ function findContainedCard(memoryRoot, row, {
   io = fs,
   platform = process.platform,
   currentProjectId,
+  budget = null,
 } = {}) {
   if (!row || typeof row !== 'object' || typeof row.memory_id !== 'string') return null;
   const isGlobalRow = row.privacy_level === 'global' || !row.project_id;
@@ -42,22 +43,30 @@ function findContainedCard(memoryRoot, row, {
   }
 
   const wantedScope = isGlobalRow ? 'global' : rowProjectId;
+  const readType = (type) => {
+    const read = readContainedCard({
+      root: memoryRoot,
+      currentProjectId: rowProjectId,
+      type,
+      scope: wantedScope,
+      file: `${row.memory_id}.json`,
+    }, { io, platform, budget });
+    if (!read.value) return null;
+    const payload = read.value.payload || read.value;
+    if (payload.memory_id !== row.memory_id || payload.memory_type !== type) return null;
+    return read.value;
+  };
+
+  if (typeof row.memory_type === 'string' && row.memory_type) {
+    return readType(row.memory_type);
+  }
+
   let found = null;
-  walkContainedCards({
-    root: memoryRoot,
-    currentProjectId: rowProjectId,
-    maxFiles: 5000,
-    io,
-    platform,
-    onCard(descriptor) {
-      if (found || descriptor.scope !== wantedScope) return;
-      if (row.memory_type && descriptor.type !== row.memory_type) return;
-      const read = readContainedCard(descriptor, { io, platform });
-      if (!read.value) return;
-      const payload = read.value.payload || read.value;
-      if (payload.memory_id !== row.memory_id) return;
-      if (row.memory_type && payload.memory_type !== row.memory_type) return;
-      found = read.value;
+  walkContainedCardTypes({
+    root: memoryRoot, io, platform, budget,
+    onType(descriptor) {
+      found = readType(descriptor.type);
+      return found ? false : !(budget && budget.exhausted);
     },
   });
   return found;

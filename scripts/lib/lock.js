@@ -1,8 +1,9 @@
-// scripts/lib/lock.js (P9 fix — typed STALE_LOCK propagates instead of being swallowed)
+// scripts/lib/lock.js
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { randomUUID } = require('node:crypto');
 
 const STALE_MS = 5 * 60 * 1000;
 const BACKOFF_MS = 50;
@@ -17,45 +18,141 @@ class StaleLockError extends Error {
   }
 }
 
+function identity(stat) {
+  return stat ? {
+    dev: stat.dev,
+    ino: stat.ino,
+    birthtimeMs: stat.birthtimeMs,
+  } : null;
+}
+
+function inspectLock(lockPath) {
+  const metaPath = path.join(lockPath, 'metadata.json');
+  try {
+    const dirStat = fs.lstatSync(lockPath);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
+    const bytes = fs.readFileSync(metaPath);
+    const metaStat = fs.lstatSync(metaPath);
+    if (metaStat.isSymbolicLink() || !metaStat.isFile()) return null;
+    let meta = null;
+    try { meta = JSON.parse(bytes.toString('utf8')); } catch { /* exact bytes still form a break claim */ }
+    return {
+      lockPath,
+      metaPath,
+      ownerToken: meta && typeof meta.owner_token === 'string' ? meta.owner_token : null,
+      meta,
+      metadataBytes: bytes.toString('base64'),
+      directoryIdentity: identity(dirStat),
+      metadataIdentity: identity(metaStat),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameIdentity(left, right) {
+  if (!left || !right) return false;
+  return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
+}
+
+function sameClaim(left, right) {
+  return Boolean(left && right
+    && left.lockPath === right.lockPath
+    && left.ownerToken === right.ownerToken
+    && left.metadataBytes === right.metadataBytes
+    && sameIdentity(left.directoryIdentity, right.directoryIdentity)
+    && sameIdentity(left.metadataIdentity, right.metadataIdentity));
+}
+
 async function acquire(lockPath, { operation = 'unknown' } = {}) {
-  for (let i = 0; i < MAX_RETRIES; i++) {
+  for (let i = 0; i < MAX_RETRIES; i += 1) {
     try {
       fs.mkdirSync(lockPath);
       const metaPath = path.join(lockPath, 'metadata.json');
-      fs.writeFileSync(metaPath, JSON.stringify({
-        pid: process.pid, host: os.hostname(),
-        created_at: new Date().toISOString(),
-        operation,
-      }, null, 2));
-      return { lockPath, metaPath };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      // P9: only swallow JSON parse / ENOENT during metadata read; propagate StaleLockError
-      let meta = null;
+      const ownerToken = randomUUID();
       try {
-        meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
-      } catch (readErr) { /* malformed or transiently missing — backoff retry */ }
-      if (meta && isStale(meta)) {
-        throw new StaleLockError(lockPath, meta);
+        fs.writeFileSync(metaPath, JSON.stringify({
+          pid: process.pid,
+          host: os.hostname(),
+          created_at: new Date().toISOString(),
+          operation,
+          owner_token: ownerToken,
+        }, null, 2), { flag: 'wx' });
+      } catch (error) {
+        try { fs.rmdirSync(lockPath); } catch { /* only our just-created empty directory is eligible */ }
+        throw error;
       }
-      await new Promise((r) => setTimeout(r, BACKOFF_MS));
+      const claim = inspectLock(lockPath);
+      if (!claim || claim.ownerToken !== ownerToken) {
+        throw new Error(`Could not establish lock ownership at ${lockPath}`);
+      }
+      return { lockPath, metaPath, ownerToken, claim };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const claim = inspectLock(lockPath);
+      if (claim && claim.meta && isStale(claim.meta)) {
+        throw new StaleLockError(lockPath, claim.meta);
+      }
+      await new Promise((resolve) => setTimeout(resolve, BACKOFF_MS));
     }
   }
   throw new Error(`Could not acquire lock at ${lockPath} after ${MAX_RETRIES * BACKOFF_MS}ms`);
 }
 
+function restoreMismatchedClaim(retiredPath, lockPath) {
+  try {
+    if (!fs.existsSync(lockPath)) fs.renameSync(retiredPath, lockPath);
+  } catch { /* fail closed: never recursively remove an unverified directory */ }
+}
+
+function removeClaimedDirectory(lockPath, claim) {
+  const observed = inspectLock(lockPath);
+  if (!sameClaim(observed, claim)) return false;
+  const retiredPath = `${lockPath}.retired-${randomUUID()}`;
+  try { fs.renameSync(lockPath, retiredPath); }
+  catch { return false; }
+  const retiredClaim = { ...claim, lockPath: retiredPath, metaPath: path.join(retiredPath, 'metadata.json') };
+  const retiredObserved = inspectLock(retiredPath);
+  if (!sameClaim(retiredObserved, retiredClaim)) {
+    restoreMismatchedClaim(retiredPath, lockPath);
+    return false;
+  }
+  try {
+    const entries = fs.readdirSync(retiredPath);
+    if (entries.length !== 1 || entries[0] !== 'metadata.json') {
+      restoreMismatchedClaim(retiredPath, lockPath);
+      return false;
+    }
+    fs.unlinkSync(path.join(retiredPath, 'metadata.json'));
+    fs.rmdirSync(retiredPath);
+    return true;
+  } catch {
+    restoreMismatchedClaim(retiredPath, lockPath);
+    return false;
+  }
+}
+
 function release(handle) {
-  if (!handle) return;
-  try { fs.rmSync(handle.lockPath, { recursive: true, force: true }); }
-  catch (e) { /* best-effort */ }
+  if (!handle || !handle.claim || handle.ownerToken !== handle.claim.ownerToken) return false;
+  return removeClaimedDirectory(handle.lockPath, handle.claim);
 }
 
 function isStale(meta) {
   return (Date.now() - new Date(meta.created_at).getTime()) > STALE_MS;
 }
 
-function breakLock(lockPath) {
-  fs.rmSync(lockPath, { recursive: true, force: true });
+function breakLock(lockPath, observedClaim) {
+  if (!observedClaim || observedClaim.lockPath !== lockPath) return false;
+  return removeClaimedDirectory(lockPath, observedClaim);
 }
 
-module.exports = { acquire, release, isStale, breakLock, StaleLockError, STALE_MS, BACKOFF_MS };
+module.exports = {
+  acquire,
+  release,
+  inspectLock,
+  isStale,
+  breakLock,
+  StaleLockError,
+  STALE_MS,
+  BACKOFF_MS,
+};
