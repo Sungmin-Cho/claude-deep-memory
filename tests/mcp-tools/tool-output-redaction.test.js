@@ -43,6 +43,21 @@ const NATIVE_WINDOWS_DIAGNOSTICS = WINDOWS_PATHS.map(
 );
 const NATIVE_DIAGNOSTIC_TEXT = NATIVE_WINDOWS_DIAGNOSTICS.join(' | ');
 
+function nodeOptionsRequireSpec(preload, { platform = process.platform } = {}) {
+  let value = String(preload);
+  if (platform === 'win32') value = value.replaceAll('\\', '/');
+  if (/["\r\n]/.test(value)) throw new Error('unsafe_preload_path');
+  return `--require="${value}"`;
+}
+
+function throwingFsPreloadSource({
+  separator = path.sep,
+  diagnostic = NATIVE_DIAGNOSTIC_TEXT,
+} = {}) {
+  const needle = ['indexes', 'v2', 'lexical.sqlite'].join(separator);
+  return `'use strict';\nconst fs = require('node:fs');\nconst original = fs.existsSync;\nfs.existsSync = function (value) {\n  if (String(value).includes(${JSON.stringify(needle)})) {\n    throw new Error(${JSON.stringify(`native search failed ${diagnostic}`)});\n  }\n  return original.call(this, value);\n};\n`;
+}
+
 function fixture(t, prefix) {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(value, { recursive: true, force: true }));
@@ -253,14 +268,28 @@ test('source and bundle do not let an extended current HOME bypass tool and erro
   }
 });
 
+test('Windows caught-error preload option serializes a slash-stable absolute path', () => {
+  const preload = String.raw`C:\Users\Runner Admin\memory Ω\throwing-fs-preload.cjs`;
+  const option = nodeOptionsRequireSpec(preload, { platform: 'win32' });
+  assert.equal(option, '--require="C:/Users/Runner Admin/memory Ω/throwing-fs-preload.cjs"');
+});
+
+test('Windows caught-error preload source escapes its separator needle', () => {
+  const separator = '\\';
+  const source = throwingFsPreloadSource({ separator, diagnostic: 'safe diagnostic' });
+  const needle = ['indexes', 'v2', 'lexical.sqlite'].join(separator);
+  assert.match(source, new RegExp(`includes\\(${JSON.stringify(JSON.stringify(needle)).slice(1, -1)}\\)`));
+  assert.doesNotThrow(() => new Function(source));
+});
+
 test('caught native-search diagnostics containing paths and secrets are redacted on stdio', async (t) => {
   const workspaceRoot = fixture(t, 'dm-tool-error-workspace-');
   const memoryRoot = fixture(t, 'dm-tool-error-memory-');
   writeValidProjectProfile(workspaceRoot);
   const preload = path.join(memoryRoot, 'throwing-fs-preload.cjs');
-  fs.writeFileSync(preload, `'use strict';\nconst fs = require('node:fs');\nconst original = fs.existsSync;\nfs.existsSync = function (value) {\n  if (String(value).includes('indexes${path.sep}v2${path.sep}lexical.sqlite')) {\n    throw new Error(${JSON.stringify(`native search failed ${NATIVE_DIAGNOSTIC_TEXT}`)});\n  }\n  return original.call(this, value);\n};\n`);
+  fs.writeFileSync(preload, throwingFsPreloadSource());
   const session = await start(t, workspaceRoot, memoryRoot, {
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require="${preload}"`.trim(),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} ${nodeOptionsRequireSpec(preload)}`.trim(),
   });
   try {
     const response = await session.request('tools/call', {
