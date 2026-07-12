@@ -12,8 +12,10 @@ function mkRoot() {
   return tmp;
 }
 
+const PROJECT_ID = 'proj_aaaaaaaaaaaa';
+
 function plant(tmp, payload) {
-  const scope = payload.privacy_level === 'global' ? 'global' : 'proj_test';
+  const scope = payload.privacy_level === 'global' ? 'global' : PROJECT_ID;
   const dir = path.join(tmp, 'cards', payload.memory_type, scope);
   fs.mkdirSync(dir, { recursive: true });
   const wrapped = {
@@ -63,7 +65,7 @@ test('Task 5.4: same dedupe_key + contradicting applicability → applicability_
       search_keywords: [], tags: [], status: 'candidate', status_history: [],
       confidence: 0.6,
     });
-    const result = detectDedupeCollisions(tmp);
+    const result = detectDedupeCollisions(tmp, { projectId: PROJECT_ID });
     assert.strictEqual(result.scanned, 2);
     assert.strictEqual(result.collisions.length, 1);
     assert.strictEqual(result.collisions[0].dedupe_key, 'sha256:shared');
@@ -90,7 +92,7 @@ test('Task 5.4: same dedupe_key + identical applicability → duplicate', () => 
         confidence: 0.6,
       });
     }
-    const result = detectDedupeCollisions(tmp);
+    const result = detectDedupeCollisions(tmp, { projectId: PROJECT_ID });
     assert.strictEqual(result.collisions[0].contradiction_kind, 'duplicate');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -114,7 +116,7 @@ test('Task 5.4: distinct dedupe_key → no collision', () => {
       search_keywords: [], tags: [], status: 'candidate', status_history: [],
       confidence: 0.5,
     });
-    const result = detectDedupeCollisions(tmp);
+    const result = detectDedupeCollisions(tmp, { projectId: PROJECT_ID });
     assert.strictEqual(result.collisions.length, 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

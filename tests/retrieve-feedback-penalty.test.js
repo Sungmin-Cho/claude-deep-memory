@@ -33,7 +33,7 @@ function plantCard(tmp, projectId, payload) {
     payload,
   };
   fs.writeFileSync(path.join(dir, payload.memory_id + '.json'), JSON.stringify(wrapped, null, 2));
-  const idx = openIndex(path.join(tmp, 'indexes', 'lexical.sqlite'));
+  const idx = openIndex(path.join(tmp, 'indexes', 'v2', 'lexical.sqlite'));
   try {
     upsertCard(idx, wrapped, { projectId: payload.privacy_level === 'global' ? '' : projectId });
   } finally {

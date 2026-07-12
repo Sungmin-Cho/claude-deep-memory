@@ -3,27 +3,43 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
+const { resolveProjectScope } = require('./lib/project-resolver');
 const { createHash } = require('node:crypto');
 const { wrap } = require('./lib/envelope');
-const { redactObject, redactString } = require('./lib/redact');
+const { redactObject, redactString, redactPersistedPath } = require('./lib/redact');
+const { expandHomePath } = require('./lib/path-utils');
 const { dedupeKey } = require('./lib/dedupe');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
 const { acquire, release } = require('./lib/lock');
 const { refine: llmBridgeRefine } = require('./lib/llm-bridge');
 const { validateProjectId } = require('./lib/validate-project-id');
+const { truncateUtf8 } = require('./lib/utf8-truncate');
+const { mutateContainedCard, writeContainedCard } = require('./lib/card-paths');
 
 const REVIEW_AFTER_DAYS = 90;
 const LEASE_STALE_MS = 30 * 60 * 1000; // 30 min — spec §"Phase 2 Task 2.5"
 const PASS2_EXCERPT_BYTES = 4096; // spec §7.2 — bounded LLM input
-const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER']);
+const STEP_B_FALLBACK_CODES = new Set([
+  'SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_NOT_WIRED', 'UNKNOWN_ADAPTER',
+  'host_dispatch_unavailable', 'host_dispatch_failed', 'host_dispatch_timeout',
+  'host_dispatch_contract_mismatch', 'host_dispatch_invalid_output',
+]);
+
+function stepBWarning(error) {
+  const code = STEP_B_FALLBACK_CODES.has(error && error.code)
+    ? error.code
+    : 'host_dispatch_failed';
+  const detail = redactString(error && error.message ? error.message : 'Step B refinement failed');
+  return truncateUtf8(`${code}: ${detail.replace(/[\r\n]+/g, ' ')}`, 512);
+}
 
 // FTS5 index module — graceful degradation (v0.1.2). On Node v26+ where
 // better-sqlite3 prebuilt binaries are unavailable AND the plugin cache is
 // immutable, harvest must still write cards/events to disk; only the FTS5
-// upsert is skipped and an explicit warning surfaces. /deep-memory-brief
-// returns empty + warning in the same regime. sql.js WASM fallback is the
-// proper fix and is deferred to v0.2.0 (see docs/handoff-phase-4-6.md).
+// upsert is skipped and an explicit warning surfaces. Retrieval continues
+// through the bounded privacy-scoped card scan.
 //
 // Round-5 ITEM-4 (hard-throw on FTS5 require failure) had the right intent
 // for environments where the user CAN fix the build, but was the wrong
@@ -33,8 +49,8 @@ const STEP_B_FALLBACK_CODES = new Set(['SCHEMA_VIOLATION', 'TIMEOUT', 'ADAPTER_N
 const FTS_DEGRADED_WARNING =
   'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
   'environment). harvest continues — cards and events are written to disk — ' +
-  'but /deep-memory-brief will return empty results until the index is ' +
-  'restored (use Node 22 LTS, or wait for v0.2.0 sql.js fallback). ' +
+  '/deep-memory-brief continues through a bounded privacy-scoped card scan. ' +
+  'Use Node 22 LTS to restore native indexed retrieval. ' +
   'See README.md > Troubleshooting.';
 let fts = null;
 let ftsLoadError = null;
@@ -429,7 +445,7 @@ function quarantineEmptyClaim({ memoryRoot, runId, sourceMeta, rejected }) {
     // into any deep-memory output file (spec §11.1 privacy invariant).
     source: {
       ...sourceMeta,
-      path: redactString(sourceMeta.path),
+      path: redactPersistedPath(sourceMeta.path),
     },
     rejected_count: rejected.length,
     rejected,
@@ -441,7 +457,10 @@ function buildSourceMeta(artifactPath, raw, sourceKind) {
   // ITEM-3-r5: resolve relative paths to absolute so provenance is stable across cwd changes.
   // audit cross-cwd would resolve relative paths against THAT cwd → false-positive missing/drift.
   // After redaction (ITEM-2 r1), the absolute path becomes ~/... which expandTilde in audit handles.
-  const resolvedPath = path.resolve(artifactPath);
+  // Persist the physical spelling so Windows 8.3 aliases (for example the
+  // runner temp directory) cannot evade current-HOME canonicalization and
+  // become an irreversible generic-user redaction token.
+  const resolvedPath = fs.realpathSync.native(path.resolve(artifactPath));
   return {
     id: 'src_0',
     path: resolvedPath,
@@ -504,7 +523,7 @@ function buildCardFromDraft(draft, sourceMeta, cwd = null) {
   // envelope.provenance.source_artifacts[].path (spec §11.1 / line 812).
   const redactedSourceArtifacts = source_artifacts.map((sa) => ({
     ...sa,
-    path: redactString(sa.path),
+    path: redactPersistedPath(sa.path),
   }));
   // ITEM-4-r5: thread cwd to wrap so gitStateSafe captures the correct repo's git state
   // when process.cwd() differs from the project directory (SDK-style invocation).
@@ -571,6 +590,8 @@ async function harvestArtifact({
   liveAgent = false,
   liveCodex = false,
   batchMode = false,
+  llmHostProcessSpec,
+  llmHostDispatchTimeoutMs = 30000,
   cwd = null,  // ITEM-4-r5: optional cwd for gitStateSafe in envelope
 }) {
   // ITEM-2-r4: validate projectId at entry boundary before any path.join site
@@ -617,23 +638,33 @@ async function harvestArtifact({
 
   // Step B (LLM refinement) — Pass 2 redaction + llm-bridge.refine + graceful fallback.
   // spec §7.2: SCHEMA_VIOLATION / TIMEOUT / ADAPTER_NOT_WIRED → candidate fallback.
+  const stepBWarnings = [];
   if (!skipDistillStepB) {
     // Pass 2 redaction — payload excerpt sent to the sub-agent, bounded to 4 KiB.
-    const sourceExcerpt = JSON.stringify(redactObject(raw.payload || {})).slice(0, PASS2_EXCERPT_BYTES);
+    const sourceExcerpt = truncateUtf8(
+      JSON.stringify(redactObject(raw.payload || {})),
+      PASS2_EXCERPT_BYTES,
+    );
+    if (Buffer.byteLength(sourceExcerpt, 'utf8') > PASS2_EXCERPT_BYTES) {
+      throw new Error('Step B source excerpt exceeded its UTF-8 byte boundary');
+    }
     for (const d of drafts) {
       let stepB = null;
       try {
-        stepB = await llmBridgeRefine(d, sourceExcerpt, {
+        stepB = await llmBridgeRefine(redactObject(d), sourceExcerpt, {
           adapter: llmAdapter,
           recordedFixture: llmRecordedFixture,
           timeoutMs: llmTimeoutMs,
-          liveAgent,
-          liveCodex,
           batchMode,
+          hostProcessSpec: llmHostProcessSpec,
+          hostDispatchTimeoutMs: llmHostDispatchTimeoutMs,
+          ...(liveAgent ? { liveAgent: true } : {}),
+          ...(liveCodex ? { liveCodex: true } : {}),
         });
       } catch (e) {
         if (STEP_B_FALLBACK_CODES.has(e.code)) {
           stepB = null; // candidate fallback (spec §7.2)
+          stepBWarnings.push(stepBWarning(e));
         } else {
           throw e; // unexpected — surface to caller
         }
@@ -652,13 +683,17 @@ async function harvestArtifact({
   // `Cannot find module '/Users/.../better-sqlite3.node'`). Route through
   // redactString to honor the repo's 3-pass privacy invariant before the
   // message is mirrored to disk in `latest-harvest.json`.
+  const warnings = [...stepBWarnings];
   if (!fts) {
     const causeRedacted = ftsLoadError ? redactString(ftsLoadError) : '';
+    warnings.push(FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : ''));
+  }
+  if (warnings.length > 0) {
     Object.defineProperty(cards, 'warnings', {
       enumerable: false,
       configurable: true,
       writable: true,
-      value: [FTS_DEGRADED_WARNING + (causeRedacted ? ` (cause: ${causeRedacted})` : '')],
+      value: warnings,
     });
   }
   return cards;
@@ -741,7 +776,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
         // this redaction (see eventKey() above), so idempotency is not affected.
         source: {
           ...sourceMeta,
-          path: redactString(sourceMeta.path),
+          path: redactPersistedPath(sourceMeta.path),
         },
         run_id: sourceMeta.run_id,
         at: new Date().toISOString(),
@@ -755,25 +790,20 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
     // R2 partial fix (Phase 6 dispatch) — full spec §6.4 union-merge deferred to v0.1.x
     // ITEM-1-r2: check global/ scope first to prevent shadowing promoted cards
     for (const c of cards) {
-      const localDir = path.join(memoryRoot, 'cards', c.payload.memory_type, projectId);
-      const globalDir = path.join(memoryRoot, 'cards', c.payload.memory_type, 'global');
-      const localPath = path.join(localDir, c.payload.memory_id + '.json');
-      const globalPath = path.join(globalDir, c.payload.memory_id + '.json');
-
-      let existing = null, writePath = null, writeDir = null;
-      if (fs.existsSync(globalPath)) {
-        existing = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
-        writePath = globalPath;
-        writeDir = globalDir;
-      } else if (fs.existsSync(localPath)) {
-        existing = JSON.parse(fs.readFileSync(localPath, 'utf8'));
-        writePath = localPath;
-        writeDir = localDir;
-      } else {
-        writePath = localPath;
-        writeDir = localDir;
-      }
-      fs.mkdirSync(writeDir, { recursive: true });
+      const baseDescriptor = {
+        root: memoryRoot,
+        currentProjectId: projectId,
+        type: c.payload.memory_type,
+        file: c.payload.memory_id + '.json',
+      };
+      const globalDescriptor = { ...baseDescriptor, scope: 'global' };
+      const localDescriptor = { ...baseDescriptor, scope: projectId };
+      const globalRead = mutateContainedCard(globalDescriptor, { action: 'read' });
+      const localRead = globalRead.exists
+        ? { exists: false, value: null }
+        : mutateContainedCard(localDescriptor, { action: 'read' });
+      const existing = globalRead.value || localRead.value || null;
+      const writeDescriptor = globalRead.exists ? globalDescriptor : localDescriptor;
 
       if (existing && existing.payload) {
         // Preserve user-accumulated state; refresh source-driven fields + last_seen_at
@@ -803,14 +833,14 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
           c.payload.privacy_level = 'global';
         }
       }
-      writeJsonAtomic(writePath, c);
+      writeContainedCard(writeDescriptor, c);
     }
 
     // 5. FTS5 upsert in same lock window (v0.1.2 — graceful degradation:
     //    `fts === null` when better-sqlite3 require failed; cards/events
     //    are still written, but the index is not populated.)
     if (fts && fts.openIndex && fts.upsertCard) {
-      const idx = fts.openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+      const idx = fts.openIndex(v2LexicalIndexPath(memoryRoot));
       try {
         if (idx.driver === 'better-sqlite3') idx.db.exec('BEGIN');
         for (const c of cards) {
@@ -856,6 +886,7 @@ module.exports = {
   mergeStepB,
   PASS2_EXCERPT_BYTES,
   STEP_B_FALLBACK_CODES,
+  stepBWarning,
   REVIEW_AFTER_DAYS,
   LEASE_STALE_MS,
   FTS_DEGRADED_WARNING,
@@ -865,10 +896,6 @@ module.exports = {
 // ITEM-6-r3: CLI entry point — minimal single-artifact invocation for v0.1.0.
 // Full config.yaml-driven glob scan is deferred to v0.1.x (see docs/handoff-phase-4-6.md).
 if (require.main === module) {
-  // ITEM-1-r5: import projectId deriver from init.js for mismatch guard (fail-closed).
-  // Placed inside require.main block to avoid circular-require risk for library callers.
-  const { projectId: deriveProjectId } = require('./init');
-
   const args = process.argv.slice(2);
   // Parse --kind=<sourceKind> or --kind <sourceKind>
   let sourceKind = null;
@@ -888,23 +915,42 @@ if (require.main === module) {
     }
   }
   const artifactPath = remainingArgs[0] || null;
-  const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
+  const memoryRoot = expandHomePath(
+    process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory'),
+  );
+  const rebuildFromEvents = args.includes('--rebuild-from-events');
+  const skipDistillStepB = args.includes('--skip-distill-step-b');
+  if (!rebuildFromEvents && (!artifactPath || !sourceKind)) {
+    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>] [--skip-distill-step-b]');
+    console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
+    console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
+    console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
+    process.exit(1);
+  }
+  const cwd = fs.realpathSync.native(process.cwd());
+  const projectScope = resolveProjectScope(cwd);
+  if (projectScope.scope !== 'project' || !projectScope.projectId) {
+    console.error(`project scope unavailable: ${projectScope.warning || 'project_profile_untrusted'}`);
+    process.exit(1);
+  }
+  if (projectId !== null && projectId !== projectScope.projectId) {
+    console.error('requested project_id does not match the trusted project profile');
+    process.exit(1);
+  }
+  const finalProjectId = projectScope.projectId;
 
   // IMPL-R1-G — `--rebuild-from-events --session <id>` flag for eager-distill
   // child spawned from pre-compact.mjs / session-end.mjs (per spec §3.2.1
   // fire-and-forget). Runs runLazyDistill on the session-filtered event tail.
-  const rebuildFromEvents = args.includes('--rebuild-from-events');
   let sessionFilter = null;
   for (let i = 0; i < args.length - 1; i++) {
     if (args[i] === '--session') { sessionFilter = args[i + 1]; break; }
   }
   if (rebuildFromEvents) {
     const { runLazyDistill } = require('./lib/distill-pipeline.js');
-    const { resolveCurrentProject } = require('./lib/project-resolver.js');
-    const projectIdForDistill = projectId || resolveCurrentProject(process.cwd());
     runLazyDistill({
       root: memoryRoot,
-      projectId: projectIdForDistill,
+      projectId: finalProjectId,
       config: {
         skip_llm: true,
         distill: { detectors: { session_summary: { always_emit: false } } },
@@ -920,47 +966,7 @@ if (require.main === module) {
     return;
   }
 
-  if (!artifactPath || !sourceKind) {
-    console.error('Usage: node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]');
-    console.error('   OR: node scripts/harvest.js --rebuild-from-events [--session <sessionId>] [--project <projectId>]');
-    console.error('  sourceKind: review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index');
-    console.error('  Full config-driven scan deferred to v0.1.x — for v0.1.0, harvest one artifact at a time.');
-    process.exit(1);
-  }
-
-  const cwd = process.cwd();
-  let profile = null;
-  try {
-    profile = JSON.parse(fs.readFileSync(path.join(cwd, '.deep-memory', 'project-profile.json'), 'utf8'));
-  } catch { /* no profile — use fallback */ }
-
-  // ITEM-1-r5: fail-closed profile mismatch guard — harvest writes are STRONGER than brief reads.
-  // If the user did NOT explicitly pass --project and the profile's project_id doesn't match
-  // what the current cwd would derive, refuse rather than writing cards under the wrong scope.
-  if (!projectId && profile && profile.project_id) {
-    const cwdProjectId = deriveProjectId(cwd);
-    if (profile.project_id !== cwdProjectId) {
-      console.error(
-        `Error: project-profile mismatch — profile says project_id=${profile.project_id.slice(0, 13)} ` +
-        `but cwd derives ${cwdProjectId.slice(0, 13)}. ` +
-        `Refusing harvest (cards would be written under the wrong scope). ` +
-        `Run /deep-memory-init to refresh the profile after a workspace move.`
-      );
-      process.exit(1);
-    }
-  }
-
-  const finalProjectId = projectId || profile?.project_id || 'proj_unknown';
-
-  // ITEM-2-r4: validate before passing to harvestArtifact (CLI entry boundary)
-  try {
-    validateProjectId(finalProjectId);
-  } catch (e) {
-    console.error(e.message);
-    process.exit(1);
-  }
-
-  harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB: true })
+  harvestArtifact({ artifactPath, sourceKind, memoryRoot, projectId: finalProjectId, skipDistillStepB })
     .then((cards) => {
       const warnings = Array.isArray(cards.warnings) ? cards.warnings : [];
       const wasSkipped = cards.skipped === true;

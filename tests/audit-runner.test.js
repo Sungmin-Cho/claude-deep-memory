@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { harvestArtifact } = require('../scripts/harvest');
 const { run: runAudit, resolveMemoryRoot } = require('../scripts/audit');
+const { writeValidProjectProfile } = require('./helpers/project-profile-fixtures');
 
 function setup() {
   const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-aud-mem-'));
@@ -13,9 +14,11 @@ function setup() {
   for (const sub of ['cards', 'events', 'indexes', 'projects', '.leases']) {
     fs.mkdirSync(path.join(memoryRoot, sub), { recursive: true });
   }
+  const profile = writeValidProjectProfile(projectDir);
   return {
     memoryRoot,
     projectDir,
+    projectId: profile.project_id,
     cleanup: () => {
       fs.rmSync(memoryRoot, { recursive: true, force: true });
       fs.rmSync(projectDir, { recursive: true, force: true });
@@ -24,13 +27,13 @@ function setup() {
 }
 
 test('Task 5.8: run() aggregates 6 sub-results and atomic-writes latest-audit.json', async () => {
-  const { memoryRoot, projectDir, cleanup } = setup();
+  const { memoryRoot, projectDir, projectId, cleanup } = setup();
   try {
     await harvestArtifact({
       artifactPath: path.join(__dirname, 'fixtures/sample-recurring-findings.json'),
       sourceKind: 'review-recurring',
       memoryRoot,
-      projectId: 'proj_aaaaaaaaaaaa',
+      projectId,
       skipDistillStepB: true,
     });
     const result = await runAudit({ memoryRoot, projectDir });
@@ -85,10 +88,10 @@ test('Task 5.8: resolveMemoryRoot honors env + ~ + arg precedence', () => {
 });
 
 test('Task 5.8: issues aggregate across sub-feature results (corrupted card surfaces in schema)', async () => {
-  const { memoryRoot, projectDir, cleanup } = setup();
+  const { memoryRoot, projectDir, projectId, cleanup } = setup();
   try {
     // plant a structurally broken card
-    const dir = path.join(memoryRoot, 'cards', 'pattern', 'proj_aaaaaaaaaaaa');
+    const dir = path.join(memoryRoot, 'cards', 'pattern', projectId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'mem_broken.json'), '{ NOT JSON');
     const result = await runAudit({ memoryRoot, projectDir });

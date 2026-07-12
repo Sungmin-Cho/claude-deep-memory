@@ -17,6 +17,7 @@ const { rrfFuse } = require('./rrf-fusion');
 const { embedText, probeModelVersion } = require('./embed-model');
 const { openIndex, searchVector } = require('./vector-index');
 const { locateCard, isNotDeprecated, passesApplicabilityGuard, tokenize } = require('./card-filters');
+const { createCardFilesystemBudget } = require('./card-paths');
 
 /**
  * γ.6 — session_id diversification (Stage 8 of 6-stage rerank extension).
@@ -66,7 +67,8 @@ function probeStreams(root) {
  * @param {string} args.query - query text
  * @param {string} args.currentProjectId
  * @param {string} args.root - $DEEP_MEMORY_ROOT
- * @param {Function} args.ftsSearch - injected FTS5 search: ({query, currentProjectId, topK}) => [{memory_id, project_id, ...}]
+ * @param {Function} args.ftsSearch - structured lexical search returning
+ *                   {rows, stream: 'fts5'|'card-scan', warnings}
  *                   (caller-provided to avoid coupling to scripts/lib/fts-index.js
  *                    which is being widened separately per γ.1)
  * @param {number} [args.topN=5] - final result count
@@ -83,14 +85,21 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
     : { vector_available: false, warnings: [] };
   const streamsUsed = [];
 
-  // Stream A — FTS5 (always available unless caller passes null)
+  // Stream A — native FTS5 or the bounded card scan selected by the callback.
   let ftsStream = [];
   if (ftsSearch) {
     try {
-      ftsStream = await ftsSearch({ query, currentProjectId, topK });
-      streamsUsed.push('fts5');
+      const lexical = await ftsSearch({ query, currentProjectId, topK });
+      if (!lexical || typeof lexical !== 'object' || !Array.isArray(lexical.rows)
+        || !['fts5', 'card-scan'].includes(lexical.stream)
+        || !Array.isArray(lexical.warnings)) {
+        throw new TypeError('structured lexical result required');
+      }
+      ftsStream = lexical.rows;
+      warnings.push(...lexical.warnings.filter((warning) => typeof warning === 'string'));
+      streamsUsed.push(lexical.stream);
     } catch (e) {
-      warnings.push(`fts_stream_error: ${e.message}`);
+      warnings.push(`fts_stream_error: ${e && e.message ? e.message : 'lexical search failed'}`);
     }
   } else {
     warnings.push('fts_stream_skipped: no ftsSearch callback provided');
@@ -131,16 +140,17 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
   // memory content the user removed. The skew is surfaced as ONE bounded
   // warning (no card content echoed) pointing at the audit repair path.
   const taskTokens = tokenize(query);
+  const budget = createCardFilesystemBudget(5000);
   let unlocatable = 0;
   const filtered = [];
   for (const row of fused) {
-    const card = locateCard(root, row);
+    const card = locateCard(root, row, { currentProjectId, budget });
     if (!card) { unlocatable += 1; continue; }
     if (!(isNotDeprecated(card) && passesApplicabilityGuard(card, taskTokens))) continue;
     // R4 #3 — rrfFuse may pick a vector row (ids/score only) as the duplicate
     // representative; fill fields the row lacks from the payload we just
     // validated so MCP consumers keep claim/memory_type/session_id.
-    const p = card.payload || {};
+    const p = card.payload || card;
     filtered.push({
       ...row,
       claim: row.claim ?? p.claim,
@@ -154,6 +164,7 @@ async function runHybridRetrieve({ query, currentProjectId, root, ftsSearch, top
       `(index/card skew?) — run /deep-memory-audit`
     );
   }
+  if (budget.exhausted) warnings.push('card_filesystem_budget_exhausted');
 
   // Stage 8 — session diversification (γ.6)
   const maxPerSession = (config.brief && config.brief.max_per_session) || 3;

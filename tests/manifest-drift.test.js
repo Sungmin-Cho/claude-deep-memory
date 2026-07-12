@@ -11,8 +11,9 @@ const root = path.resolve(__dirname, '..');
 const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
 const codexManifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const codexHooksPath = path.join(root, codexManifest.hooks || '');
+const codexHooksPath = path.join(root, 'hooks', 'hooks.json');
 const mcpManifest = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
+const initSkill = fs.readFileSync(path.join(root, 'skills', 'deep-memory-init', 'SKILL.md'), 'utf8');
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
   assert.strictEqual(claudeManifest.version, pkg.version, `claude=${claudeManifest.version} pkg=${pkg.version}`);
@@ -39,7 +40,7 @@ test('manifest-drift: all skill SKILL.md frontmatter — strict YAML + descripti
     const sf = path.join(skillsDir, skill, 'SKILL.md');
     if (!fs.existsSync(sf)) continue;
     const txt = fs.readFileSync(sf, 'utf8');
-    const fmMatch = txt.match(/^---\n([\s\S]+?)\n---/);
+    const fmMatch = txt.match(/^---\r?\n([\s\S]+?)\r?\n---(?:\r?\n|$)/);
     assert.ok(fmMatch, `${skill}: no frontmatter`);
     let fm;
     try { fm = yaml.load(fmMatch[1]); }
@@ -48,6 +49,35 @@ test('manifest-drift: all skill SKILL.md frontmatter — strict YAML + descripti
       `${skill}: missing description`);
     assert.ok(fm.description.length <= 1024,
       `${skill} description ${fm.description.length} chars (Codex limit)`);
+  }
+});
+
+test('manifest-drift: all agent frontmatter is strict YAML with bounded required metadata', () => {
+  const agentsDir = path.join(root, 'agents');
+  if (!fs.existsSync(agentsDir)) return;
+
+  for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const txt = fs.readFileSync(path.join(agentsDir, entry.name), 'utf8');
+    const fmMatch = txt.match(/^---\r?\n([\s\S]+?)\r?\n---(?:\r?\n|$)/);
+    assert.ok(fmMatch, `${entry.name}: no frontmatter`);
+
+    let fm;
+    try { fm = yaml.load(fmMatch[1]); }
+    catch (e) { assert.fail(`${entry.name}: strict YAML parse error: ${e.message}`); }
+
+    assert.ok(fm && typeof fm === 'object' && !Array.isArray(fm),
+      `${entry.name}: frontmatter must be a mapping`);
+    assert.ok(typeof fm.name === 'string' && fm.name.trim().length > 0,
+      `${entry.name}: missing name`);
+    assert.ok(typeof fm.description === 'string' && fm.description.trim().length > 0,
+      `${entry.name}: missing description`);
+    assert.ok(fm.description.length <= 1024,
+      `${entry.name}: description ${fm.description.length} chars (host limit)`);
+    assert.ok(typeof fm.tools === 'string' && fm.tools.trim().length > 0,
+      `${entry.name}: tools must be a non-empty comma-separated string`);
+    assert.ok(fm.tools.split(',').every((tool) => tool.trim().length > 0),
+      `${entry.name}: tools contains an empty entry`);
   }
 });
 
@@ -65,30 +95,56 @@ test('manifest-drift: codex manifest interface block present', () => {
   }
 });
 
-test('manifest-drift: codex hooks use external hooks.json with Claude hook shape', () => {
-  assert.strictEqual(codexManifest.hooks, './hooks/hooks.json');
+test('manifest-drift: Codex default hooks contain the exact supported host subset', () => {
+  assert.strictEqual(Object.hasOwn(codexManifest, 'hooks'), false);
   const hooksManifest = JSON.parse(fs.readFileSync(codexHooksPath, 'utf8'));
   assert.ok(hooksManifest.hooks, 'codex hooks manifest missing hooks block');
-  for (const hookName of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd']) {
+  assert.deepStrictEqual(
+    Object.keys(hooksManifest.hooks).sort(),
+    ['PostToolUse', 'PreCompact', 'SessionStart', 'UserPromptSubmit'],
+  );
+  for (const hookName of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact']) {
     assert.ok(Array.isArray(hooksManifest.hooks[hookName]), `missing ${hookName} hooks`);
     assert.ok(hooksManifest.hooks[hookName].length > 0, `${hookName} hooks empty`);
+    const handlers = hooksManifest.hooks[hookName].flatMap((entry) => entry.hooks || []);
+    assert.strictEqual(handlers.length, 1, `${hookName} must have one handler`);
+    assert.match(handlers[0].command, /^node "\$\{PLUGIN_ROOT\}\//);
+    assert.match(handlers[0].commandWindows, /^node "%PLUGIN_ROOT%\\/);
   }
 });
 
-test('manifest-drift: MCP manifests use bundled dist entrypoint', () => {
-  const expectedArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
+test('manifest-drift: Claude retains its quoted six-event inline hook surface', () => {
+  const expected = ['PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd', 'SessionStart', 'UserPromptSubmit'];
+  assert.deepStrictEqual(Object.keys(claudeManifest.hooks).sort(), expected);
+  for (const event of expected) {
+    const handlers = claudeManifest.hooks[event].flatMap((entry) => entry.hooks || []);
+    assert.strictEqual(handlers.length, 1, event);
+    assert.match(handlers[0].command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\//, event);
+  }
+});
+
+test('manifest-drift: MCP manifests use their host-native bundled entrypoint', () => {
+  const claudeArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
   assert.deepStrictEqual(
     claudeManifest.mcpServers['deep-memory'].args,
-    expectedArgs,
+    claudeArgs,
     'Claude Code MCP entrypoint must use bundled dist server',
   );
   assert.deepStrictEqual(
     mcpManifest.mcpServers['deep-memory'].args,
-    expectedArgs,
-    'Codex MCP entrypoint must use bundled dist server via .mcp.json',
+    ['./dist/mcp-server.cjs'],
+    'Codex MCP entrypoint must be plugin-relative via .mcp.json',
   );
+  assert.strictEqual(mcpManifest.mcpServers['deep-memory'].cwd, '.');
   assert.ok(
     fs.existsSync(path.join(root, 'dist/mcp-server.cjs')),
     'bundled dist/mcp-server.cjs must be committed for node_modules-free installs',
   );
+});
+
+test('manifest-drift: init guidance uses native Windows paths and keeps UNC opt-in explicit', () => {
+  assert.match(initSkill, /C:\\Users\\me\\\.deep-memory/);
+  assert.doesNotMatch(initSkill, /POSIX form 필수/);
+  assert.doesNotMatch(initSkill, /Windows 사용자는 `\/c\/\.\.\.` 또는 `\/mnt\/c\/\.\.\.`/);
+  assert.match(initSkill, /UNC[^\n]*--allow-network-root/);
 });

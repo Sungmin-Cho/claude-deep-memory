@@ -50,10 +50,10 @@ test('events JSONL source.path is redacted — home dir never leaks into events 
       `event source.path must not contain raw home dir. Got: ${JSON.stringify(sourcePath)}`
     );
 
-    // Must have ~/ prefix (redactString replaces homedir() with ~/)
+    // Must have a native ~/ or ~\ prefix after the home directory collapses.
     assert.ok(
-      sourcePath.startsWith('~/'),
-      `event source.path must start with ~/. Got: ${JSON.stringify(sourcePath)}`
+      sourcePath.startsWith(`~${path.sep}`),
+      `event source.path must start with a native home token. Got: ${JSON.stringify(sourcePath)}`
     );
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });

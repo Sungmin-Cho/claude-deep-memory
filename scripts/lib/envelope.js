@@ -1,6 +1,6 @@
 'use strict';
 const { randomBytes } = require('crypto');
-const { execSync } = require('child_process');
+const { runGit } = require('./git-command');
 
 const PRODUCER = 'deep-memory';
 const PRODUCER_VERSION = require('../../package.json').version;
@@ -24,18 +24,14 @@ function ulidLike() {
  * the project directory get the correct repo's git state. When cwd is null/undefined the
  * behaviour is identical to the previous implementation (process.cwd() default).
  */
-function gitStateSafe(cwd) {
+function gitStateSafe(cwd, gitProcess = runGit) {
   try {
-    const opts = { stdio: ['ignore', 'pipe', 'ignore'] };
-    if (cwd) opts.cwd = cwd;
-    const head = execSync('git rev-parse HEAD', opts)
-      .toString()
-      .trim();
+    const options = { cwd };
+    const head = gitProcess(['rev-parse', 'HEAD'], options);
     if (!/^[a-f0-9]{7,40}$/.test(head)) return null; // suite schema requires hex
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', opts)
-      .toString()
-      .trim();
-    const dirtyOutput = execSync('git status --porcelain', opts).toString();
+    const branch = gitProcess(['rev-parse', '--abbrev-ref', 'HEAD'], options);
+    const dirtyOutput = gitProcess(['status', '--porcelain'], options);
+    if (branch === null || dirtyOutput === null) return null;
     const dirty = dirtyOutput.trim().length > 0; // boolean (suite constraint)
     return { head, branch, dirty };
   } catch {

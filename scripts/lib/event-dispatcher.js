@@ -15,17 +15,15 @@
 
 const Ajv = require('ajv/dist/2020').default;
 const addFormats = require('ajv-formats').default;
-const fs = require('node:fs');
-const path = require('node:path');
 const { wrapLegacy } = require('./legacy-adapter');
+const { getSchema } = require('./schema-registry');
 
 let _validateEvent = null;
 let _validateHook = null;
 
 function getEventValidator() {
   if (_validateEvent) return _validateEvent;
-  const schema = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'schemas', 'memory-event.schema.json'), 'utf8'));
+  const schema = getSchema('memory-event');
   const ajv = new Ajv({ strict: true, allErrors: true });
   addFormats(ajv);
   _validateEvent = ajv.compile(schema);
@@ -34,8 +32,7 @@ function getEventValidator() {
 
 function getHookValidator() {
   if (_validateHook) return _validateHook;
-  const schema = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', '..', 'schemas', 'memory-hook-event.schema.json'), 'utf8'));
+  const schema = getSchema('memory-hook-event');
   const ajv = new Ajv({ strict: true, allErrors: true });
   addFormats(ajv);
   _validateHook = ajv.compile(schema);

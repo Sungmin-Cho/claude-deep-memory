@@ -15,16 +15,14 @@
 //         schema violation is a typed throw (code: SCHEMA_VIOLATION) so
 //         harvest can fall back to candidate (spec §7.2).
 'use strict';
-const fs = require('node:fs');
-const path = require('node:path');
 const Ajv = require('ajv/dist/2020');
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 const { detect } = require('./adapter-registry');
+const { getSchema } = require('./schema-registry');
 
 const ajv = new Ajv({ strict: true });
 addFormats(ajv);
-const schemaPath = path.join(__dirname, '../../schemas/memory-card-distill-output.schema.json');
-const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+const schema = getSchema('memory-card-distill-output');
 const validate = ajv.compile(schema);
 
 const ADAPTERS = Object.freeze({
@@ -47,10 +45,21 @@ async function refine(
       { code: 'UNKNOWN_ADAPTER' }
     );
   }
+  // Preserve the bridge's historical immediate-timeout contract without ever
+  // starting a mediator that would need cancellation. Positive live timeouts
+  // below are owned exclusively by the host dispatcher.
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw Object.assign(
+      new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`),
+      { code: 'TIMEOUT' },
+    );
+  }
   const mod = loader();
+  const hostMediated = (chosen === 'claude-agent' || chosen === 'codex-bash')
+    && !adapterOpts.recordedFixture;
 
   let timer;
-  const timeoutPromise = new Promise((_, rej) => {
+  const timeoutPromise = hostMediated ? null : new Promise((_, rej) => {
     timer = setTimeout(
       () => rej(Object.assign(
         new Error(`LLM bridge timeout (${chosen}, ${timeoutMs}ms)`),
@@ -62,12 +71,39 @@ async function refine(
 
   let out;
   try {
-    out = await Promise.race([mod.refine(eventDraft, sourceExcerpt, adapterOpts), timeoutPromise]);
+    const effectiveAdapterOpts = hostMediated
+      ? {
+          ...adapterOpts,
+          hostDispatchTimeoutMs: Math.min(
+            timeoutMs,
+            adapterOpts.hostDispatchTimeoutMs || timeoutMs,
+          ),
+        }
+      : adapterOpts;
+    const operation = mod.refine(eventDraft, sourceExcerpt, effectiveAdapterOpts);
+    // Host mediation owns process lifetime and its hard timeout. Racing it with
+    // a second timer here would reject without a cancellation handle and leave
+    // the child alive. Recorded/compatibility adapters retain the bridge timer.
+    out = hostMediated ? await operation : await Promise.race([operation, timeoutPromise]);
+  } catch (error) {
+    if (hostMediated && error && error.code === 'ADAPTER_NOT_WIRED') {
+      throw Object.assign(new Error(error.message), {
+        code: 'host_dispatch_unavailable',
+        cause: error.cause || error,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 
   if (!validate(out)) {
+    if (hostMediated) {
+      throw Object.assign(
+        new Error(`Host dispatch output schema violation: ${ajv.errorsText(validate.errors)}`),
+        { code: 'host_dispatch_invalid_output', errors: validate.errors }
+      );
+    }
     throw Object.assign(
       new Error(`Step B output schema violation: ${ajv.errorsText(validate.errors)}`),
       { code: 'SCHEMA_VIOLATION', errors: validate.errors }

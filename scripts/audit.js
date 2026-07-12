@@ -16,17 +16,30 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
 const os = require('node:os');
 const Ajv = require('ajv/dist/2020');
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
-const { acquire, release, isStale: lockIsStale, breakLock } = require('./lib/lock');
+const {
+  acquire, release, inspectLock, inspectEmptyLock,
+  isStale: lockIsStale, breakLock, breakEmptyLock,
+} = require('./lib/lock');
 // IMPL-R2-Δ1 — wire audit-log mutation emission for --unlock + --promote.
 const { writeMutationPair } = require('./lib/audit-log');
 const { hashFile } = require('./lib/source-hash');
 const { validateProjectId } = require('./lib/validate-project-id');
+const { resolveProjectScope } = require('./lib/project-resolver');
+const { getSchema } = require('./lib/schema-registry');
+const { expandHomePath, resolvePersistedPath } = require('./lib/path-utils');
+const {
+  walkAllContainedCards,
+  mutateContainedCard,
+  writeContainedCard,
+  unlinkContainedCard,
+} = require('./lib/card-paths');
 
 let ftsLib = null;
 try { ftsLib = require('./lib/fts-index'); } catch { /* better-sqlite3 absent — skip FTS upsert */ }
@@ -38,36 +51,73 @@ const PROFILE_MAX_AGE_DAYS_DEFAULT = 30;
  * Node's fs module does not expand shell-style `~` references.
  */
 function expandTilde(p) {
-  if (typeof p !== 'string' || !p) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
+  return expandHomePath(p);
 }
 
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
-const cardSchemaPath = path.join(__dirname, '../schemas/memory-card.schema.json');
-const cardSchema = JSON.parse(fs.readFileSync(cardSchemaPath, 'utf8'));
+const cardSchema = getSchema('memory-card');
 const validateCardSchema = ajv.compile(cardSchema);
 
-function* allCardFiles(cardsRoot) {
-  if (!fs.existsSync(cardsRoot)) return;
-  for (const type of fs.readdirSync(cardsRoot)) {
-    const td = path.join(cardsRoot, type);
-    if (!fs.statSync(td).isDirectory()) continue;
-    for (const scope of fs.readdirSync(td)) {
-      const sd = path.join(td, scope);
-      if (!fs.statSync(sd).isDirectory()) continue;
-      for (const f of fs.readdirSync(sd)) {
-        if (f.endsWith('.json')) yield { path: path.join(sd, f), type, scope, file: f };
-      }
+function allCardFiles(cardsRoot, { projectId = null, includeGlobal = true } = {}) {
+  if (projectId !== null) validateProjectId(projectId);
+  const root = path.basename(path.resolve(cardsRoot)) === 'cards'
+    ? path.dirname(path.resolve(cardsRoot))
+    : path.resolve(cardsRoot);
+  const entries = [];
+  const scan = walkAllContainedCards({
+    root,
+    currentProjectId: projectId,
+    onCard(descriptor) {
+      if (descriptor.scope === 'global' && !includeGlobal) return;
+      entries.push(descriptor);
+    },
+  });
+  Object.defineProperty(entries, 'warnings', { value: scan.warnings, enumerable: false });
+  return entries;
+}
+
+const INCOMPLETE_CARD_SCAN_WARNINGS = new Set([
+  'card_scan_limit_reached', 'card_filesystem_budget_exhausted',
+]);
+
+function cardScanFailure(warning) {
+  const incomplete = INCOMPLETE_CARD_SCAN_WARNINGS.has(warning);
+  return Object.assign(new Error(`${incomplete ? 'incomplete card scan' : 'unsafe card path'}: ${warning}`), {
+    code: incomplete ? 'CARD_SCAN_INCOMPLETE' : 'CARD_PATH_UNSAFE',
+    warning,
+  });
+}
+
+function assertSafeCardScan(entries) {
+  const warning = (entries.warnings || [])[0];
+  if (warning) throw cardScanFailure(warning);
+}
+
+function readAuditCard(entry) {
+  try {
+    const result = mutateContainedCard(entry, { action: 'read' });
+    if (!result.exists) throw cardScanFailure('card_path_unavailable');
+    return { card: result.value, parse_error: null };
+  } catch (error) {
+    if (error && error.warning === 'card_json_invalid') {
+      return { card: null, parse_error: error.message };
     }
+    if (error && error.warning) throw cardScanFailure(error.warning);
+    throw error;
   }
 }
 
+function scanAuditCards(cardsRoot, options) {
+  const entries = allCardFiles(cardsRoot, options);
+  assertSafeCardScan(entries);
+  return entries.map((entry) => ({ entry, ...readAuditCard(entry) }));
+}
+
 /**
- * Task 5.1 — scan every card under <memory_root>/cards/ and validate against
- * memory-card.schema.json (Ajv strict + addFormats). Returns:
+ * Task 5.1 — scan global cards plus the optional validated current-project
+ * scope under <memory_root>/cards/ and validate against memory-card.schema.json
+ * (Ajv strict + addFormats). Returns:
  *   {
  *     total: <int>,
  *     valid: <int>,
@@ -76,9 +126,9 @@ function* allCardFiles(cardsRoot) {
  *   }
  *
  * Cards that fail JSON.parse are also reported as violations (with `parse_error`
- * marker). The check never throws — partial-failure audit is the whole point.
+ * marker). Unsafe/incomplete traversal or card I/O fails before totals publish.
  */
-function validateAllCards(memoryRoot) {
+function validateAllCards(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const result = {
     total: 0,
@@ -86,17 +136,15 @@ function validateAllCards(memoryRoot) {
     invalid: 0,
     schema_violations: [],
   };
-  for (const entry of allCardFiles(cardsRoot)) {
+  const scanned = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card, parse_error } of scanned) {
     result.total += 1;
-    let card;
-    try {
-      card = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
-    } catch (e) {
+    if (parse_error) {
       result.invalid += 1;
       result.schema_violations.push({
         path: entry.path,
         memory_id: null,
-        parse_error: e.message,
+        parse_error,
       });
       continue;
     }
@@ -120,7 +168,8 @@ function validateAllCards(memoryRoot) {
 }
 
 /**
- * Task 5.2 — apply state-machine auto transitions to every card on disk.
+ * Task 5.2 — apply state-machine auto transitions to global cards plus the
+ * optional validated current-project scope.
  * Returns:
  *   {
  *     total: <int>,
@@ -134,17 +183,13 @@ function validateAllCards(memoryRoot) {
  * "stale memory" (validated → deprecated after review_after past) and the
  * 4 other automatic transitions defined in scripts/lib/state-machine.js.
  */
-function applyAutoTransitions(memoryRoot) {
+function applyAutoTransitions(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const out = { total: 0, transitioned: 0, transitions: [] };
-  for (const entry of allCardFiles(cardsRoot)) {
+  const scanned = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of scanned) {
     out.total += 1;
-    let card;
-    try {
-      card = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
-    } catch {
-      continue; // schema validation surfaces this separately
-    }
+    if (!card) continue; // schema validation surfaces malformed JSON separately
     // The state-machine lib expects a flat view with status at top level;
     // we project the wrapped shape into that view (audit-only, no mutation).
     const view = {
@@ -165,7 +210,7 @@ function applyAutoTransitions(memoryRoot) {
     if (card.payload.status_history.length > 10) {
       card.payload.status_history = card.payload.status_history.slice(-10);
     }
-    writeJsonAtomic(entry.path, card);
+    writeContainedCard(entry, card);
     out.transitioned += 1;
     out.transitions.push({
       memory_id: card.payload?.memory_id || null,
@@ -196,10 +241,17 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const lockPath = path.join(memoryRoot, '.lock');
   const out = { locks: [], broken: [] };
   if (!fs.existsSync(lockPath)) return out;
-  let meta = null;
-  try {
-    meta = JSON.parse(fs.readFileSync(path.join(lockPath, 'metadata.json'), 'utf8'));
-  } catch {
+  const claim = inspectLock(lockPath);
+  const emptyClaim = claim ? null : inspectEmptyLock(lockPath);
+  let meta = claim && claim.meta;
+  if (!meta && emptyClaim) {
+    meta = {
+      created_at: new Date(emptyClaim.observedMtimeMs).toISOString(),
+      pid: null,
+      host: null,
+      operation: 'lock-bootstrap',
+    };
+  } else if (!meta) {
     // malformed lock dir — surface as stale (no recoverable metadata)
     meta = { created_at: new Date(0).toISOString(), pid: null, host: null, operation: 'unknown' };
   }
@@ -207,8 +259,8 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const stale = lockIsStale(meta);
   out.locks.push({ path: lockPath, meta, stale, age_ms });
   if (stale && unlock) {
-    breakLock(lockPath);
-    out.broken.push(lockPath);
+    if ((claim && breakLock(lockPath, claim))
+        || (emptyClaim && breakEmptyLock(lockPath, emptyClaim))) out.broken.push(lockPath);
   }
   return out;
 }
@@ -234,15 +286,14 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
  *     }],
  *   }
  */
-function detectDedupeCollisions(memoryRoot) {
+function detectDedupeCollisions(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const buckets = new Map(); // dedupe_key → [{card, path, memory_id}]
   let scanned = 0;
-  for (const entry of allCardFiles(cardsRoot)) {
+  const entries = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of entries) {
     scanned += 1;
-    let card;
-    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-    catch { continue; }
+    if (!card) continue;
     const dk = card.payload?.dedupe_key;
     if (!dk) continue;
     if (!buckets.has(dk)) buckets.set(dk, []);
@@ -285,7 +336,7 @@ function setsEqual(a, b) {
 /**
  * Task 5.5 — detect source-artifact renames / content drift.
  *
- * For every card, walk payload.deep_memory_provenance[] and compare each entry's
+ * For every allowed-scope card, walk payload.deep_memory_provenance[] and compare each entry's
  * `content_hash` (captured at harvest time) against `hashFile()` of the live
  * source artifact at envelope.provenance.source_artifacts[source_index].path.
  *
@@ -293,6 +344,7 @@ function setsEqual(a, b) {
  *   - file missing entirely  → unresolved_source.reason = 'missing'
  *   - hash drift             → unresolved_source.reason = 'content_drift'
  *   - source_index out of range → unresolved_source.reason = 'index_oob'
+ *   - privacy-redacted locator → unresolved_source.reason = 'source_redacted'
  *
  * Returns:
  *   {
@@ -304,14 +356,13 @@ function setsEqual(a, b) {
  *     }],
  *   }
  */
-function detectSourceRenames(memoryRoot) {
+function detectSourceRenames(memoryRoot, { projectId = null } = {}) {
   const cardsRoot = path.join(memoryRoot, 'cards');
   const out = { scanned: 0, unresolved: [] };
-  for (const entry of allCardFiles(cardsRoot)) {
+  const entries = scanAuditCards(cardsRoot, { projectId });
+  for (const { entry, card } of entries) {
     out.scanned += 1;
-    let card;
-    try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-    catch { continue; }
+    if (!card) continue;
     const sa = card.envelope?.provenance?.source_artifacts || [];
     const dp = card.payload?.deep_memory_provenance || [];
     for (const d of dp) {
@@ -329,7 +380,19 @@ function detectSourceRenames(memoryRoot) {
         continue;
       }
       const srcPathRaw = sa[idx].path;
-      const srcPath = expandTilde(srcPathRaw);
+      const srcPath = resolvePersistedPath(srcPathRaw);
+      if (srcPath === null) {
+        out.unresolved.push({
+          path: entry.path,
+          memory_id: card.payload?.memory_id || null,
+          reason: 'source_redacted',
+          dp_id: d.id,
+          expected_hash: d.content_hash,
+          actual_hash: null,
+          source_path: srcPathRaw,
+        });
+        continue;
+      }
       if (!fs.existsSync(srcPath)) {
         out.unresolved.push({
           path: entry.path,
@@ -418,12 +481,11 @@ function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFA
  * Steps (inside global lock — spec §"Phase 5 Task 5.7 P8 interaction"):
  *   1. acquire `<memory_root>/.lock` (operation: 'promote'). harvest acquires
  *      the same lock for its persist window — promote vs harvest serialize.
- *   2. find the card by walking cards/<type>/<scope>/* (memory_id is unique
- *      across the store; first match wins).
+ *   2. find the card only under cards/<type>/<validated-project-id>/*.
  *   3. update payload.privacy_level: 'local' → 'global', append status_history
  *      entry (by: 'manual:promote'), bump last_seen_at.
  *   4. writeJsonAtomic to the new path under cards/<type>/global/<id>.json.
- *   5. unlink the old path (already-global cards are a no-op — return early).
+ *   5. unlink the old path (an already-global card raises ALREADY_GLOBAL).
  *   6. FTS5 upsert with project_id='' so global scope visible to all projects.
  *   7. release lock.
  *
@@ -431,53 +493,60 @@ function detectStaleProfile(projectDir, { maxAgeDays = PROFILE_MAX_AGE_DAYS_DEFA
  *   - card not found → Error{code:'NOT_FOUND'}
  *   - card already global → Error{code:'ALREADY_GLOBAL'} (idempotent caller
  *     can catch and continue)
- *   - ambiguous (same memory_id under 2+ scopes, no projectId supplied) →
- *     Error{code:'AMBIGUOUS', memory_id, scopes:[...]}
+ *   - no validated project scope → Error{code:'PROJECT_SCOPE_REQUIRED'}
  *   - lock not acquired in time → Error from lib/lock (LOCK_HELD upstream)
  *
  * @param {string} memoryId
  * @param {{ memoryRoot: string, projectId?: string|null, by?: string }} opts
- *   projectId — when provided, only considers files under cards/<type>/<projectId>/.
- *               When null/undefined, falls back to ambiguity-detection: fails-closed
- *               with AMBIGUOUS if 2+ scopes match.
+ *   projectId — required; only considers files under
+ *               cards/<type>/<projectId>/ and, for an already-promoted check,
+ *               cards/<type>/global/. No other scope directory is opened.
  */
 async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manual:promote' } = {}) {
   if (!memoryId) throw new Error('promoteCard requires memoryId');
   if (!memoryRoot) throw new Error('promoteCard requires memoryRoot');
-  // ITEM-2-r4: validate projectId when provided (nullable — only when truthy)
-  if (projectId) validateProjectId(projectId);
+  if (!projectId) {
+    throw Object.assign(new Error('promoteCard requires a validated project scope'), {
+      code: 'PROJECT_SCOPE_REQUIRED',
+    });
+  }
+  validateProjectId(projectId);
 
   const lockPath = path.join(memoryRoot, '.lock');
   const handle = await acquire(lockPath, { operation: 'promote' });
   try {
     const cardsRoot = path.join(memoryRoot, 'cards');
 
-    // Collect matches: when projectId is specified, filter by scope; otherwise
-    // accumulate all matches across scopes to detect ambiguity.
-    const matches = [];
-    for (const entry of allCardFiles(cardsRoot)) {
-      // When projectId is supplied, only consider files in that scope dir
-      if (projectId !== null && entry.scope !== projectId) continue;
+    const localEntries = allCardFiles(cardsRoot, { projectId, includeGlobal: false });
+    assertSafeCardScan(localEntries);
+    const globalEntries = allCardFiles(cardsRoot);
+    assertSafeCardScan(globalEntries);
+    const localCards = localEntries.map((entry) => ({ entry, ...readAuditCard(entry) }));
+    const globalCards = globalEntries.map((entry) => ({ entry, ...readAuditCard(entry) }));
 
-      let card;
-      try { card = JSON.parse(fs.readFileSync(entry.path, 'utf8')); }
-      catch { continue; }
-      if (card.payload?.memory_id === memoryId) {
-        matches.push({ entry, card });
+    const matches = localCards.filter(({ card }) => card?.payload?.memory_id === memoryId);
+
+    // Global is authoritative. Check it even when a duplicate local copy
+    // exists so promotion cannot overwrite or unlink either copy silently.
+    for (const { entry, card } of globalCards) {
+      if (entry.file === `${memoryId}.json`) {
+        throw Object.assign(new Error(`Card already global: ${memoryId}`), {
+          code: 'ALREADY_GLOBAL',
+          memory_id: memoryId,
+          path: entry.path,
+        });
+      }
+      if (card?.payload?.memory_id === memoryId) {
+        throw Object.assign(new Error(`Card already global: ${memoryId}`), {
+          code: 'ALREADY_GLOBAL',
+          memory_id: memoryId,
+          path: entry.path,
+        });
       }
     }
 
     if (matches.length === 0) {
       throw Object.assign(new Error(`Card not found: ${memoryId}`), { code: 'NOT_FOUND' });
-    }
-
-    // Ambiguity guard (only when projectId was not supplied — backward-compat path)
-    if (projectId === null && matches.length > 1) {
-      const scopes = matches.map((m) => m.entry.scope);
-      throw Object.assign(
-        new Error(`Ambiguous memory_id (found in ${matches.length} scopes): ${scopes.join(', ')}`),
-        { code: 'AMBIGUOUS', memory_id: memoryId, scopes }
-      );
     }
 
     const found = matches[0];
@@ -502,17 +571,22 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
       found.card.payload.status_history = found.card.payload.status_history.slice(-10);
     }
 
-    const newDir = path.join(memoryRoot, 'cards', found.entry.type, 'global');
-    fs.mkdirSync(newDir, { recursive: true });
-    const newPath = path.join(newDir, memoryId + '.json');
-    writeJsonAtomic(newPath, found.card);
+    const globalDescriptor = {
+      root: memoryRoot,
+      currentProjectId: projectId,
+      type: found.entry.type,
+      scope: 'global',
+      file: memoryId + '.json',
+    };
+    const written = writeContainedCard(globalDescriptor, found.card);
+    const newPath = written.path;
 
     if (newPath !== found.entry.path) {
-      try { fs.unlinkSync(found.entry.path); } catch { /* best-effort */ }
+      unlinkContainedCard(found.entry);
     }
 
     if (ftsLib && ftsLib.openIndex && ftsLib.upsertCard) {
-      const idxPath = path.join(memoryRoot, 'indexes', 'lexical.sqlite');
+      const idxPath = v2LexicalIndexPath(memoryRoot);
       fs.mkdirSync(path.dirname(idxPath), { recursive: true });
       const idx = ftsLib.openIndex(idxPath);
       try {
@@ -551,29 +625,34 @@ async function promoteCard(memoryId, { memoryRoot, projectId = null, by = 'manua
 async function run({ memoryRoot, projectDir } = {}) {
   if (!memoryRoot) throw new Error('audit.run requires memoryRoot');
   const cwd = projectDir || process.cwd();
+  const projectScope = resolveProjectScope(cwd);
+  const scopeOptions = { projectId: projectScope.projectId };
   // ITEM-5-r3: Read-only sub-checks BEFORE acquiring lock (so stale-lock surfaces in report
   // even when acquire() would throw STALE_LOCK or retry exhaustion).
-  const schema = validateAllCards(memoryRoot);
+  const schema = validateAllCards(memoryRoot, scopeOptions);
   const stale_locks = detectStaleLocks(memoryRoot);
-  const dedupe = detectDedupeCollisions(memoryRoot);
-  const source_renames = detectSourceRenames(memoryRoot);
+  const dedupe = detectDedupeCollisions(memoryRoot, scopeOptions);
+  const source_renames = detectSourceRenames(memoryRoot, scopeOptions);
   const profile = detectStaleProfile(cwd);
 
   // Side-effecting phase: applyAutoTransitions inside the lock.
   // If the lock is stale, the report still contains the stale-lock entry above.
   let transitions;
   const lockPath = path.join(memoryRoot, '.lock');
+  let lockHandle = null;
   try {
-    const lockHandle = await acquire(lockPath, { operation: 'audit' });
-    try {
-      transitions = applyAutoTransitions(memoryRoot);
-    } finally {
-      release(lockHandle);
-    }
+    lockHandle = await acquire(lockPath, { operation: 'audit' });
   } catch (e) {
     // Lock unavailable (likely STALE_LOCK or retry exhaustion).
     // detectStaleLocks already captured it; record + skip transitions.
     transitions = { total: 0, transitioned: 0, transitions: [], skipped_due_to_lock: e.code || e.message };
+  }
+  if (lockHandle) {
+    try {
+      transitions = applyAutoTransitions(memoryRoot, scopeOptions);
+    } finally {
+      release(lockHandle);
+    }
   }
 
   const issues =
@@ -589,6 +668,7 @@ async function run({ memoryRoot, projectDir } = {}) {
     generated_at: new Date().toISOString(),
     memory_root: memoryRoot,
     project_dir: cwd,
+    project_scope: projectScope.scope,
     summary: {
       total_cards: schema.total,
       issues,
@@ -609,9 +689,8 @@ async function run({ memoryRoot, projectDir } = {}) {
 }
 
 function resolveMemoryRoot(raw) {
-  const os = require('node:os');
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
-  return root.replace(/^~/, os.homedir());
+  return expandHomePath(root);
 }
 
 module.exports = {
@@ -665,22 +744,27 @@ if (require.main === module) {
       return;
     }
     if (promoteId) {
-      // ITEM-2-r4: validate --project arg before passing to promoteCard
-      if (projectIdArg) {
-        try {
-          validateProjectId(projectIdArg);
-        } catch (e) {
-          console.error(e.message);
-          process.exit(1);
-        }
+      const projectScope = resolveProjectScope(process.cwd());
+      if (!projectScope.projectId) {
+        throw Object.assign(new Error('Promotion requires a trusted project profile'), {
+          code: 'PROJECT_SCOPE_REQUIRED',
+        });
       }
-      const result = await promoteCard(promoteId, { memoryRoot, projectId: projectIdArg });
+      if (projectIdArg !== null && projectIdArg !== projectScope.projectId) {
+        throw Object.assign(new Error('--project must match the trusted project scope'), {
+          code: 'PROJECT_SCOPE_MISMATCH',
+        });
+      }
+      const result = await promoteCard(promoteId, {
+        memoryRoot,
+        projectId: projectScope.projectId,
+      });
       // IMPL-R2-Δ1 — emit mutation-consent + promote audit-log pair when
       // promotion succeeds (Opus R2 🔴 #1).
-      if (result && (result.status === 'ok' || result.promoted === true || result.from_privacy)) {
+      if (result) {
         try {
           writeMutationPair(memoryRoot, {
-            tool: 'promote', args: { memory_id: promoteId, project_id: projectIdArg || null },
+            tool: 'promote', args: { memory_id: promoteId, project_id: projectScope.projectId },
             by: 'slash-direct',
             host: process.env.DEEP_MEMORY_HOST || 'claude-code',
             kind: 'promote',

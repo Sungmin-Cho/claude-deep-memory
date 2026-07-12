@@ -53,7 +53,7 @@ test('Task 5.7: promoteCard moves local → global atomically + updates FTS5', a
 
     // FTS5 upsert: search returns the global card from a fresh project
     const { openIndex, search, closeIndex } = require('../scripts/lib/fts-index');
-    const idx = openIndex(path.join(tmp, 'indexes', 'lexical.sqlite'));
+    const idx = openIndex(path.join(tmp, 'indexes', 'v2', 'lexical.sqlite'));
     try {
       const rows = search(idx, 'codex skill', { topN: 5, projectId: 'proj_unrelated' });
       const ids = rows.map((r) => r.memory_id);
@@ -71,11 +71,60 @@ test('Task 5.7: promoteCard on already-global card throws ALREADY_GLOBAL', async
   try {
     const card = await harvestOne(tmp);
     const memoryId = card.payload.memory_id;
-    await promoteCard(memoryId, { memoryRoot: tmp }); // first promotion
+    await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' }); // first promotion
     await assert.rejects(
-      () => promoteCard(memoryId, { memoryRoot: tmp }),
+      () => promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' }),
       (e) => e.code === 'ALREADY_GLOBAL'
     );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Task 5.7: an existing global copy wins over a duplicate current-project copy', async () => {
+  const tmp = mkRoot();
+  try {
+    const card = await harvestOne(tmp);
+    const memoryId = card.payload.memory_id;
+    const localPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
+    const globalDir = path.join(tmp, 'cards', 'failure-case', 'global');
+    const globalPath = path.join(globalDir, memoryId + '.json');
+    fs.mkdirSync(globalDir, { recursive: true });
+    const globalCard = JSON.parse(fs.readFileSync(localPath, 'utf8'));
+    globalCard.payload.privacy_level = 'global';
+    globalCard.payload.claim = 'authoritative global copy';
+    fs.writeFileSync(globalPath, JSON.stringify(globalCard));
+    const beforeGlobal = fs.readFileSync(globalPath, 'utf8');
+    const beforeLocal = fs.readFileSync(localPath, 'utf8');
+
+    await assert.rejects(
+      () => promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' }),
+      (error) => error.code === 'ALREADY_GLOBAL'
+    );
+    assert.equal(fs.readFileSync(globalPath, 'utf8'), beforeGlobal);
+    assert.equal(fs.readFileSync(localPath, 'utf8'), beforeLocal);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Task 5.7: a malformed occupied global slot is never overwritten', async () => {
+  const tmp = mkRoot();
+  try {
+    const card = await harvestOne(tmp);
+    const memoryId = card.payload.memory_id;
+    const localPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
+    const globalDir = path.join(tmp, 'cards', 'failure-case', 'global');
+    const globalPath = path.join(globalDir, memoryId + '.json');
+    fs.mkdirSync(globalDir, { recursive: true });
+    fs.writeFileSync(globalPath, '{ malformed global bytes');
+
+    await assert.rejects(
+      () => promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' }),
+      (error) => error.code === 'ALREADY_GLOBAL'
+    );
+    assert.equal(fs.readFileSync(globalPath, 'utf8'), '{ malformed global bytes');
+    assert.ok(fs.existsSync(localPath));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -85,7 +134,7 @@ test('Task 5.7: promoteCard with unknown memory_id throws NOT_FOUND', async () =
   const tmp = mkRoot();
   try {
     await assert.rejects(
-      () => promoteCard('mem_does_not_exist', { memoryRoot: tmp }),
+      () => promoteCard('mem_does_not_exist', { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' }),
       (e) => e.code === 'NOT_FOUND'
     );
   } finally {
@@ -98,48 +147,42 @@ test('Task 5.7: promoteCard requires memoryId + memoryRoot', async () => {
   await assert.rejects(() => promoteCard('mem_x', {}), /requires memoryRoot/);
 });
 
-// ITEM-5: Ambiguity detection tests
-
-test('ITEM-5: promoteCard with no projectId throws AMBIGUOUS when same memory_id under 2 scopes', async () => {
+test('v2 promote requires a validated current project scope before scanning cards', async () => {
   const tmp = mkRoot();
   try {
-    // Harvest once to get a real card shape
     const card = await harvestOne(tmp);
     const memoryId = card.payload.memory_id;
-
-    // Copy the card file into a second project scope to create ambiguity
-    const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
-    const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
-    fs.mkdirSync(altScopeDir, { recursive: true });
-    fs.copyFileSync(srcPath, path.join(altScopeDir, memoryId + '.json'));
-
-    // Without projectId: should fail-closed with AMBIGUOUS
     await assert.rejects(
       () => promoteCard(memoryId, { memoryRoot: tmp }),
-      (e) => {
-        assert.strictEqual(e.code, 'AMBIGUOUS', `Expected AMBIGUOUS, got: ${e.code} — ${e.message}`);
-        assert.strictEqual(e.memory_id, memoryId);
-        assert.ok(Array.isArray(e.scopes) && e.scopes.length === 2, `scopes should have 2 entries: ${JSON.stringify(e.scopes)}`);
-        return true;
-      }
+      (e) => e.code === 'PROJECT_SCOPE_REQUIRED'
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('ITEM-5: promoteCard with projectId promotes only the specified scope, leaves other intact', async () => {
+test('ITEM-5: promoteCard with projectId promotes only the specified scope, leaves other intact', async (t) => {
   const tmp = mkRoot();
   try {
     const card = await harvestOne(tmp);
     const memoryId = card.payload.memory_id;
 
-    // Create same memory_id under proj_alt as well (simulate two-project collision)
+    // Create same memory_id under a retired/foreign scope as well.
     const srcPath = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', memoryId + '.json');
-    const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_alt');
+    const altScopeDir = path.join(tmp, 'cards', 'failure-case', 'proj_0123456789abcdef');
     fs.mkdirSync(altScopeDir, { recursive: true });
     const altPath = path.join(altScopeDir, memoryId + '.json');
     fs.copyFileSync(srcPath, altPath);
+
+    const typeDir = path.join(tmp, 'cards', 'failure-case');
+    const readdirSync = fs.readdirSync;
+    t.mock.method(fs, 'readdirSync', (target, ...args) => {
+      assert.notStrictEqual(path.resolve(target), path.resolve(typeDir),
+        'promotion must derive current/global scopes instead of enumerating scope names');
+      assert.ok(!path.resolve(target).startsWith(path.resolve(altScopeDir) + path.sep),
+        'promotion must not enumerate a retired or foreign scope');
+      return Reflect.apply(readdirSync, fs, [target, ...args]);
+    });
 
     // Promote only proj_aaaaaaaaaaaa copy
     const result = await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' });
@@ -175,7 +218,7 @@ test('Task 5.7: status_history truncates at 10 after promote when already full',
     }));
     fs.writeFileSync(cardPath, JSON.stringify(onDisk, null, 2));
 
-    await promoteCard(memoryId, { memoryRoot: tmp });
+    await promoteCard(memoryId, { memoryRoot: tmp, projectId: 'proj_aaaaaaaaaaaa' });
     const newPath = path.join(tmp, 'cards', 'failure-case', 'global', memoryId + '.json');
     const after = JSON.parse(fs.readFileSync(newPath, 'utf8'));
     assert.strictEqual(after.payload.status_history.length, 10);

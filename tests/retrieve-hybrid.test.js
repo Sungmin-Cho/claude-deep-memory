@@ -6,6 +6,15 @@ const os = require('node:os');
 const path = require('node:path');
 const { runHybridRetrieve, sessionDiversify, probeStreams } = require('../scripts/lib/retrieve-hybrid');
 
+const PROJECT_A = 'proj_aaaaaaaaaaaa';
+const PROJECT_B = 'proj_bbbbbbbbbbbb';
+const PROJECT_C = 'proj_cccccccccc';
+const PROJECT_D = 'proj_dddddddddddd';
+
+function lexical(rows, stream = 'fts5', warnings = []) {
+  return { rows, stream, warnings };
+}
+
 function mkTmpRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dm-retrieve-hybrid-'));
 }
@@ -52,16 +61,16 @@ test('γ.5 runHybridRetrieve: FTS5-only path (no vector) returns FTS5 stream', a
   // Stub FTS5 search returning 3 cards from current project (card files on
   // disk — R3 #1 fail-closed drops rows whose card cannot be located)
   const ftsCards = [
-    { memory_id: 'm1', project_id: 'p1', session_id: 'sA' },
-    { memory_id: 'm2', project_id: 'p1', session_id: 'sA' },
-    { memory_id: 'm3', project_id: 'p1', session_id: 'sB' }
+    { memory_id: 'm1', project_id: PROJECT_A, session_id: 'sA' },
+    { memory_id: 'm2', project_id: PROJECT_A, session_id: 'sA' },
+    { memory_id: 'm3', project_id: PROJECT_A, session_id: 'sB' }
   ];
-  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: c.memory_id });
+  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: c.memory_id });
   const result = await runHybridRetrieve({
     query: 'test query',
-    currentProjectId: 'p1',
+    currentProjectId: PROJECT_A,
     root,
-    ftsSearch: async () => ftsCards,
+    ftsSearch: async () => lexical(ftsCards),
     topN: 5
   });
   assert.strictEqual(result.memories.length, 3);
@@ -72,7 +81,7 @@ test('γ.5 + γ.7: empty FTS5 + vector unavailable → empty memories with warni
   const root = mkTmpRoot();
   const result = await runHybridRetrieve({
     query: 'test',
-    currentProjectId: 'p1',
+    currentProjectId: PROJECT_A,
     root,
     ftsSearch: null  // no FTS callback
   });
@@ -86,14 +95,14 @@ test('γ.5 + γ.6: hybrid fuse + session diversification combined', async () => 
   const root = mkTmpRoot();
   // Stub FTS5: 5 cards, all session sA (card files on disk per R3 #1)
   const ftsCards = Array.from({length: 5}, (_, i) => ({
-    memory_id: `m${i}`, project_id: 'p1', session_id: 'sA'
+    memory_id: `m${i}`, project_id: PROJECT_A, session_id: 'sA'
   }));
-  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: c.memory_id });
+  for (const c of ftsCards) writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: c.memory_id });
   const result = await runHybridRetrieve({
     query: 'test',
-    currentProjectId: 'p1',
+    currentProjectId: PROJECT_A,
     root,
-    ftsSearch: async () => ftsCards,
+    ftsSearch: async () => lexical(ftsCards),
     topN: 10,
     config: { brief: { max_per_session: 2 } }
   });
@@ -113,14 +122,14 @@ function writeCard(root, { memory_type, project_id, memory_id, status, non_appli
 
 test('R2 #3: deprecated cards are dropped from hybrid results (Stage 1 parity)', async () => {
   const root = mkTmpRoot();
-  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_live' });
-  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_dead', status: 'deprecated' });
+  writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_live' });
+  writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_dead', status: 'deprecated' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [
-      { memory_id: 'm_live', project_id: 'p1', memory_type: 'pattern' },
-      { memory_id: 'm_dead', project_id: 'p1', memory_type: 'pattern' },
-    ],
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([
+      { memory_id: 'm_live', project_id: PROJECT_A, memory_type: 'pattern' },
+      { memory_id: 'm_dead', project_id: PROJECT_A, memory_type: 'pattern' },
+    ]),
     topN: 5,
   });
   const ids = result.memories.map(m => m.memory_id);
@@ -131,12 +140,12 @@ test('R2 #3: deprecated cards are dropped from hybrid results (Stage 1 parity)',
 test('R2 #3: non-applicability guard drops cards matching the query (Stage 6 parity)', async () => {
   const root = mkTmpRoot();
   writeCard(root, {
-    memory_type: 'pattern', project_id: 'p1', memory_id: 'm_na',
+    memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_na',
     non_applicability: [{ value: 'flaky network retry' }],
   });
   const result = await runHybridRetrieve({
-    query: 'flaky network retry', currentProjectId: 'p1', root,
-    ftsSearch: async () => [{ memory_id: 'm_na', project_id: 'p1', memory_type: 'pattern' }],
+    query: 'flaky network retry', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([{ memory_id: 'm_na', project_id: PROJECT_A, memory_type: 'pattern' }]),
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 0, 'non-applicable card must be dropped');
@@ -144,10 +153,10 @@ test('R2 #3: non-applicability guard drops cards matching the query (Stage 6 par
 
 test('R2 #3: deprecated filter also applies to rows lacking memory_type (vector stream shape)', async () => {
   const root = mkTmpRoot();
-  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_vdead', status: 'deprecated' });
+  writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_vdead', status: 'deprecated' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [{ memory_id: 'm_vdead', project_id: 'p1' }],  // no memory_type, like searchVector rows
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([{ memory_id: 'm_vdead', project_id: PROJECT_A }]),  // no memory_type, like searchVector rows
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 0, 'deprecated card must be dropped even without memory_type on the row');
@@ -159,11 +168,11 @@ test('R3 #1: rows whose card file is missing are DROPPED with one bounded skew w
   // row is dropped and the index/card skew is surfaced once, boundedly.
   const root = mkTmpRoot();
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [
-      { memory_id: 'm_ghost1', project_id: 'p1', memory_type: 'pattern', claim: 'forgotten secret claim' },
-      { memory_id: 'm_ghost2', project_id: 'p1', memory_type: 'pattern' },
-    ],
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([
+      { memory_id: 'm_ghost1', project_id: PROJECT_A, memory_type: 'pattern', claim: 'forgotten secret claim' },
+      { memory_id: 'm_ghost2', project_id: PROJECT_A, memory_type: 'pattern' },
+    ]),
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 0, 'unverifiable rows must be dropped (fail-closed)');
@@ -181,10 +190,10 @@ test('R4 #2: a local row is NOT validated by a same-id global card (scope-strict
   // remains (memory_id is deterministic from type/claim, not scope).
   writeCard(root, { memory_type: 'pattern', project_id: 'global', memory_id: 'm_dup' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [
-      { memory_id: 'm_dup', project_id: 'p1', privacy_level: 'local', memory_type: 'pattern', claim: 'stale local claim' },
-    ],
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([
+      { memory_id: 'm_dup', project_id: PROJECT_A, privacy_level: 'local', memory_type: 'pattern', claim: 'stale local claim' },
+    ]),
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 0, 'stale local row must not be validated by a global card');
@@ -195,10 +204,10 @@ test('R4 #2: a global-privacy row still resolves via the global directory', asyn
   const root = mkTmpRoot();
   writeCard(root, { memory_type: 'pattern', project_id: 'global', memory_id: 'm_glob' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p2', root,
-    ftsSearch: async () => [
-      { memory_id: 'm_glob', project_id: 'p9', privacy_level: 'global', memory_type: 'pattern' },
-    ],
+    query: 'anything', currentProjectId: PROJECT_B, root,
+    ftsSearch: async () => lexical([
+      { memory_id: 'm_glob', project_id: PROJECT_D, privacy_level: 'global', memory_type: 'pattern' },
+    ]),
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 1, 'global-privacy row must resolve from the global dir');
@@ -206,10 +215,10 @@ test('R4 #2: a global-privacy row still resolves via the global directory', asyn
 
 test('R4 #3: fields missing on the fused row are filled from the validated card payload', async () => {
   const root = mkTmpRoot();
-  writeCardWithClaim(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_enrich', claim: 'card claim text' });
+  writeCardWithClaim(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_enrich', claim: 'card claim text' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [{ memory_id: 'm_enrich', project_id: 'p1' }],  // vector-shape: no claim/memory_type
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([{ memory_id: 'm_enrich', project_id: PROJECT_A }]),  // vector-shape: no claim/memory_type
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 1);
@@ -227,10 +236,10 @@ function writeCardWithClaim(root, { memory_type, project_id, memory_id, claim })
 
 test('R4 #4: useVector:false keeps retrieval lexical-only (no vector probe, no vector warnings)', async () => {
   const root = mkTmpRoot();
-  writeCard(root, { memory_type: 'pattern', project_id: 'p1', memory_id: 'm_lex' });
+  writeCard(root, { memory_type: 'pattern', project_id: PROJECT_A, memory_id: 'm_lex' });
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p1', root,
-    ftsSearch: async () => [{ memory_id: 'm_lex', project_id: 'p1', memory_type: 'pattern' }],
+    query: 'anything', currentProjectId: PROJECT_A, root,
+    ftsSearch: async () => lexical([{ memory_id: 'm_lex', project_id: PROJECT_A, memory_type: 'pattern' }]),
     topN: 5,
     useVector: false,
   });
@@ -245,12 +254,12 @@ test('R5 P1: a global-privacy row is NOT validated by a same-id LOCAL card (glob
   // the origin project, the row must still fail closed — otherwise another
   // project's retrieval validates a global row with local-only payload.
   const root = mkTmpRoot();
-  writeCard(root, { memory_type: 'pattern', project_id: 'pX', memory_id: 'm_shadow' });  // local shadow only
+  writeCard(root, { memory_type: 'pattern', project_id: PROJECT_C, memory_id: 'm_shadow' });  // local shadow only
   const result = await runHybridRetrieve({
-    query: 'anything', currentProjectId: 'p2', root,
-    ftsSearch: async () => [
-      { memory_id: 'm_shadow', project_id: 'pX', privacy_level: 'global', memory_type: 'pattern' },
-    ],
+    query: 'anything', currentProjectId: PROJECT_B, root,
+    ftsSearch: async () => lexical([
+      { memory_id: 'm_shadow', project_id: PROJECT_C, privacy_level: 'global', memory_type: 'pattern' },
+    ]),
     topN: 5,
   });
   assert.strictEqual(result.memories.length, 0, 'global row must resolve from global/ only');

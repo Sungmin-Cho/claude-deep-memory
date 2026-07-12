@@ -1,54 +1,46 @@
 # Contributing to deep-memory
 
-Thanks for your interest in improving **deep-memory** — cross-project semantic
-operational memory for the
-[claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite). It harvests
-artifacts emitted by sibling plugins, distills them into reusable memory cards, and
-surfaces task-specific briefs across Claude Code and Codex.
+Thanks for improving **deep-memory**, the cross-project operational-memory plugin in [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
 
 ## Development setup
 
-```bash
+```text
 git clone https://github.com/Sungmin-Cho/claude-deep-memory.git
 cd claude-deep-memory
 npm install
 ```
 
-Node 22+ is required (ESM project). `better-sqlite3` and `sql.js` are
-`optionalDependencies` — `npm install` succeeds even if the native `better-sqlite3`
-build fails, and retrieval degrades gracefully to a WASM/FTS5-only path.
+Node 22 is the supported runtime on Windows, macOS, and Linux. Native SQLite is optional; when it is unavailable, the supported read path is the bounded card-scan fallback.
 
-## Tests
+## Verification
 
-```bash
-npm test                    # node --test across tests/ (+ runtime-contract, hooks, mcp-tools)
-npm run validate-manifest   # plugin manifest checks
+Run the portable release gates in this order:
+
+```text
+npm run build:mcp
+git diff --exit-code -- dist/mcp-server.cjs
+npm run validate-manifest
+npm test
 ```
 
-Focused suites are available too: `npm run test:envelope` and
-`npm run test:redaction`.
+The committed MCP bundle must be deterministic. Build it again and repeat the bundle drift check before release.
+
+Maintainers also run the official Codex schema validator from the installed system skill:
+
+```text
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator/scripts/validate_plugin.py" .
+```
+
+That Python command is a local maintainer-only schema gate, not supported runtime or ordinary CI. The ordinary matrix is Node 22 with one uniform PowerShell 7 shell on Ubuntu, macOS, and Windows.
 
 ## Conventions
 
-- **Documentation** follows `docs/DOCS_RULE.md` (the local maintainer guide).
-  In short: `README.md` is evergreen, `CHANGELOG.md` owns release history, and
-  `CLAUDE.md` / `AGENTS.md` stay short. README and CHANGELOG are bilingual
-  (`*.md` + `*.ko.md`) and kept structurally in sync.
-- **Version triple-sync**: `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-  and `package.json` must always carry the same version.
-- **Changelog**: follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) —
-  one-line, user-observable bullets under `### Added` / `### Changed` / `### Fixed`.
-- **Privacy is a hard invariant**: automatic hook capture stays OFF by default, and
-  redaction runs before anything is persisted. See [`SECURITY.md`](SECURITY.md).
+- Documentation follows `docs/DOCS_RULE.md`, the local canonical maintainer guide.
+- `README.md` is evergreen, `CHANGELOG.md` owns release history, and the English/Korean pairs remain structurally parallel.
+- Version sources are `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `package.json`; the lockfile and MCP bundle are derived checks.
+- Read a version portably with `node -e "console.log(require('./.codex-plugin/plugin.json').version)"` or the matching Claude manifest command.
+- Capture remains OFF by default, redaction precedes host dispatch and persistence, and new cards remain local until explicit promotion.
 
 ## Pull requests
 
-1. Branch from `main`.
-2. Keep changes focused, and add a `[Unreleased]` CHANGELOG entry (both languages)
-   for any user-observable change.
-3. Make sure `npm test` is green.
-4. Explain what changed and why.
-
-## Reporting issues
-
-Open a GitHub issue. For security reports, see [`SECURITY.md`](SECURITY.md).
+Keep changes focused, include user-observable changelog updates in both languages, and attach the fresh verification output. For security reports, follow [SECURITY.md](SECURITY.md).

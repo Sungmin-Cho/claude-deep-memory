@@ -1,29 +1,29 @@
 # deep-memory - Codex Project Guide
 
-Cross-project semantic operational memory. The plugin keeps Claude Code slash-command surfaces and exposes Codex-native skills and manifest metadata.
+deep-memory provides cross-project operational memory through Codex-native skills while retaining Claude Code compatibility.
 
-To check the current version: `jq -r .version .codex-plugin/plugin.json`
+Current version: `node -e "console.log(require('./.codex-plugin/plugin.json').version)"`
 
-> 📄 **Docs maintenance**: this repo's documentation follows `docs/DOCS_RULE.md` (local maintainer guide — single-source-of-truth rules for README / CHANGELOG / this file).
+> Documentation follows `docs/DOCS_RULE.md`, the local canonical maintainer guide.
 
-## Runtime Surfaces
+## Runtime surfaces
 
-- Codex manifest: `.codex-plugin/plugin.json`
-- Claude Code manifest: `.claude-plugin/plugin.json`
-- User-invocable skills: `skills/deep-memory-*/SKILL.md`
-- Schema reference: `skills/memory-schema/SKILL.md`
-- Sub-agent: `agents/memory-distiller.md`
-- Memory root (default): `~/.deep-memory/` (override: env `DEEP_MEMORY_ROOT`)
+- Node 22 on native Windows, macOS, and Linux.
+- Codex manifest and default hook discovery: `.codex-plugin/plugin.json` and `hooks/hooks.json`.
+- Claude Code manifest: `.claude-plugin/plugin.json`.
+- User skills: `skills/deep-memory-*/SKILL.md`.
+- Authoritative distiller contract: `agents/memory-distiller.md`.
+- Committed MCP bundle: `dist/mcp-server.cjs`.
 
-Keep memory data and runtime locks out of the plugin repo unless they are intentional test fixtures.
+Keep user memory, locks, review artifacts, and local documentation out of commits.
 
-## Verification
+## Release verification
 
-```bash
-node -e "JSON.parse(require('fs').readFileSync('.codex-plugin/plugin.json','utf8'))"
-node -e "JSON.parse(require('fs').readFileSync('.claude-plugin/plugin.json','utf8'))"
+```text
+npm run build:mcp
+git diff --exit-code -- dist/mcp-server.cjs
+npm run validate-manifest
 npm test
 ```
 
-After a release, update both suite marketplace manifests in
-`/Users/sungmin/Dev/claude-plugins/deep-suite/`.
+Update suite marketplace pins only after the plugin release is merged.

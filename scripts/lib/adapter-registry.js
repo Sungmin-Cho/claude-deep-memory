@@ -1,16 +1,8 @@
 'use strict';
-const { execSync } = require('node:child_process');
+const { detectHost, adapterForHost } = require('./runtime-context');
 
-function detect(adapter = 'auto') {
-  if (adapter !== 'auto') return adapter;
-  if (process.env.CLAUDE_PLUGIN_ROOT) return 'claude-agent';
-  if (process.env.CODEX_PLUGIN_ROOT || hasCmd('codex')) return 'codex-bash';
-  if (process.env.GEMINI_API_KEY) return 'gemini-sdk';
-  return 'stdin-fallback';
-}
-
-function hasCmd(name) {
-  try { execSync(`command -v ${name}`, { stdio: 'ignore' }); return true; } catch { return false; }
+function detect(adapter = 'auto', { env = process.env } = {}) {
+  return adapter === 'auto' ? adapterForHost(detectHost(env)) : adapter;
 }
 
 module.exports = { detect };

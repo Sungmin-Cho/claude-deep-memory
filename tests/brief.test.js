@@ -8,8 +8,8 @@ const { openIndex, upsertCard, closeIndex } = require('../scripts/lib/fts-index'
 const { run, resolveMemoryRoot, loadProjectProfile } = require('../scripts/brief');
 
 function setup() {
-  const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-brief-mem-'));
-  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-brief-proj-'));
+  const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm brief memory Ω '));
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm brief project Ω '));
   for (const sub of ['cards', 'events', 'indexes', 'projects', '.leases']) {
     fs.mkdirSync(path.join(memoryRoot, sub), { recursive: true });
   }
@@ -41,7 +41,7 @@ function plantGlobalCard(memoryRoot, payload, envelopeExtra = {}) {
     payload,
   };
   fs.writeFileSync(path.join(dir, payload.memory_id + '.json'), JSON.stringify(wrapped, null, 2));
-  const idx = openIndex(path.join(memoryRoot, 'indexes', 'lexical.sqlite'));
+  const idx = openIndex(path.join(memoryRoot, 'indexes', 'v2', 'lexical.sqlite'));
   try {
     upsertCard(idx, wrapped, { projectId: '' });
   } finally {
@@ -82,6 +82,19 @@ test('brief.run writes JSON + MD atomically to .deep-memory/', async () => {
     const md = fs.readFileSync(r.mdPath, 'utf8');
     assert.match(md, /Deep-Memory Brief — codex skill discovery/);
     assert.match(md, /mem_test/);
+
+    const second = await run({
+      task: 'codex skill discovery',
+      projectDir,
+      memoryRoot,
+    });
+    assert.strictEqual(second.jsonPath, r.jsonPath);
+    assert.strictEqual(second.mdPath, r.mdPath);
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(r.jsonPath)).sort(),
+      ['latest-brief.json', 'latest-brief.md'],
+      'a second brief publish must leave no temporary files',
+    );
   } finally {
     cleanup();
   }
@@ -145,7 +158,7 @@ test('resolveMemoryRoot honors DEEP_MEMORY_ROOT env and ~ prefix', () => {
 });
 
 test('loadProjectProfile returns null for missing file (graceful)', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-noprof-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm no profile Ω '));
   try {
     assert.strictEqual(loadProjectProfile(tmp), null);
   } finally {

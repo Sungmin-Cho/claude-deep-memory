@@ -1,6 +1,7 @@
 ---
 name: memory-distiller
-description: Refine a deep-memory event-draft by filling LLM-derived fields (claim_refined / non_applicability / recommended_action / search_keywords). Read-only — never writes files. Input: event-draft JSON + source artifact excerpt (max 4096 bytes, redaction-applied). Output: JSON matching memory-card-distill-output.schema.json. Used by /deep-memory-harvest Step B via lib/llm-bridge.js (claude-agent / codex-bash / stdin-fallback adapters).
+description: >-
+  Refine a deep-memory event-draft by filling LLM-derived fields (claim_refined / non_applicability / recommended_action / search_keywords). Read-only — never writes files. Input: event-draft JSON + source artifact excerpt (max 4096 bytes, redaction-applied). Output: JSON matching memory-card-distill-output.schema.json. Used by /deep-memory-harvest Step B via lib/llm-bridge.js (claude-agent / codex-bash / stdin-fallback adapters).
 tools: Read, Glob, Grep
 ---
 

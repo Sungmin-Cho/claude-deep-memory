@@ -12,6 +12,8 @@ const {
   applyDiversity,
 } = require('../scripts/retrieve');
 
+const PROJECT_ID = 'proj_aaaaaaaaaaaa';
+
 function mkRoot() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-retrieve-'));
   for (const sub of ['cards', 'indexes', 'events', 'projects', '.leases']) {
@@ -44,7 +46,7 @@ function plantCard(tmp, projectId, payload, envelopeExtra = {}) {
 
 function plantAndIndex(tmp, projectId, payload, envelopeExtra = {}) {
   const wrapped = plantCard(tmp, projectId, payload, envelopeExtra);
-  const idx = openIndex(path.join(tmp, 'indexes', 'lexical.sqlite'));
+  const idx = openIndex(path.join(tmp, 'indexes', 'v2', 'lexical.sqlite'));
   try {
     upsertCard(idx, wrapped, { projectId: payload.privacy_level === 'global' ? '' : projectId });
   } finally {
@@ -56,7 +58,7 @@ function plantAndIndex(tmp, projectId, payload, envelopeExtra = {}) {
 test('runRetrieve zero matches → empty memories + no error', async () => {
   const tmp = mkRoot();
   try {
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_x',
       memory_type: 'pattern',
       privacy_level: 'local',
@@ -73,7 +75,7 @@ test('runRetrieve zero matches → empty memories + no error', async () => {
     const result = await runRetrieve({
       task: 'codex',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
     });
     assert.deepStrictEqual(result.memories, []);
     assert.strictEqual(result.task, 'codex');
@@ -88,7 +90,7 @@ test('runRetrieve no index file → warning + empty memories', async () => {
     const result = await runRetrieve({
       task: 'codex',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
     });
     assert.deepStrictEqual(result.memories, []);
     assert.ok(result.warnings.some((w) => w.includes('no lexical index')));
@@ -100,7 +102,7 @@ test('runRetrieve no index file → warning + empty memories', async () => {
 test('Stage 1: deprecated cards filtered out of result', async () => {
   const tmp = mkRoot();
   try {
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_active',
       memory_type: 'pattern',
       privacy_level: 'local',
@@ -114,7 +116,7 @@ test('Stage 1: deprecated cards filtered out of result', async () => {
       status: 'candidate',
       dedupe_key: 'sha256:active',
     });
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_deprecated',
       memory_type: 'pattern',
       privacy_level: 'local',
@@ -131,7 +133,7 @@ test('Stage 1: deprecated cards filtered out of result', async () => {
     const result = await runRetrieve({
       task: 'codex skill discovery',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
     });
     const ids = result.memories.map((c) => c.payload.memory_id);
     assert.ok(ids.includes('mem_active'));
@@ -144,7 +146,7 @@ test('Stage 1: deprecated cards filtered out of result', async () => {
 test('Stage 4: missing project_profile forces w_project_sim=0 (warning emitted)', async () => {
   const tmp = mkRoot();
   try {
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_x',
       memory_type: 'pattern',
       privacy_level: 'global',
@@ -173,7 +175,7 @@ test('Stage 4: missing project_profile forces w_project_sim=0 (warning emitted)'
 test('Stage 6: applicability guard drops cards where task overlaps non_applicability', async () => {
   const tmp = mkRoot();
   try {
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_blocked',
       memory_type: 'pattern',
       privacy_level: 'local',
@@ -189,7 +191,7 @@ test('Stage 6: applicability guard drops cards where task overlaps non_applicabi
       status: 'candidate',
       dedupe_key: 'sha256:blocked',
     });
-    plantAndIndex(tmp, 'proj_test', {
+    plantAndIndex(tmp, PROJECT_ID, {
       memory_id: 'mem_ok',
       memory_type: 'pattern',
       privacy_level: 'local',
@@ -206,7 +208,7 @@ test('Stage 6: applicability guard drops cards where task overlaps non_applicabi
     const result = await runRetrieve({
       task: 'claude code slash command',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
     });
     const ids = result.memories.map((c) => c.payload.memory_id);
     assert.ok(!ids.includes('mem_blocked'), 'applicability guard drops blocked card');
@@ -221,7 +223,7 @@ test('Stage 7: diversity collapses same dedupe_key clusters + caps per memory_ty
   try {
     // 5 cards all same dedupe_key + same memory_type
     for (let i = 0; i < 5; i++) {
-      plantAndIndex(tmp, 'proj_test', {
+      plantAndIndex(tmp, PROJECT_ID, {
         memory_id: 'mem_' + i,
         memory_type: 'failure-case',
         privacy_level: 'local',
@@ -239,7 +241,7 @@ test('Stage 7: diversity collapses same dedupe_key clusters + caps per memory_ty
     const result = await runRetrieve({
       task: 'codex skill',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
       diversityPerType: 2,
     });
     assert.strictEqual(result.memories.length, 1, 'same dedupe_key collapses to 1');
@@ -252,7 +254,7 @@ test('Stage 7: diversity caps per memory_type at diversityPerType', async () => 
   const tmp = mkRoot();
   try {
     for (let i = 0; i < 5; i++) {
-      plantAndIndex(tmp, 'proj_test', {
+      plantAndIndex(tmp, PROJECT_ID, {
         memory_id: 'mem_' + i,
         memory_type: 'pattern',
         privacy_level: 'local',
@@ -270,7 +272,7 @@ test('Stage 7: diversity caps per memory_type at diversityPerType', async () => 
     const result = await runRetrieve({
       task: 'codex skill',
       memoryRoot: tmp,
-      projectProfile: { project_id: 'proj_test' },
+      projectProfile: { project_id: PROJECT_ID },
       diversityPerType: 2,
     });
     assert.strictEqual(result.memories.length, 2, 'diversityPerType=2 caps pattern type to 2');

@@ -1,6 +1,6 @@
 {
   "name": "deep-memory",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Cross-project semantic operational memory",
   "author": { "name": "sungmin" },
   "repository": "https://github.com/Sungmin-Cho/claude-deep-memory.git",
@@ -8,7 +8,6 @@
   "keywords": ["memory", "cross-project", "deep-suite"],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Deep Memory",
     "shortDescription": "Cross-project operational memory + reasoning",

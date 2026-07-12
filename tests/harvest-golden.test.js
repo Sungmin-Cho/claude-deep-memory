@@ -59,7 +59,11 @@ test('harvest of recurring-findings fixture produces failure-case card with clai
     // envelope.provenance.source_artifacts is suite-shape {path, run_id} only;
     // deep-memory specific fields live in payload.deep_memory_provenance.
     assert.strictEqual(c.payload.deep_memory_provenance[0].artifact_kind, 'recurring-findings');
-    assert.match(c.envelope.provenance.source_artifacts[0].path, /sample-recurring-findings\.json$/);
+    assert.ok(
+      c.envelope.provenance.source_artifacts[0].path.endsWith(
+        path.join('tests', 'fixtures', 'sample-recurring-findings.json'),
+      ),
+    );
     // persisted to disk
     const onDisk = path.join(tmp, 'cards', 'failure-case', 'proj_aaaaaaaaaaaa', c.payload.memory_id + '.json');
     assert.ok(fs.existsSync(onDisk));

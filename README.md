@@ -8,96 +8,89 @@
 
 > Cross-project semantic operational memory for the [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
 
-Harvests artifacts emitted by sibling deep-suite plugins, distills them into reusable memory cards (Hybrid: rule-based + LLM sub-agent), and surfaces task-specific memory briefs that future work can recall: a 3-layer memory model (Events → Cards → Briefs), cross-runtime hook capture (opt-in), hybrid retrieval (FTS5 + vector), and an MCP server with a slash-only mutation gate. See the [CHANGELOG](CHANGELOG.md) for release history.
+deep-memory harvests sibling-plugin artifacts, distills reusable memory cards, and supplies task-specific briefs to later work. It supports Claude Code and Codex natively while keeping capture opt-in and project-scoped. See the [CHANGELOG](CHANGELOG.md) for release history.
 
 ## Install
 
-Via the `claude-deep-suite` marketplace:
+Node 22 is required. Native Windows 11, macOS, and Linux are supported; Windows does not require Git Bash.
 
-```bash
-# Claude Code
+### Claude Code
+
+```text
 /plugin install deep-memory@claude-deep-suite
-
-# Codex
-codex plugin install deep-memory
 ```
 
-Or directly from this repo with `--source url` pointed at the GitHub URL.
+### Codex
+
+```text
+codex plugin add deep-memory@claude-deep-suite
+```
 
 ## Quick start
 
-```bash
-# 1. Initialize memory root (~/.deep-memory/ by default; override with DEEP_MEMORY_ROOT)
+Claude Code uses slash skills:
+
+```text
 /deep-memory-init
-
-#    Optional: opt into automatic hook capture (default OFF — global toggle)
-/deep-memory-init --enable-capture     # ...or --disable-capture to turn it back off
-
-# 2. Harvest the current project's sibling-plugin artifacts
 /deep-memory-harvest
-
-# 3. Get a memory brief for an upcoming task
-/deep-memory-brief "implement Codex-compatible plugin manifest"
-
-# 4. Periodic audit (stale memory, schema drift, lock recovery)
+/deep-memory-brief "implement a Codex-compatible plugin"
 /deep-memory-audit
 ```
 
-Automatic hook capture is **OFF by default** (it records tool I/O to
-`~/.deep-memory/events/`, so it requires an explicit opt-in). `--enable-capture`
-writes `capture.enabled: true` to the single global `config.yaml`, so the toggle
-applies across **all** workspaces — but captured events/cards are tagged with the
-working project's `project_id` and default to `privacy_level: local`, keeping
-memory isolated per project. Manual paths (`/deep-memory-harvest`,
-`/deep-memory-brief`) work with capture left off.
+Codex uses namespaced skills:
+
+```text
+$deep-memory:deep-memory-init
+$deep-memory:deep-memory-harvest
+$deep-memory:deep-memory-brief "implement a Codex-compatible plugin"
+$deep-memory:deep-memory-audit
+```
+
+Automatic hook capture is **OFF by default**. Enable it explicitly with the init skill's `--enable-capture` option; manual harvest and brief flows work while capture stays off.
 
 ## Three-layer model
 
-1. **Events** — append-only JSONL of raw harvest under `~/.deep-memory/events/YYYY-MM.jsonl`
-2. **Cards** — distilled M3-envelope-wrapped semantic memory under `~/.deep-memory/cards/<type>/{global,project_id}/`
-3. **Briefs** — top-N retrieval written to `.deep-memory/latest-brief.{json,md}` for the current project
+1. **Events** — append-only captured or harvested observations.
+2. **Cards** — redacted, project-scoped semantic memory with loss-averse lifecycle state.
+3. **Briefs** — ranked task context produced from native FTS5 or a bounded card-scan fallback.
 
 ## Skills
 
 | Skill | Purpose |
 |---|---|
-| `deep-memory-init` | initialize memory root + project profile |
-| `deep-memory-harvest` | scan sibling artifacts → distill → persist |
-| `deep-memory-brief` | top-N memory brief for a task |
-| `deep-memory-audit` | schema/stale/redaction/lock/promote audit |
-| `memory-schema` (reference) | M3 envelope + card schema + state machine |
+| `deep-memory-init` | initialize the memory root and trusted project profile |
+| `deep-memory-harvest` | map sibling artifacts, run optional Step B refinement, and persist cards |
+| `deep-memory-brief` | retrieve a scoped task brief |
+| `deep-memory-audit` | inspect schema, lifecycle, locks, and store health |
+| `deep-memory-export` | export cards for backup or transfer |
+| `deep-memory-promote` | promote an explicitly selected local card |
+| `deep-memory-forget` | delete an explicitly confirmed card |
 
 ## Privacy
 
-- 3-pass rule-based redaction (Step A input / Step B input / envelope wrap)
-- `privacy_level: local` per-card default; `--promote <id>` is the only path to global memory
-- Automatic hook capture is **OFF by default**; opt in with `/deep-memory-init --enable-capture` (revert with `--disable-capture`). Every actual toggle is recorded as a `capture-toggle` audit-log entry.
-- `suppressions.yaml` for user-defined deny patterns
+- Three redaction boundaries cover source input, host-mediated refinement input, and persisted output.
+- New cards default to `privacy_level: local`; promotion is explicit.
+- Capture is **OFF by default**, and every real toggle is audited.
+- Host-mediated Step B receives only a redacted event draft and a redacted excerpt capped at 4,096 UTF-8 bytes.
 
 ## Cross-runtime
 
-Same skills run from Claude Code (slash), Codex (`$deep-memory:...`), Copilot CLI, Gemini CLI, Agent SDK (`Skill({skill:"deep-memory:..."})`). LLM distillation auto-detects the host adapter (claude-agent / codex-bash / gemini-sdk / stdin-fallback).
+- Claude Code retains six hook events; Codex uses the four events its host supports. Both surfaces share capture semantics and native Node commands.
+- Claude Code routes Step B to the named read-only distiller agent. Codex routes it through a generic subagent that first reads the same authoritative agent contract.
+- The mediator is an explicit shell-free executable JSON process contract. Missing, invalid, or timed-out mediation is recorded as a candidate fallback.
+- Native FTS5 is the primary lexical index. When native SQLite is unavailable, reads use a privacy-scoped bounded card-scan fallback instead of returning an empty brief.
 
-## Troubleshooting
+## Support and recovery
 
-### `FTS5 lexical index unavailable` warning during /deep-memory-harvest or /deep-memory-brief
+After upgrading, initialize every workspace and then harvest again. Old-scope artifacts are not migrated automatically or re-associated, and non-reharvestable legacy cards remain archived under their old scope; export or back up those cards before upgrading where applicable.
 
-This message means `better-sqlite3` could not be loaded in your current Node
-runtime. Common causes:
+Run Node 22 on native Windows 11, macOS, or Linux. If a host mediator is unavailable, harvest still persists a candidate and records a typed warning in `.deep-memory/latest-harvest.json`. For security reporting, see [SECURITY.md](SECURITY.md).
 
-- **Node v26+** — prebuilt better-sqlite3 binaries may not yet be published for
-  the newest Node releases, and the marketplace plugin cache is immutable
-  (no on-the-fly rebuild). harvest still writes cards/events to disk, but the
-  FTS5 index is skipped and `/deep-memory-brief` returns empty results.
-- **Missing build toolchain** — if you've cleared the cache and tried to
-  rebuild from source, you need Python 3, a C++ compiler, and make.
+## Links
 
-`better-sqlite3` is the primary SQLite driver; `sql.js` (WASM) ships as an
-optional fallback dependency, so retrieval degrades gracefully rather than
-crashing when the native module is unavailable.
-
-**Workaround**: use Node 22 LTS — `nvm install 22 && nvm use 22` — and re-run
-`/deep-memory-harvest`.
+- [Release history](CHANGELOG.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)
 
 ## License
 

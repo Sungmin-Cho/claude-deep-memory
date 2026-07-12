@@ -21,7 +21,10 @@
 // Output: { task, memories: [...], warnings: [...] }
 'use strict';
 const fs = require('node:fs');
-const path = require('node:path');
+const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
+const { scanCards } = require('./lib/card-scan-search');
+const { createCardFilesystemBudget } = require('./lib/card-paths');
+const { isValidProjectId } = require('./lib/validate-project-id');
 // v0.1.2 — FTS5 graceful degradation. If better-sqlite3 native binding is
 // unavailable (Node v26+ with immutable plugin cache), retrieve returns an
 // empty result + explicit warning instead of hard-throwing at require-time.
@@ -35,8 +38,7 @@ try {
 }
 const FTS_DEGRADED_WARNING_RETRIEVE =
   'FTS5 lexical index unavailable (better-sqlite3 not loadable in this Node ' +
-  'environment). brief returns empty — re-run with Node 22 LTS, or wait for ' +
-  'v0.2.0 sql.js fallback. See README.md > Troubleshooting.';
+  'environment); using a bounded privacy-scoped card scan.';
 const { bm25MinMax, scoreCard } = require('./lib/score');
 const { redactString } = require('./lib/redact');
 // Card-state filters live in lib/card-filters.js so the MCP hybrid path
@@ -97,41 +99,63 @@ async function runRetrieve({
   if (!projectProfile) {
     warnings.push('missing project-profile — w_project_sim forced to 0');
   }
-  // v0.1.2 — degraded mode: fts-index module failed to load (better-sqlite3
-  // native binding unavailable). Return empty result + explicit warning so the
-  // brief renderer surfaces the actionable message to the user.
+  const requestedProjectId = projectProfile?.project_id || null;
+  const projectId = requestedProjectId !== null && isValidProjectId(requestedProjectId)
+    ? requestedProjectId
+    : null;
+  if (requestedProjectId !== null && projectId === null) {
+    warnings.push('project_scope_invalid — global-only retrieval');
+  }
+  const dbPath = v2LexicalIndexPath(memoryRoot);
+
+  function useCardScan() {
+    const scanned = scanCards({
+      root: memoryRoot,
+      currentProjectId: projectId,
+      query: task,
+      topK: Math.max(1, topN * 3),
+    });
+    warnings.push(...scanned.warnings);
+    if (!warnings.includes('lexical_stream_fallback')) warnings.push('lexical_stream_fallback');
+    return scanned.rows;
+  }
+
+  let rows = [];
   if (!_fts) {
-    // v0.1.3 — redact native loader error before exposing it (paths may leak).
     const causeRedacted = _ftsLoadError ? redactString(_ftsLoadError) : '';
     warnings.push(
       FTS_DEGRADED_WARNING_RETRIEVE +
         (causeRedacted ? ` (cause: ${causeRedacted})` : '')
     );
-    return { task, memories: [], warnings };
-  }
-  const projectId = projectProfile?.project_id || null;
-  const dbPath = path.join(memoryRoot, 'indexes', 'lexical.sqlite');
-  if (!fs.existsSync(dbPath)) {
-    warnings.push('no lexical index — run /deep-memory-harvest first');
-    return { task, memories: [], warnings };
-  }
-
-  const idx = _fts.openIndex(dbPath);
-  let rows = [];
-  try {
-    // Stage 0 — BM25 overfetch + privacy filter (in SQL)
-    rows = _fts.search(idx, task, { topN, projectId });
-  } finally {
-    _fts.closeIndex(idx);
+    rows = useCardScan();
+  } else if (!fs.existsSync(dbPath)) {
+    warnings.push('no lexical index — using bounded card scan; run /deep-memory-harvest to rebuild FTS5');
+    rows = useCardScan();
+  } else {
+    let idx = null;
+    try {
+      idx = _fts.openIndex(dbPath);
+      // Stage 0 — BM25 overfetch + privacy filter (in SQL)
+      rows = _fts.search(idx, task, { topN, projectId });
+    } catch {
+      warnings.push('native_lexical_query_failed');
+      rows = useCardScan();
+    } finally {
+      if (idx) {
+        try { _fts.closeIndex(idx); } catch { /* retrieval remains read-only and bounded */ }
+      }
+    }
   }
   if (rows.length === 0) {
     return { task, memories: [], warnings };
   }
 
   // Stage 3 — load full payloads (deprecated/stale filtering reads card metadata)
+  const budget = createCardFilesystemBudget(5000);
   const loaded = rows
-    .map((row) => ({ row, card: loadCard(memoryRoot, row) }))
+    .map((row) => ({ row, card: loadCard(memoryRoot, row, { currentProjectId: projectId, budget }) }))
     .filter((x) => x.card);
+  if (budget.exhausted) warnings.push('card_filesystem_budget_exhausted');
   if (loaded.length === 0) {
     warnings.push('FTS index references cards no longer on disk — consider /deep-memory-audit');
     return { task, memories: [], warnings };

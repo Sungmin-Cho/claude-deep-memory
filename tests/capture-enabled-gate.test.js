@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { writeValidProjectProfile } = require('./helpers/project-profile-fixtures');
 
 function mkTmpRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dm-capture-gate-'));
@@ -40,6 +41,7 @@ test('R4-D: hook with capture.enabled=false leaves events.jsonl unchanged', () =
 test('R4-D: capture.enabled=true → append exactly one event', () => {
   const tmpRoot = mkTmpRoot();
   writeConfig(tmpRoot, true);
+  writeValidProjectProfile(tmpRoot);
   const r = spawnSync('node', ['scripts/hooks/post-tool-use.mjs'], {
     input: JSON.stringify({
       tool_name: 'Edit',

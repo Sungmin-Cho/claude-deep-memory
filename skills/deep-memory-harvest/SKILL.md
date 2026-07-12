@@ -46,12 +46,22 @@ Harvest deep-suite sibling artifacts, distill them through the two-step pipeline
 전체 절차는 `scripts/harvest.js` 가 단일 진입점으로 수행합니다. v0.1.0 CLI는 아티팩트 1개를 직접 지정하는 방식입니다:
 
 ```
-node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>]
+node scripts/harvest.js <artifact-path> --kind <sourceKind> [--project <projectId>] [--skip-distill-step-b]
 ```
 
 `sourceKind`: `review-recurring | evolve-insights | work-receipt | docs-scan | wiki-index`
 
 config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
+
+### Step B host dispatch
+
+- The Claude Code host mediator invokes the named `memory-distiller` agent and passes only the redacted request fields.
+- The Codex host mediator spawns a generic subagent. Its first action is to read `${PLUGIN_ROOT}/agents/memory-distiller.md`; it must preserve the agent's `Read, Glob, Grep only; no write` restriction and return JSON only.
+- The mediator implements `deep-memory-host-distill-v1` through an executable process spec. Missing mediation is an explicit candidate fallback, never a hidden no-op.
+- Gemini and other hosts retain their configured SDK or stdin adapter and state when they fall back.
+- Every result passes contract verification and `llm-bridge` Ajv validation. Invalid or timeout output remains a candidate fallback.
+
+`--skip-distill-step-b` is an explicit offline opt-out. Without it, the CLI attempts Step B and records any typed fallback warning in `latest-harvest.json`.
 
 ## Invariants (spec §7.3 reference)
 
@@ -65,7 +75,8 @@ config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
 
 - `~/.deep-memory/cards/<memory_type>/<project_id>/<memory_id>.json`
 - `~/.deep-memory/events/YYYY-MM.jsonl` (append-only)
-- `~/.deep-memory/indexes/lexical.sqlite` (FTS5 upsert)
+- `~/.deep-memory/indexes/v2/lexical.sqlite` (FTS5 upsert)
+- 1.0.1 `~/.deep-memory/indexes/lexical.sqlite` 는 sealed legacy artifact 로 열거나 삭제하지 않음. 복구가 필요하면 v2 인덱스에 대한 manual non-migrating recovery 만 수행.
 - `.deep-memory/latest-harvest.json` (project-local summary)
 
 ## Privacy invariant
@@ -80,7 +91,7 @@ config.yaml 기반 전체 glob 스캔은 v0.1.x에서 제공 예정입니다.
 - `Unknown sourceKind` — config.yaml 의 `sources[*].kind` 가 builtin mapper 와 불일치. config 확인 안내.
 - LLM Step B 실패 (`llm-bridge.on_failure: candidate`) — Step A 결과만으로 candidate card 생성 (Step B 결여 → confidence 낮음).
 - FTS5 module 로드 실패 (`better-sqlite3` unavailable) → graceful degradation. cards/events 는 정상 write, FTS5 upsert 만 skip. `cards.warnings` (non-enumerable) 에 redacted warning 노출, `.deep-memory/latest-harvest.json` 의 `warnings[]` 에도 mirror.
-- FTS5 런타임 upsert 실패 → lock 안에서 throw, release 전이므로 lock + lease 는 finally 가 정리. cards 는 이미 disk 에 commit 된 상태 (rollback 없음 — `/deep-memory-audit --rebuild-index` 안내).
+- FTS5 런타임 upsert 실패 → lock 안에서 throw, release 전이므로 lock + lease 는 finally 가 정리. cards 는 이미 disk 에 commit 된 상태. v2 인덱스만 manual non-migrating recovery 하며 sealed legacy index 는 건드리지 않음.
 
 ## See also
 

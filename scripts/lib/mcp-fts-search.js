@@ -1,59 +1,58 @@
 'use strict';
-// scripts/lib/mcp-fts-search.js
-// Builds the `ftsSearch` callback that runHybridRetrieve expects, wiring the
-// MCP read tools (brief / smart_search / recall) to the real FTS5 lexical
-// index instead of the previous `ftsSearch: null` (which made lexical retrieval
-// a silent no-op). Mirrors scripts/retrieve.js's proven wiring: resolve
-// <root>/indexes/lexical.sqlite, open → search → close, with graceful
-// degradation when better-sqlite3 is unloadable or the index does not exist yet.
-
 const fs = require('node:fs');
-const path = require('node:path');
-const { redactString } = require('./redact');
+const { v2LexicalIndexPath } = require('./v2-index-paths');
+const { scanCards } = require('./card-scan-search');
 
-/**
- * @param {string} root - $DEEP_MEMORY_ROOT
- * @param {object} [deps] - test seam; `loadFts` overrides the fts-index require
- * @returns {Function} ftsSearch: ({query, currentProjectId, topK}) => rows[]
- *
- * The callback is returned unconditionally (never null) so runHybridRetrieve
- * surfaces the *real* reason a stream came back empty:
- *   - driver unloadable → the callback throws → `fts_stream_error: FTS5 …`
- *   - index file absent  → the callback returns [] → honest empty result
- *     (no cards harvested yet), without creating an empty sqlite file
- */
-function makeFtsSearch(root, { loadFts = () => require('./fts-index') } = {}) {
+const FALLBACK_WARNING = 'lexical_stream_fallback';
+
+function makeFtsSearch(root, {
+  loadFts = () => require('./fts-index'),
+  io = fs,
+  scanCardsImpl = scanCards,
+} = {}) {
   let fts = null;
-  let loadError = null;
   try {
-    // fts-index treats better-sqlite3 as a hard require (throws at load time
-    // when the native binding is unavailable), so guard the require here.
     fts = loadFts();
-  } catch (e) {
-    // The native loader error may embed absolute paths (e.g. `Cannot find
-    // module '/Users/.../better_sqlite3.node'`). runHybridRetrieve copies the
-    // thrown message into MCP-visible warnings, so redact at capture time —
-    // same privacy invariant as harvest.js's ftsLoadError handling.
-    loadError = redactString(e && e.message ? e.message : String(e));
+  } catch {
+    // Loader diagnostics can contain native paths. The transport contract is a
+    // bounded reason code, so no exception text crosses this boundary.
   }
-  const dbPath = path.join(root, 'indexes', 'lexical.sqlite');
+  const dbPath = v2LexicalIndexPath(root);
 
-  return ({ query, currentProjectId, topK }) => {
-    if (!fts) {
-      throw new Error(`FTS5 lexical index unavailable (better-sqlite3 not loadable): ${loadError}`);
-    }
-    // retrieve.js guards existsSync before openIndex specifically to avoid
-    // better-sqlite3 creating an empty DB for a project that never harvested.
-    if (!fs.existsSync(dbPath)) {
-      return [];
-    }
-    const idx = fts.openIndex(dbPath);
+  function fallback(request) {
+    const scanned = scanCardsImpl({
+      root,
+      currentProjectId: request.currentProjectId,
+      query: request.query,
+      topK: request.topK,
+      io,
+    });
+    return {
+      rows: scanned.rows,
+      stream: 'card-scan',
+      warnings: [...new Set([...scanned.warnings, FALLBACK_WARNING])],
+    };
+  }
+
+  return (request) => {
+    if (!fts || !io.existsSync(dbPath)) return fallback(request);
+    let index = null;
     try {
-      return fts.search(idx, query, { topN: topK, projectId: currentProjectId });
+      index = fts.openIndex(dbPath);
+      const rows = fts.search(index, request.query, {
+        topN: request.topK,
+        projectId: request.currentProjectId,
+      });
+      if (!Array.isArray(rows)) throw new TypeError('native lexical search returned a non-array');
+      return { rows, stream: 'fts5', warnings: [] };
+    } catch {
+      return fallback(request);
     } finally {
-      fts.closeIndex(idx);
+      if (index) {
+        try { fts.closeIndex(index); } catch { /* query result/fallback remains authoritative */ }
+      }
     }
   };
 }
 
-module.exports = { makeFtsSearch };
+module.exports = { makeFtsSearch, FALLBACK_WARNING };

@@ -6,13 +6,14 @@ const path = require('node:path');
 const os = require('node:os');
 const { harvestArtifact } = require('../scripts/harvest');
 const { detectSourceRenames } = require('../scripts/audit');
+const { REDACT_TAG } = require('../scripts/lib/redact');
 
 function mkRoot() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-rename-'));
   for (const sub of ['cards', 'events', 'indexes', 'projects', '.leases']) {
     fs.mkdirSync(path.join(tmp, sub), { recursive: true });
   }
-  return tmp;
+  return fs.realpathSync.native(tmp);
 }
 
 test('Task 5.5: source file unchanged → no unresolved entries (clean baseline)', async () => {
@@ -27,7 +28,7 @@ test('Task 5.5: source file unchanged → no unresolved entries (clean baseline)
       projectId: 'proj_aaaaaaaaaaaa',
       skipDistillStepB: true,
     });
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.ok(result.scanned >= 1);
     assert.deepStrictEqual(result.unresolved, [],
       'baseline: source file unchanged since harvest');
@@ -58,7 +59,7 @@ test('Task 5.5: source file content mutated → content_drift reported', async (
       tags: ['mutated'],
     });
     fs.writeFileSync(fixture, JSON.stringify(raw));
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.unresolved.length, 1);
     assert.strictEqual(result.unresolved[0].reason, 'content_drift');
     assert.notStrictEqual(result.unresolved[0].expected_hash, result.unresolved[0].actual_hash);
@@ -80,10 +81,40 @@ test('Task 5.5: source file deleted → missing reported', async () => {
       skipDistillStepB: true,
     });
     fs.unlinkSync(fixture);
-    const result = detectSourceRenames(tmp);
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
     assert.strictEqual(result.unresolved.length, 1);
     assert.strictEqual(result.unresolved[0].reason, 'missing');
     assert.strictEqual(result.unresolved[0].actual_hash, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Task 5.5: non-reversible source provenance is reported without filesystem remapping', async () => {
+  const tmp = mkRoot();
+  try {
+    const fixture = path.join(tmp, 'fixture.json');
+    fs.copyFileSync(path.join(__dirname, 'fixtures/sample-recurring-findings.json'), fixture);
+    const cards = await harvestArtifact({
+      artifactPath: fixture,
+      sourceKind: 'review-recurring',
+      memoryRoot: tmp,
+      projectId: 'proj_aaaaaaaaaaaa',
+      skipDistillStepB: true,
+    });
+    const card = cards[0];
+    const cardPath = path.join(
+      tmp, 'cards', card.payload.memory_type, 'proj_aaaaaaaaaaaa', `${card.payload.memory_id}.json`,
+    );
+    const persisted = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
+    persisted.envelope.provenance.source_artifacts[0].path = REDACT_TAG;
+    fs.writeFileSync(cardPath, JSON.stringify(persisted));
+
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
+    assert.equal(result.unresolved.length, 1);
+    assert.equal(result.unresolved[0].reason, 'source_redacted');
+    assert.equal(result.unresolved[0].actual_hash, null);
+    assert.equal(result.unresolved[0].source_path, REDACT_TAG);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -119,7 +150,7 @@ test('ITEM-3-r2: harvest under HOME → audit sees clean baseline (no false-posi
 
     // Verify the persisted card uses a ~/ path (harvest redacts home to ~/)
     // Then detectSourceRenames must not report false-positive missing
-    const result = detectSourceRenames(memRoot);
+    const result = detectSourceRenames(memRoot, { projectId: 'proj_333333333333' });
     assert.ok(result.scanned >= 1, 'at least one card scanned');
     assert.deepStrictEqual(result.unresolved, [],
       `Expected no false-positive missing, got: ${JSON.stringify(result.unresolved)}`);

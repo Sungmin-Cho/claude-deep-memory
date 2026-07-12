@@ -14,8 +14,8 @@ const crypto = require('node:crypto');
 const Ajv = require('ajv/dist/2020').default;
 const addFormats = require('ajv-formats').default || require('ajv-formats');
 
-const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'audit-log-entry.schema.json');
-const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+const { getSchema } = require('./schema-registry');
+const schema = getSchema('audit-log-entry');
 const ajv = new Ajv({ strict: true, allErrors: true });
 addFormats(ajv);
 const validate = ajv.compile(schema);

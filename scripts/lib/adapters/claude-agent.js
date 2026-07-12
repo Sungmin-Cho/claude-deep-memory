@@ -1,13 +1,12 @@
 // scripts/lib/adapters/claude-agent.js
 // Claude Code Agent-tool adapter for the memory-distiller sub-agent.
 //
-// MVP exercises the recordedFixture path (deterministic CI tests). The live
-// dispatch hook (`liveAgent: true`) is intentionally NOT wired — a future
-// release will add the actual `Agent({subagent_type: "memory-distiller"})` call
-// here. Throwing ADAPTER_NOT_WIRED today lets harvest gracefully degrade to
-// candidate (spec §7.2) instead of crashing.
+// Recorded fixtures remain available for deterministic characterization. Live
+// refinement is mediated by a host-provided executable process spec; this
+// adapter never constructs a shell command or duplicates the agent prompt.
 'use strict';
 const fs = require('node:fs');
+const { dispatchHostMediated } = require('../host-mediated-dispatch');
 
 function readRecordedFixture(fixturePath) {
   const text = fs.readFileSync(fixturePath, 'utf8').trim();
@@ -28,21 +27,27 @@ function readRecordedFixture(fixturePath) {
   return rec.output;
 }
 
-async function refine(eventDraft, sourceExcerpt, { recordedFixture = null, liveAgent = false } = {}) {
+async function refine(eventDraft, sourceExcerpt, options = {}) {
+  const { recordedFixture = null, hostProcessSpec, hostDispatchTimeoutMs } = options;
   if (recordedFixture) {
     return readRecordedFixture(recordedFixture);
   }
-  if (liveAgent) {
-    throw Object.assign(
-      new Error('claude-agent live dispatch not yet wired — pass {recordedFixture: ...} for MVP'),
-      { code: 'ADAPTER_NOT_WIRED' }
-    );
+  try {
+    return await dispatchHostMediated({
+      host: 'claude-code',
+      eventDraft,
+      sourceExcerpt,
+      processSpec: hostProcessSpec,
+      timeoutMs: hostDispatchTimeoutMs || 30000,
+    });
+  } catch (error) {
+    // Preserve the direct-adapter compatibility code. llm-bridge translates it
+    // back to the public host_dispatch_unavailable code for production callers.
+    if (error && error.code === 'host_dispatch_unavailable') {
+      throw Object.assign(new Error(error.message), { code: 'ADAPTER_NOT_WIRED', cause: error });
+    }
+    throw error;
   }
-  // P4: typed code so harvest catches and falls back to candidate (no crash)
-  throw Object.assign(
-    new Error('claude-agent: no recorded fixture and live Agent disabled'),
-    { code: 'ADAPTER_NOT_WIRED' }
-  );
 }
 
 module.exports = { refine };

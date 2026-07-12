@@ -12,28 +12,41 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { writeValidProjectProfile } = require('../helpers/project-profile-fixtures');
 
-const HOOKS = [
-  'session-start.mjs',
-  'user-prompt-submit.mjs',
-  'post-tool-use.mjs',
-  'post-tool-failure.mjs',
-  'pre-compact.mjs',
-  'session-end.mjs',
-];
+const ROOT = path.resolve(__dirname, '../..');
+
+function hookScripts(manifestPath) {
+  const hooks = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).hooks;
+  return Object.fromEntries(Object.entries(hooks).map(([event, entries]) => {
+    const handlers = entries.flatMap((entry) => entry.hooks || []);
+    assert.strictEqual(handlers.length, 1, `${event}: expected exactly one handler`);
+    const match = handlers[0].command.match(/scripts[\\/]hooks[\\/]([^"']+\.mjs)/);
+    assert.ok(match, `${event}: command must name a hook script`);
+    return [event, match[1]];
+  }));
+}
+
+const CLAUDE_HOOKS = hookScripts(path.join(ROOT, '.claude-plugin', 'plugin.json'));
+const CODEX_HOOKS = hookScripts(path.join(ROOT, 'hooks', 'hooks.json'));
+const HOOKS = [...new Set([...Object.values(CLAUDE_HOOKS), ...Object.values(CODEX_HOOKS)])];
 
 function mkTmpRoot(captureEnabled = true) {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-hook-resil-'));
-  fs.writeFileSync(path.join(r, 'config.yaml'), `capture:\n  enabled: ${captureEnabled}\n`);
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), 'dm hook resilience Ω '));
+  fs.writeFileSync(path.join(r, 'config.yaml'), `capture:\r\n  enabled: ${captureEnabled}\r\n`);
+  if (captureEnabled) writeValidProjectProfile(r);
   return r;
 }
 
 function runHook(script, root, input) {
-  return spawnSync('node', [`scripts/hooks/${script}`], {
-    input,
+  return spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'hooks', script)], {
+    cwd: root,
+    input: input.endsWith('\r\n') ? input : `${input}\r\n`,
     env: { ...process.env, DEEP_MEMORY_ROOT: root, PROJECT_CWD: root },
     encoding: 'utf8',
     timeout: 5000,
+    shell: false,
+    windowsHide: true,
   });
 }
 
@@ -46,6 +59,7 @@ for (const script of HOOKS) {
     const root = mkTmpRoot(true);
     const r = runHook(script, root, 'this is not valid json {{{');
     assert.strictEqual(r.status, 0, `${script} must exit 0 on malformed stdin; stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, '', `${script}: malformed input must not pollute stdout`);
     // No event line should have been appended from unparseable input.
     if (fs.existsSync(monthFile(root))) {
       const lines = fs.readFileSync(monthFile(root), 'utf8').split('\n').filter(Boolean);
@@ -68,6 +82,7 @@ test('post-tool-use: stale .lock (capture ON) → exit 0, capture skipped with w
   }));
 
   assert.strictEqual(r.status, 0, `must exit 0 on stale lock; stderr=${r.stderr}`);
+  assert.strictEqual(r.stdout, '', 'lock contention must not pollute stdout');
   assert.match(r.stderr, /stale lock/i, 'should log a stale-lock warning');
   // Event skipped — no line appended while the stale lock is held.
   if (fs.existsSync(monthFile(root))) {
@@ -82,5 +97,6 @@ test('post-tool-use: malformed stdin with capture OFF still exits 0 (gate short-
   const root = mkTmpRoot(false);
   const r = runHook('post-tool-use.mjs', root, 'garbage{{{');
   assert.strictEqual(r.status, 0, `capture-OFF gate must exit 0 before reading stdin; stderr=${r.stderr}`);
+  assert.strictEqual(r.stdout, '', 'capture-OFF path should not pollute stdout');
   assert.strictEqual(r.stderr.trim(), '', 'capture-OFF path should be completely silent');
 });

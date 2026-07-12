@@ -66,12 +66,12 @@ test('ITEM-2-r5: quarantine file source.path is redacted — home dir does not a
     assert.ok(quarFiles.length > 0, 'Expected at least one quarantine file');
     const quarContent = JSON.parse(fs.readFileSync(path.join(quarDir, quarFiles[0]), 'utf8'));
 
-    // Assert the path is redacted: must start with ~/ and must NOT contain os.homedir()
+    // Assert the path is redacted with the native separator and does not contain HOME.
     const sourcePath = quarContent.source?.path;
     assert.ok(typeof sourcePath === 'string', `source.path must be a string, got ${typeof sourcePath}`);
     assert.ok(
-      sourcePath.startsWith('~/'),
-      `source.path must start with ~/ after redaction, got: ${sourcePath}`
+      sourcePath.startsWith(`~${path.sep}`),
+      `source.path must start with the native home token after redaction, got: ${sourcePath}`
     );
     assert.ok(
       !sourcePath.includes(os.homedir()),
