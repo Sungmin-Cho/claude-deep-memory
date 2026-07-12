@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {
-  acquire, release, inspectLock, isStale, breakLock, StaleLockError, STALE_MS,
+  acquire, release, inspectLock, inspectEmptyLock, isStale, breakLock, breakEmptyLock,
+  StaleLockError, STALE_MS,
 } = require('../scripts/lib/lock');
 
 test('acquire creates lock dir + metadata, release removes', async () => {
@@ -86,5 +87,40 @@ test('stale break is conditional on the exact observation and cannot delete a ne
 
   assert.strictEqual(breakLock(lockPath, staleClaim), false);
   assert.deepEqual(fs.readFileSync(path.join(lockPath, 'metadata.json')), replacement);
+  assert.ok(fs.existsSync(lockPath));
+});
+
+test('metadata-free stale break is identity-bound and cannot delete a replacement owner', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-empty-lock-race-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const lockPath = path.join(dir, '.lock');
+  const displaced = path.join(dir, '.lock.displaced');
+  fs.mkdirSync(lockPath);
+  const old = new Date(Date.now() - STALE_MS - 1000);
+  fs.utimesSync(lockPath, old, old);
+  const staleEmptyClaim = inspectEmptyLock(lockPath);
+  assert.ok(staleEmptyClaim);
+
+  fs.renameSync(lockPath, displaced);
+  fs.mkdirSync(lockPath);
+  const replacement = Buffer.from(JSON.stringify({
+    pid: process.pid, host: 'fresh', created_at: new Date().toISOString(),
+    operation: 'fresh', owner_token: '44444444-4444-4444-8444-444444444444',
+  }, null, 2));
+  fs.writeFileSync(path.join(lockPath, 'metadata.json'), replacement);
+
+  assert.strictEqual(breakEmptyLock(lockPath, staleEmptyClaim), false);
+  assert.deepEqual(fs.readFileSync(path.join(lockPath, 'metadata.json')), replacement);
+  assert.ok(fs.existsSync(lockPath));
+});
+
+test('metadata-free break helper refuses a fresh exact empty lock', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-empty-lock-fresh-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const lockPath = path.join(dir, '.lock');
+  fs.mkdirSync(lockPath);
+  const freshClaim = inspectEmptyLock(lockPath);
+  assert.ok(freshClaim);
+  assert.strictEqual(breakEmptyLock(lockPath, freshClaim), false);
   assert.ok(fs.existsSync(lockPath));
 });

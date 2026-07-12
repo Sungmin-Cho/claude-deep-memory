@@ -10,10 +10,11 @@ const { runGit } = require('./lib/git-command');
 const { setCaptureEnabled, ensureConfig } = require('./lib/capture-toggle');
 const { deriveProjectId } = require('./lib/project-resolver');
 const { validateProjectProfile } = require('./lib/project-profile-validator');
+const { expandHomePath } = require('./lib/path-utils');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
-  return root.replace(/^~/, os.homedir());
+  return expandHomePath(root);
 }
 
 // ITEM-6-r4: accept cwd so callers in different working directories get the

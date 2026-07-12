@@ -149,6 +149,151 @@ test('network path detection recognizes UNC and extended UNC only on Windows', (
   assert.equal(isNetworkPath('/home/me/memory', 'linux'), false);
 });
 
+test('home expansion normalizes either tilde separator with the target platform path API', () => {
+  const { expandHomePath } = require('../scripts/lib/path-utils');
+  assert.equal(
+    expandHomePath('~/memory root', {
+      homeDir: 'C:\\Users\\runneradmin',
+      pathApi: path.win32,
+    }),
+    'C:\\Users\\runneradmin\\memory root',
+  );
+  assert.equal(
+    expandHomePath('~\\memory root', {
+      homeDir: '/home/runner',
+      pathApi: path.posix,
+    }),
+    '/home/runner/memory root',
+  );
+  assert.equal(
+    expandHomePath('~other/literal', {
+      homeDir: '/home/runner',
+      pathApi: path.posix,
+    }),
+    '~other/literal',
+  );
+});
+
+test('persisted-path redaction preserves an auditable Windows workspace path while collapsing home', () => {
+  const { redactPersistedPath, redactString, REDACT_TAG } = require('../scripts/lib/redact');
+  const { resolvePersistedPath } = require('../scripts/lib/path-utils');
+  const homeDir = 'C:\\Users\\runneradmin';
+  assert.equal(
+    redactPersistedPath('D:\\a\\repo Ω\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    'D:\\a\\repo Ω\\artifact.json',
+  );
+  assert.equal(
+    redactPersistedPath('C:\\Users\\runneradmin\\private\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~\\private\\artifact.json',
+  );
+  assert.equal(
+    redactPersistedPath('c:\\users\\RUNNERADMIN\\private\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~\\private\\artifact.json',
+    'current-home matching must be drive and case insensitive on Windows',
+  );
+  assert.equal(
+    redactString('c:\\users\\RUNNERADMIN\\private\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~\\private\\artifact.json',
+    'the final boundary must use the same case-insensitive home identity',
+  );
+  assert.equal(
+    redactString('c:/users/RUNNERADMIN/private/artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~/private/artifact.json',
+    'the final boundary must collapse a forward-slash current HOME without leaking the drive',
+  );
+  assert.equal(
+    redactString('D:/a/repo/private docs/artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    REDACT_TAG,
+    'forward-slash drive absolutes must be fully masked',
+  );
+  for (const absolute of [
+    '//server/share/private docs/artifact.json',
+    '//?/C:/Program Files/Forward Corp/artifact.json',
+    '//?/UNC/server/share/private docs/artifact.json',
+    String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\Users\Alice\volume private\artifact.json`,
+    String.raw`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Users\Alice\shadow private\artifact.json`,
+    '//?/Volume{12345678-1234-1234-1234-123456789abc}/Users/Alice/forward volume private/artifact.json',
+    String.raw`\\?/GLOBALROOT\Device/HarddiskVolumeShadowCopy2\Users/Alice/mixed shadow private/artifact.json`,
+  ]) {
+    assert.equal(path.win32.isAbsolute(absolute), true, absolute);
+    assert.equal(redactString(absolute, { homeDir, platform: 'win32' }), REDACT_TAG,
+      `forward-slash Windows namespace must be fully masked: ${absolute}`);
+  }
+  assert.equal(redactString('C:notes/todo.txt', { homeDir, platform: 'win32' }), 'C:notes/todo.txt',
+    'drive-relative forward-slash paths must not be misclassified as absolute');
+  assert.equal(
+    redactPersistedPath('\\\\?\\C:\\Users\\runneradmin\\private\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~\\private\\artifact.json',
+    'the supported extended drive namespace must canonicalize before home collapse',
+  );
+  assert.equal(
+    redactString('\\\\?\\C:\\Users\\runneradmin\\private\\artifact.json', {
+      homeDir,
+      platform: 'win32',
+    }),
+    '~\\private\\artifact.json',
+    'the final boundary must never emit a malformed extended home token',
+  );
+  for (const [extended, finalExpected] of [
+    ['//?/C:/Users/runneradmin/private docs/artifact.json', '~/private docs/artifact.json'],
+    [String.raw`\\?/C:/Users/runneradmin/private docs/artifact.json`, '~/private docs/artifact.json'],
+    [String.raw`//?\C:\Users\runneradmin\private docs\artifact.json`, String.raw`~\private docs\artifact.json`],
+  ]) {
+    assert.equal(path.win32.isAbsolute(extended), true, extended);
+    assert.equal(
+      redactPersistedPath(extended, { homeDir, platform: 'win32' }),
+      String.raw`~\private docs\artifact.json`,
+      `persisted extended current HOME must canonicalize before comparison: ${extended}`,
+    );
+    assert.equal(
+      redactString(extended, { homeDir, platform: 'win32' }),
+      finalExpected,
+      `final extended current HOME must not retain a namespace prefix: ${extended}`,
+    );
+  }
+
+  for (const unsafe of [
+    'C:\\Users\\runneradministrator\\private docs\\artifact.json',
+    'D:\\Users\\Alice\\private\\artifact.json',
+    'D:\\repo\\api_key=abcdefghijklmnop\\artifact.json',
+  ]) {
+    const persisted = redactPersistedPath(unsafe, { homeDir, platform: 'win32' });
+    assert.equal(persisted, REDACT_TAG, unsafe);
+    assert.equal(resolvePersistedPath(persisted, {
+      homeDir,
+      pathApi: path.win32,
+    }), null, `non-reversible provenance must never resolve as ${unsafe}`);
+    assert.equal(redactString(persisted), REDACT_TAG, unsafe);
+    assert.equal(redactString(unsafe, { homeDir, platform: 'win32' }), REDACT_TAG,
+      `the final boundary must mask the complete unsafe path: ${unsafe}`);
+  }
+
+  const workspacePath = 'D:\\a\\repo Ω\\artifact.json';
+  assert.equal(redactString(workspacePath), REDACT_TAG,
+    'an auditable persisted workspace path must still be fully masked at the MCP boundary');
+});
+
 test('atomic JSON and text writes use unique private temps in Unicode paths with no leftovers', (t) => {
   const { writeJsonAtomic, writeTextAtomic } = require('../scripts/lib/atomic-write');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm atomic Ω path '));

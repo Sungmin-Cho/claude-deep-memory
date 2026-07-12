@@ -43,7 +43,7 @@ test('ITEM-3-r5: relative artifactPath is resolved to absolute in source_artifac
     // Check that it corresponds to an absolute path pointing to the fixture
     // (after redaction, homedir prefix is replaced by ~, so we match the suffix):
     assert.ok(
-      storedPath.endsWith('tests/fixtures/sample-recurring-findings.json'),
+      storedPath.endsWith(path.join('tests', 'fixtures', 'sample-recurring-findings.json')),
       `Expected path to end with fixture filename, got: ${storedPath}`
     );
   } finally {
@@ -66,7 +66,7 @@ test('ITEM-3-r5: absolute artifactPath is unchanged in provenance (back-compat)'
     assert.ok(cards.length >= 1, 'Expected at least 1 card');
     const storedPath = cards[0].envelope?.provenance?.source_artifacts?.[0]?.path;
     assert.ok(
-      storedPath.endsWith('tests/fixtures/sample-recurring-findings.json'),
+      storedPath.endsWith(path.join('tests', 'fixtures', 'sample-recurring-findings.json')),
       `Expected absolute path preserved in provenance, got: ${storedPath}`
     );
     assert.ok(!storedPath.startsWith('.'), 'Path must not be relative');

@@ -8,12 +8,10 @@ const { harvestArtifact } = require('../scripts/harvest');
 
 test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into persisted card', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-redact-'));
+  const homeFixtureDir = fs.mkdtempSync(path.join(os.homedir(), '.dm-redact-test-'));
   try {
-    // artifactPath is inside os.homedir() — a typical real-world path
-    const artifactPath = path.join(
-      __dirname,
-      'fixtures/sample-recurring-findings.json'
-    );
+    const artifactPath = path.join(homeFixtureDir, 'sample-recurring-findings.json');
+    fs.copyFileSync(path.join(__dirname, 'fixtures/sample-recurring-findings.json'), artifactPath);
     // Confirm the path really is under homedir (test validity guard)
     assert.ok(
       artifactPath.startsWith(os.homedir()),
@@ -34,8 +32,8 @@ test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into 
 
     // Must start with ~ (home collapsed) and NOT contain the raw homedir
     assert.ok(
-      saPath.startsWith('~/'),
-      `source_artifacts[0].path should start with "~/" but got: ${saPath}`
+      saPath.startsWith(`~${path.sep}`),
+      `source_artifacts[0].path should start with native home token but got: ${saPath}`
     );
     assert.ok(
       !saPath.includes(os.homedir()),
@@ -49,8 +47,8 @@ test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into 
     const persisted = JSON.parse(fs.readFileSync(onDisk, 'utf8'));
     const diskPath = persisted.envelope.provenance.source_artifacts[0].path;
     assert.ok(
-      diskPath.startsWith('~/'),
-      `persisted card path should start with "~/" but got: ${diskPath}`
+      diskPath.startsWith(`~${path.sep}`),
+      `persisted card path should start with native home token but got: ${diskPath}`
     );
     assert.ok(
       !diskPath.includes(os.homedir()),
@@ -58,5 +56,6 @@ test('ITEM-2: source_artifacts[].path is redacted — home dir never leaks into 
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(homeFixtureDir, { recursive: true, force: true });
   }
 });

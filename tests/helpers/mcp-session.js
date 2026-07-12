@@ -15,6 +15,44 @@ function openMcpSession(command, args, options = {}) {
   let buffer = '';
   let nextId = 1;
   let initializedWritten = false;
+  let closePromise = null;
+
+  function childClosed() {
+    return child.exitCode !== null || child.signalCode !== null;
+  }
+
+  function rejectPending(error) {
+    for (const waiter of pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    pending.clear();
+  }
+
+  function waitForClose(timeoutMs) {
+    if (childClosed()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (closed) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        child.removeListener('close', onClose);
+        resolve(closed);
+      };
+      const onClose = () => finish(true);
+      timer = setTimeout(() => finish(childClosed()), timeoutMs);
+      child.once('close', onClose);
+    });
+  }
+
+  function destroyProtocolStreams() {
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      if (!stream || stream.destroyed) continue;
+      try { stream.destroy(); } catch { /* best-effort after process termination */ }
+    }
+  }
 
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -43,12 +81,9 @@ function openMcpSession(command, args, options = {}) {
     }
   });
   child.on('error', (error) => {
-    for (const waiter of pending.values()) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
-    pending.clear();
+    rejectPending(error);
   });
+  child.once('close', () => rejectPending(new Error('MCP child closed')));
 
   function write(message) {
     child.stdin.write(`${JSON.stringify(message)}\n`);
@@ -71,17 +106,27 @@ function openMcpSession(command, args, options = {}) {
     write({ jsonrpc: '2.0', method, params });
   }
 
-  async function close(timeoutMs = 1000) {
-    if (!child.killed) child.stdin.end();
-    if (child.exitCode === null) {
-      await new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          resolve();
-        }, timeoutMs);
-        child.once('exit', () => { clearTimeout(timer); resolve(); });
-      });
-    }
+  function close(timeoutMs = 1000) {
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
+      rejectPending(new Error('MCP session closed'));
+      if (!childClosed() && child.stdin && !child.stdin.destroyed) {
+        try { child.stdin.end(); } catch { /* force termination below */ }
+      }
+
+      let closed = await waitForClose(timeoutMs);
+      if (!closed) {
+        try { child.kill('SIGKILL'); } catch { /* verified below */ }
+        closed = await waitForClose(Math.max(timeoutMs, 250));
+      }
+
+      destroyProtocolStreams();
+      if (!closed) {
+        if (typeof child.unref === 'function') child.unref();
+        throw new Error(`MCP child did not close within ${timeoutMs}ms`);
+      }
+    })();
+    return closePromise;
   }
 
   return {

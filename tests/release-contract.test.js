@@ -36,6 +36,7 @@ test('CI is one uniform Node 22 pwsh matrix across Ubuntu macOS and Windows', ()
     'ubuntu-latest', 'macos-latest', 'windows-latest',
   ]);
   assert.equal(workflow.jobs?.test?.runsOn || workflow.jobs?.test?.['runs-on'], '${{ matrix.os }}');
+  assert.equal(workflow.jobs?.test?.['timeout-minutes'], 10, 'CI must bound retained-handle failures');
 
   const steps = workflow.jobs?.test?.steps || [];
   assert.equal(steps.some((step) => Object.hasOwn(step, 'shell')), false, 'per-step shell override');

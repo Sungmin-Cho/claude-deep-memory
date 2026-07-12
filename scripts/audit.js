@@ -23,13 +23,17 @@ const addFormats = require('ajv-formats').default || require('ajv-formats');
 
 const { evaluateTransitions } = require('./lib/state-machine');
 const { writeJsonAtomic } = require('./lib/atomic-write');
-const { acquire, release, inspectLock, isStale: lockIsStale, breakLock } = require('./lib/lock');
+const {
+  acquire, release, inspectLock, inspectEmptyLock,
+  isStale: lockIsStale, breakLock, breakEmptyLock,
+} = require('./lib/lock');
 // IMPL-R2-Δ1 — wire audit-log mutation emission for --unlock + --promote.
 const { writeMutationPair } = require('./lib/audit-log');
 const { hashFile } = require('./lib/source-hash');
 const { validateProjectId } = require('./lib/validate-project-id');
 const { resolveProjectScope } = require('./lib/project-resolver');
 const { getSchema } = require('./lib/schema-registry');
+const { expandHomePath, resolvePersistedPath } = require('./lib/path-utils');
 const {
   walkAllContainedCards,
   mutateContainedCard,
@@ -47,10 +51,7 @@ const PROFILE_MAX_AGE_DAYS_DEFAULT = 30;
  * Node's fs module does not expand shell-style `~` references.
  */
 function expandTilde(p) {
-  if (typeof p !== 'string' || !p) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
+  return expandHomePath(p);
 }
 
 const ajv = new Ajv({ strict: true, allErrors: true });
@@ -241,8 +242,16 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const out = { locks: [], broken: [] };
   if (!fs.existsSync(lockPath)) return out;
   const claim = inspectLock(lockPath);
+  const emptyClaim = claim ? null : inspectEmptyLock(lockPath);
   let meta = claim && claim.meta;
-  if (!meta) {
+  if (!meta && emptyClaim) {
+    meta = {
+      created_at: new Date(emptyClaim.observedMtimeMs).toISOString(),
+      pid: null,
+      host: null,
+      operation: 'lock-bootstrap',
+    };
+  } else if (!meta) {
     // malformed lock dir — surface as stale (no recoverable metadata)
     meta = { created_at: new Date(0).toISOString(), pid: null, host: null, operation: 'unknown' };
   }
@@ -250,7 +259,8 @@ function detectStaleLocks(memoryRoot, { unlock = false } = {}) {
   const stale = lockIsStale(meta);
   out.locks.push({ path: lockPath, meta, stale, age_ms });
   if (stale && unlock) {
-    if (claim && breakLock(lockPath, claim)) out.broken.push(lockPath);
+    if ((claim && breakLock(lockPath, claim))
+        || (emptyClaim && breakEmptyLock(lockPath, emptyClaim))) out.broken.push(lockPath);
   }
   return out;
 }
@@ -334,6 +344,7 @@ function setsEqual(a, b) {
  *   - file missing entirely  → unresolved_source.reason = 'missing'
  *   - hash drift             → unresolved_source.reason = 'content_drift'
  *   - source_index out of range → unresolved_source.reason = 'index_oob'
+ *   - privacy-redacted locator → unresolved_source.reason = 'source_redacted'
  *
  * Returns:
  *   {
@@ -369,7 +380,19 @@ function detectSourceRenames(memoryRoot, { projectId = null } = {}) {
         continue;
       }
       const srcPathRaw = sa[idx].path;
-      const srcPath = expandTilde(srcPathRaw);
+      const srcPath = resolvePersistedPath(srcPathRaw);
+      if (srcPath === null) {
+        out.unresolved.push({
+          path: entry.path,
+          memory_id: card.payload?.memory_id || null,
+          reason: 'source_redacted',
+          dp_id: d.id,
+          expected_hash: d.content_hash,
+          actual_hash: null,
+          source_path: srcPathRaw,
+        });
+        continue;
+      }
       if (!fs.existsSync(srcPath)) {
         out.unresolved.push({
           path: entry.path,
@@ -666,9 +689,8 @@ async function run({ memoryRoot, projectDir } = {}) {
 }
 
 function resolveMemoryRoot(raw) {
-  const os = require('node:os');
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
-  return root.replace(/^~/, os.homedir());
+  return expandHomePath(root);
 }
 
 module.exports = {

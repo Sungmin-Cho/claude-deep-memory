@@ -37162,12 +37162,36 @@ var require_retrieve_hybrid = __commonJS({
   }
 });
 
+// scripts/lib/path-utils.js
+var require_path_utils = __commonJS({
+  "scripts/lib/path-utils.js"(exports2, module2) {
+    "use strict";
+    var os = require("node:os");
+    var path = require("node:path");
+    var NON_RESOLVABLE_PATH = "[REDACTED]";
+    function expandHomePath(raw, { homeDir = os.homedir(), pathApi = path } = {}) {
+      if (typeof raw !== "string") return raw;
+      if (raw === "~") return homeDir;
+      if (!/^~[\\/]/.test(raw)) return raw;
+      const segments = raw.slice(2).split(/[\\/]+/).filter(Boolean);
+      return pathApi.join(homeDir, ...segments);
+    }
+    function resolvePersistedPath(raw, options = {}) {
+      if (typeof raw !== "string" || raw.includes(NON_RESOLVABLE_PATH)) return null;
+      return expandHomePath(raw, options);
+    }
+    module2.exports = { expandHomePath, resolvePersistedPath, NON_RESOLVABLE_PATH };
+  }
+});
+
 // scripts/lib/redact.js
 var require_redact = __commonJS({
   "scripts/lib/redact.js"(exports2, module2) {
     "use strict";
     var os = require("os");
-    var REDACT_TAG = "[REDACTED]";
+    var path = require("node:path");
+    var { NON_RESOLVABLE_PATH } = require_path_utils();
+    var REDACT_TAG = NON_RESOLVABLE_PATH;
     var DENY_PATTERNS = [
       /(?:api[_-]?key|token|secret|bearer|password|passwd|pwd)[\s:=]+["']?[A-Za-z0-9_\-+/]{12,}/gi,
       /[\w.+-]+@[\w-]+\.[\w.-]+/g,
@@ -37177,8 +37201,9 @@ var require_redact = __commonJS({
       /\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/g,
       /\b[A-Za-z0-9_-]+\.(?:internal|local|lan|dev)\b/gi
     ];
-    var WINDOWS_ABSOLUTE_PATH_START_RE = /(?:\\{2,}\?\\+(?:UNC\\+|[A-Za-z]:\\+)|\\{2,}\.\\+|\\{2,}(?![?.])[^\\\s"'<>|]+\\+|(?<![A-Za-z0-9_])[A-Za-z]:\\+)/gi;
+    var WINDOWS_ABSOLUTE_PATH_START_RE = /(?:(?<![:A-Za-z0-9_])[\\/]{2,}\?[\\/]+(?=[^\\/\s"'<>|])|(?<![:A-Za-z0-9_])[\\/]{2,}\.[\\/]+|(?<![:A-Za-z0-9_])[\\/]{2,}(?![?.])[^\\/\s"'<>|]+[\\/]+|(?<![A-Za-z0-9_])[A-Za-z]:[\\/]+)/gi;
     var WINDOWS_ABSOLUTE_PATH_PATTERNS = [WINDOWS_ABSOLUTE_PATH_START_RE];
+    var EXTENDED_DRIVE_PREFIX_RE = /(?<![:A-Za-z0-9_])[\\/]{2,}\?[\\/]+(?=[A-Za-z]:[\\/]+)/gi;
     function isSingleQuoteClosureFollower(input, index) {
       if (index >= input.length) return true;
       const ch = input[index];
@@ -37223,22 +37248,88 @@ var require_redact = __commonJS({
       return output + input.slice(cursor);
     }
     var SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
-    var HOME_RE = new RegExp(
-      os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
-      "g"
-    );
+    function escapeRegex(value) {
+      return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    }
+    function escapeWindowsPathRegex(value) {
+      let source = "";
+      let inSeparator = false;
+      for (const character of value) {
+        if (character === "\\" || character === "/") {
+          if (!inSeparator) source += "[\\\\/]+";
+          inSeparator = true;
+        } else {
+          source += escapeRegex(character);
+          inSeparator = false;
+        }
+      }
+      return source;
+    }
+    function createHomeRegex(homeDir, platform = process.platform) {
+      return new RegExp(
+        `${platform === "win32" ? escapeWindowsPathRegex(homeDir) : escapeRegex(homeDir)}(?=$|[\\\\/])`,
+        platform === "win32" ? "gi" : "g"
+      );
+    }
+    var HOME_RE = createHomeRegex(os.homedir());
     function applyGenericHomedir(s) {
-      return s.replace(/\/Users\/[a-zA-Z0-9_.-]+/g, "~").replace(/\/home\/[a-zA-Z0-9_.-]+/g, "~");
+      return s.replace(/\/Users\/[a-zA-Z0-9_.-]+(?=$|[\\/])/g, "~").replace(/\/home\/[a-zA-Z0-9_.-]+(?=$|[\\/])/g, "~");
+    }
+    function withoutExtendedDrivePrefix(value) {
+      return value.replace(/^[\\/]{2,}\?[\\/]+(?=[A-Za-z]:[\\/]+)/i, "");
+    }
+    function normalizedPath(value, platform) {
+      if (platform === "win32") return path.win32.normalize(withoutExtendedDrivePrefix(value));
+      return path.posix.normalize(value);
+    }
+    function collapseCurrentHomePath(value, { homeDir, platform }) {
+      const candidate = normalizedPath(value, platform);
+      const home = normalizedPath(homeDir, platform).replace(platform === "win32" ? /\\+$/ : /\/+$/, "");
+      const fold = (text) => platform === "win32" ? text.toLowerCase() : text;
+      if (fold(candidate) === fold(home)) return "~";
+      const separator = platform === "win32" ? "\\" : "/";
+      if (fold(candidate).startsWith(`${fold(home)}${separator}`)) {
+        return `~${candidate.slice(home.length)}`;
+      }
+      return null;
+    }
+    function isGenericUserHomePath(value, platform) {
+      if (platform === "win32") return /^[A-Za-z]:\\Users\\[^\\/\r\n"'<>|]+(?:\\|$)/i.test(value);
+      return /^\/(?:Users|home)\/[^/]+(?:\/|$)/.test(value);
+    }
+    function containsSensitivePathData(value) {
+      let sanitized = applyEnvVarRedaction(value);
+      for (const re of DENY_PATTERNS) sanitized = sanitized.replace(re, REDACT_TAG);
+      return sanitized !== value;
+    }
+    function redactPersistedPath(input, {
+      homeDir = os.homedir(),
+      platform = process.platform
+    } = {}) {
+      if (typeof input !== "string") return input;
+      if (input.includes(REDACT_TAG)) return REDACT_TAG;
+      const effectivePlatform = platform === "win32" || /^(?:[A-Za-z]:[\\/]|[\\/]{2,})/.test(input) ? "win32" : platform;
+      const comparable = normalizedPath(input, effectivePlatform);
+      const collapsed = collapseCurrentHomePath(input, { homeDir, platform: effectivePlatform });
+      if (collapsed !== null) return containsSensitivePathData(collapsed) ? REDACT_TAG : collapsed;
+      if (isGenericUserHomePath(comparable, effectivePlatform)) return REDACT_TAG;
+      if (containsSensitivePathData(input)) return REDACT_TAG;
+      return input;
     }
     function applyEnvVarRedaction(s) {
       return s.replace(SENSITIVE_VAR_RE, (_m, varRef, assignment) => assignment ? `${varRef}=<REDACTED>` : varRef);
     }
-    function redactString(input, { allowPatterns = [] } = {}) {
+    function redactString(input, {
+      allowPatterns = [],
+      homeDir = os.homedir(),
+      platform = process.platform
+    } = {}) {
       if (typeof input !== "string") return input;
-      let out = input.replace(HOME_RE, "~");
+      let out = input.replace(EXTENDED_DRIVE_PREFIX_RE, "");
+      out = out.replace(createHomeRegex(homeDir, platform), "~");
+      out = redactWindowsAbsolutePaths(out);
       out = applyGenericHomedir(out);
       out = applyEnvVarRedaction(out);
-      out = redactWindowsAbsolutePaths(out);
       for (const re of DENY_PATTERNS) {
         out = out.replace(re, REDACT_TAG);
       }
@@ -37271,6 +37362,7 @@ var require_redact = __commonJS({
       DENY_PATTERNS,
       WINDOWS_ABSOLUTE_PATH_PATTERNS,
       redactWindowsAbsolutePaths,
+      redactPersistedPath,
       HOME_RE
     };
   }

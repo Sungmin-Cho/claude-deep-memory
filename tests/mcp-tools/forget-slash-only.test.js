@@ -5,10 +5,12 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { openMcpSession } = require('../helpers/mcp-session');
+
+const ROOT = path.resolve(__dirname, '../..');
 
 // IMPL-R1-A — tool names aligned with spec §6.3 enumeration.
 // Mutation calls now use unified `deep_memory_audit` with mode != 'check',
@@ -22,53 +24,33 @@ const MUTATION_CALLS = [
   { name: 'deep_memory_export',  args: { scope: 'all', target_path: '/tmp/x.json' } }
 ];
 
-function callMcpTool(toolName, args = {}) {
-  return new Promise((resolve, reject) => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mcp-'));
-    const child = spawn('node', ['scripts/mcp-server.mjs'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot }
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+async function closeConfirmed(session) {
+  await session.close();
+  assert.ok(session.child.exitCode !== null || session.child.signalCode !== null,
+    'MCP child close must be confirmed');
+  for (const stream of [session.child.stdin, session.child.stdout, session.child.stderr]) {
+    assert.strictEqual(stream.destroyed, true, 'every MCP protocol stream must be destroyed');
+  }
+}
 
-    const init = {
-      jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'test', version: '0' }
-      }
-    };
-    const initNotif = { jsonrpc: '2.0', method: 'notifications/initialized', params: {} };
-    const call = {
-      jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: toolName, arguments: args }
-    };
-    child.stdin.write(JSON.stringify(init) + '\n');
-    child.stdin.write(JSON.stringify(initNotif) + '\n');
-    child.stdin.write(JSON.stringify(call) + '\n');
-
-    setTimeout(() => {
-      child.kill('SIGTERM');
-      // Parse last full JSON-RPC response in stdout
-      const lines = stdout.split('\n').filter(Boolean);
-      let result = null;
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.id === 2) { result = obj; break; }
-        } catch {}
-      }
-      if (!result) {
-        reject(new Error(`No tools/call response. stdout=${stdout.slice(0, 500)} stderr=${stderr.slice(0, 500)}`));
-        return;
-      }
-      resolve(result);
-    }, 1500);
+async function callMcpTool(toolName, args = {}) {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mcp-'));
+  const session = openMcpSession(process.execPath, [path.join(ROOT, 'scripts/mcp-server.mjs')], {
+    cwd: ROOT,
+    env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot },
   });
+  try {
+    await session.request('initialize', {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' },
+    });
+    session.notify('notifications/initialized');
+    const response = await session.request('tools/call', { name: toolName, arguments: args });
+    assert.deepStrictEqual(session.protocolErrors, []);
+    return response;
+  } finally {
+    try { await closeConfirmed(session); }
+    finally { fs.rmSync(tmpRoot, { recursive: true, force: true }); }
+  }
 }
 
 for (const call of MUTATION_CALLS) {
@@ -123,38 +105,26 @@ test('R4-F: deep_memory_save is NOT slash-blocked (additive + local, no consent 
   }
 });
 
-test('R4-F: tools/list exposes all 10 tools per spec §6.3 (IMPL-R1-A rename)', () => {
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', ['scripts/mcp-server.mjs'], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    const init = {
-      jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' } }
-    };
-    const initNotif = { jsonrpc: '2.0', method: 'notifications/initialized', params: {} };
-    const list = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
-    child.stdin.write(JSON.stringify(init) + '\n');
-    child.stdin.write(JSON.stringify(initNotif) + '\n');
-    child.stdin.write(JSON.stringify(list) + '\n');
-    setTimeout(() => {
-      child.kill();
-      const lines = stdout.split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.id === 2 && obj.result && obj.result.tools) {
-            assert.strictEqual(obj.result.tools.length, 10,
-              `expected 10 tools, got ${obj.result.tools.length}`);
-            const names = new Set(obj.result.tools.map(t => t.name));
-            assert.ok(names.has('deep_memory_recall'));
-            assert.ok(names.has('deep_memory_forget'));
-            resolve();
-            return;
-          }
-        } catch {}
-      }
-      reject(new Error(`tools/list response not found in ${stdout.slice(0, 500)}`));
-    }, 1500);
+test('R4-F: tools/list exposes all 10 tools per spec §6.3 (IMPL-R1-A rename)', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mcp-list-'));
+  const session = openMcpSession(process.execPath, [path.join(ROOT, 'scripts/mcp-server.mjs')], {
+    cwd: ROOT,
+    env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot },
   });
+  try {
+    await session.request('initialize', {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' },
+    });
+    session.notify('notifications/initialized');
+    const response = await session.request('tools/list');
+    assert.strictEqual(response.result.tools.length, 10,
+      `expected 10 tools, got ${response.result.tools.length}`);
+    const names = new Set(response.result.tools.map((tool) => tool.name));
+    assert.ok(names.has('deep_memory_recall'));
+    assert.ok(names.has('deep_memory_forget'));
+    assert.deepStrictEqual(session.protocolErrors, []);
+  } finally {
+    try { await closeConfirmed(session); }
+    finally { fs.rmSync(tmpRoot, { recursive: true, force: true }); }
+  }
 });

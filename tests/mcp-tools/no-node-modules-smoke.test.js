@@ -99,7 +99,11 @@ async function pollGateViolation(memoryRoot) {
 
 test('installed MCP artifact retrieves scoped cards and records gate denial without node_modules', async (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dm installed artifact Ω '));
-  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  let session = null;
+  t.after(async () => {
+    if (session) await session.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
   const pluginRoot = path.join(fixture, 'plugin root Ω');
   const workspaceRoot = path.join(fixture, 'workspace root Ω');
   const memoryRoot = path.join(fixture, 'memory root Ω');
@@ -165,7 +169,7 @@ test('installed MCP artifact retrieves scoped cards and records gate denial with
   const preload = writeAccessRecorder(fixture);
   const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, '.mcp.json'), 'utf8'));
   const server = manifest.mcpServers['deep-memory'];
-  const session = openMcpSession(server.command, server.args, {
+  session = openMcpSession(server.command, server.args, {
     cwd: pluginRoot,
     env: {
       ...process.env,
@@ -179,8 +183,6 @@ test('installed MCP artifact retrieves scoped cards and records gate denial with
     },
     timeoutMs: 10000,
   });
-  t.after(() => session.close());
-
   const initialized = await session.request('initialize', {
     protocolVersion: '2024-11-05',
     capabilities: {},

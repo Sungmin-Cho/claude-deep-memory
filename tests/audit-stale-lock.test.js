@@ -77,6 +77,37 @@ test('Task 5.3: --unlock does NOT break recent (non-stale) lock', () => {
   }
 });
 
+test('Task 5.3: --unlock does NOT break a fresh metadata-free bootstrap lock', () => {
+  const tmp = mkRoot();
+  try {
+    const lockPath = path.join(tmp, '.lock');
+    fs.mkdirSync(lockPath);
+    const out = detectStaleLocks(tmp, { unlock: true });
+    assert.strictEqual(out.locks[0].stale, false);
+    assert.strictEqual(out.locks[0].meta.operation, 'lock-bootstrap');
+    assert.deepStrictEqual(out.broken, []);
+    assert.ok(fs.existsSync(lockPath), 'fresh empty lock survives --unlock');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Task 5.3: --unlock retires only an aged exact metadata-free bootstrap lock', () => {
+  const tmp = mkRoot();
+  try {
+    const lockPath = path.join(tmp, '.lock');
+    fs.mkdirSync(lockPath);
+    const old = new Date(Date.now() - 6 * 60 * 1000);
+    fs.utimesSync(lockPath, old, old);
+    const out = detectStaleLocks(tmp, { unlock: true });
+    assert.strictEqual(out.locks[0].stale, true);
+    assert.deepStrictEqual(out.broken, [lockPath]);
+    assert.ok(!fs.existsSync(lockPath), 'aged exact empty lock is retired and removed');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('Task 5.3: no lock dir → empty report (no error)', () => {
   const tmp = mkRoot();
   try {

@@ -17,10 +17,11 @@ const { runRetrieve } = require('./retrieve');
 const { renderJson, renderMarkdown } = require('./lib/brief-format');
 const { writeJsonAtomic, writeTextAtomic } = require('./lib/atomic-write');
 const { resolveProjectScope } = require('./lib/project-resolver');
+const { expandHomePath } = require('./lib/path-utils');
 
 function resolveMemoryRoot(raw) {
   const root = raw || process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
-  return root.replace(/^~/, os.homedir());
+  return expandHomePath(root);
 }
 
 function loadProjectProfile(projectDir) {

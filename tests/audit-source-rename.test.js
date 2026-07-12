@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { harvestArtifact } = require('../scripts/harvest');
 const { detectSourceRenames } = require('../scripts/audit');
+const { REDACT_TAG } = require('../scripts/lib/redact');
 
 function mkRoot() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-rename-'));
@@ -84,6 +85,36 @@ test('Task 5.5: source file deleted → missing reported', async () => {
     assert.strictEqual(result.unresolved.length, 1);
     assert.strictEqual(result.unresolved[0].reason, 'missing');
     assert.strictEqual(result.unresolved[0].actual_hash, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Task 5.5: non-reversible source provenance is reported without filesystem remapping', async () => {
+  const tmp = mkRoot();
+  try {
+    const fixture = path.join(tmp, 'fixture.json');
+    fs.copyFileSync(path.join(__dirname, 'fixtures/sample-recurring-findings.json'), fixture);
+    const cards = await harvestArtifact({
+      artifactPath: fixture,
+      sourceKind: 'review-recurring',
+      memoryRoot: tmp,
+      projectId: 'proj_aaaaaaaaaaaa',
+      skipDistillStepB: true,
+    });
+    const card = cards[0];
+    const cardPath = path.join(
+      tmp, 'cards', card.payload.memory_type, 'proj_aaaaaaaaaaaa', `${card.payload.memory_id}.json`,
+    );
+    const persisted = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
+    persisted.envelope.provenance.source_artifacts[0].path = REDACT_TAG;
+    fs.writeFileSync(cardPath, JSON.stringify(persisted));
+
+    const result = detectSourceRenames(tmp, { projectId: 'proj_aaaaaaaaaaaa' });
+    assert.equal(result.unresolved.length, 1);
+    assert.equal(result.unresolved[0].reason, 'source_redacted');
+    assert.equal(result.unresolved[0].actual_hash, null);
+    assert.equal(result.unresolved[0].source_path, REDACT_TAG);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -50,6 +50,22 @@ function inspectLock(lockPath) {
   }
 }
 
+function inspectEmptyLock(lockPath) {
+  try {
+    const dirStat = fs.lstatSync(lockPath);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
+    if (fs.readdirSync(lockPath).length !== 0) return null;
+    return {
+      kind: 'empty-lock',
+      lockPath,
+      directoryIdentity: identity(dirStat),
+      observedMtimeMs: dirStat.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function sameIdentity(left, right) {
   if (!left || !right) return false;
   return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
@@ -62,6 +78,24 @@ function sameClaim(left, right) {
     && left.metadataBytes === right.metadataBytes
     && sameIdentity(left.directoryIdentity, right.directoryIdentity)
     && sameIdentity(left.metadataIdentity, right.metadataIdentity));
+}
+
+function sameEmptyClaim(left, right) {
+  return Boolean(left && right
+    && left.kind === 'empty-lock'
+    && right.kind === 'empty-lock'
+    && left.lockPath === right.lockPath
+    && left.observedMtimeMs === right.observedMtimeMs
+    && sameIdentity(left.directoryIdentity, right.directoryIdentity));
+}
+
+function emptyLockMeta(claim) {
+  return {
+    created_at: new Date(claim.observedMtimeMs).toISOString(),
+    pid: null,
+    host: null,
+    operation: 'lock-bootstrap',
+  };
 }
 
 async function acquire(lockPath, { operation = 'unknown' } = {}) {
@@ -92,6 +126,10 @@ async function acquire(lockPath, { operation = 'unknown' } = {}) {
       const claim = inspectLock(lockPath);
       if (claim && claim.meta && isStale(claim.meta)) {
         throw new StaleLockError(lockPath, claim.meta);
+      }
+      const emptyClaim = claim ? null : inspectEmptyLock(lockPath);
+      if (emptyClaim && isStale(emptyLockMeta(emptyClaim))) {
+        throw new StaleLockError(lockPath, emptyLockMeta(emptyClaim));
       }
       await new Promise((resolve) => setTimeout(resolve, BACKOFF_MS));
     }
@@ -132,6 +170,27 @@ function removeClaimedDirectory(lockPath, claim) {
   }
 }
 
+function removeEmptyClaimedDirectory(lockPath, claim) {
+  const observed = inspectEmptyLock(lockPath);
+  if (!sameEmptyClaim(observed, claim)) return false;
+  const retiredPath = `${lockPath}.retired-${randomUUID()}`;
+  try { fs.renameSync(lockPath, retiredPath); }
+  catch { return false; }
+  const retiredClaim = { ...claim, lockPath: retiredPath };
+  const retiredObserved = inspectEmptyLock(retiredPath);
+  if (!sameEmptyClaim(retiredObserved, retiredClaim)) {
+    restoreMismatchedClaim(retiredPath, lockPath);
+    return false;
+  }
+  try {
+    fs.rmdirSync(retiredPath);
+    return true;
+  } catch {
+    restoreMismatchedClaim(retiredPath, lockPath);
+    return false;
+  }
+}
+
 function release(handle) {
   if (!handle || !handle.claim || handle.ownerToken !== handle.claim.ownerToken) return false;
   return removeClaimedDirectory(handle.lockPath, handle.claim);
@@ -146,12 +205,21 @@ function breakLock(lockPath, observedClaim) {
   return removeClaimedDirectory(lockPath, observedClaim);
 }
 
+function breakEmptyLock(lockPath, observedClaim) {
+  if (!observedClaim || observedClaim.kind !== 'empty-lock'
+      || observedClaim.lockPath !== lockPath) return false;
+  if (!isStale(emptyLockMeta(observedClaim))) return false;
+  return removeEmptyClaimedDirectory(lockPath, observedClaim);
+}
+
 module.exports = {
   acquire,
   release,
   inspectLock,
+  inspectEmptyLock,
   isStale,
   breakLock,
+  breakEmptyLock,
   StaleLockError,
   STALE_MS,
   BACKOFF_MS,

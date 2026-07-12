@@ -66,16 +66,20 @@ test('MCP resolves project scope once and reuses it across tools and resources',
     }),
   });
   t.after(() => session.close());
-  await session.request('initialize', {
-    protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'scope-count', version: '1' },
-  });
-  session.notify('notifications/initialized');
-  await session.request('tools/list');
-  const resources = await session.request('resources/list');
-  for (const resource of resources.result.resources) {
-    await session.request('resources/read', { uri: resource.uri });
+  try {
+    await session.request('initialize', {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'scope-count', version: '1' },
+    });
+    session.notify('notifications/initialized');
+    await session.request('tools/list');
+    const resources = await session.request('resources/list');
+    for (const resource of resources.result.resources) {
+      await session.request('resources/read', { uri: resource.uri });
+    }
+    assertExactlyOneResolution(trace, projectRoot, 'MCP');
+  } finally {
+    await session.close();
   }
-  assertExactlyOneResolution(trace, projectRoot, 'MCP');
 });
 
 test('brief, every hook, and all harvest CLI shapes resolve project scope once', (t) => {

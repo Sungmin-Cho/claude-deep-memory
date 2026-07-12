@@ -13,8 +13,18 @@ const { writeValidProjectProfile } = require('../helpers/project-profile-fixture
 const root = path.resolve(__dirname, '../..');
 const WINDOWS_PATHS = [
   String.raw`C:\Users\O'Neil Smith\private docs\secret.txt`,
+  'C:/Users/runneradmin/current private/secret.txt',
+  'C:/Users/Alice/other private/secret.txt',
+  'D:/a/repo/external private/secret.txt',
+  '//server/forward shared folder/secret file.txt',
+  '//?/C:/Program Files/Forward Corp/secret file.txt',
+  '//?/UNC/server/forward shared folder/secret file.txt',
   String.raw`\\?\C:\Program Files\O'Neil Corp\token file.txt`,
   String.raw`\\?\UNC\server\O'Neil shared folder\secret file.txt`,
+  String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\Users\Alice\volume private\secret file.txt`,
+  String.raw`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Users\Alice\shadow private\secret file.txt`,
+  '//?/Volume{12345678-1234-1234-1234-123456789abc}/Users/Alice/forward volume private/secret file.txt',
+  String.raw`\\?/GLOBALROOT\Device/HarddiskVolumeShadowCopy2\Users/Alice/mixed shadow private/secret file.txt`,
   String.raw`\\.\O'Neil Device Name\secret file.txt`,
   String.raw`\\server\O'Neil shared folder\secret file.txt`,
 ];
@@ -88,7 +98,7 @@ function assertNoLeaks(value, label) {
   for (const text of strings) {
     for (const raw of RAW_SENSITIVE) assert.equal(text.includes(raw), false, `${label}: leaked ${raw}`);
     assert.doesNotMatch(text,
-      /O'Neil|Neil Smith|private docs|Program Files|shared folder|Device Name|secret file/,
+      /O'Neil|Neil Smith|private docs|current private|other private|external private|forward shared folder|Forward Corp|Program Files|shared folder|volume private|shadow private|forward volume private|mixed shadow private|Volume\{|GLOBALROOT|HarddiskVolumeShadowCopy|Device Name|secret file/,
       `${label}: leaked a Windows path suffix`);
   }
 }
@@ -163,45 +173,81 @@ test('every advertised tool success and failure result is redacted at the real s
   };
   for (const entry of ['scripts/mcp-server.cjs', 'dist/mcp-server.cjs']) {
     const session = await start(t, workspaceRoot, memoryRoot, {}, entry);
-    const listed = await session.request('tools/list');
-    const toolNames = listed.result.tools.map(({ name }) => name).sort();
-    assert.equal(toolNames.length, 10, entry);
-    const responses = {};
-    for (const name of toolNames) {
-      responses[name] = await session.request('tools/call', { name, arguments: calls[name] });
-      assertNoLeaks(responses[name], `${entry} ${name}`);
+    try {
+      const listed = await session.request('tools/list');
+      const toolNames = listed.result.tools.map(({ name }) => name).sort();
+      assert.equal(toolNames.length, 10, entry);
+      const responses = {};
+      for (const name of toolNames) {
+        responses[name] = await session.request('tools/call', { name, arguments: calls[name] });
+        assertNoLeaks(responses[name], `${entry} ${name}`);
+      }
+      const recallText = responses.deep_memory_recall.result.content.map(({ text }) => text).join('\n');
+      assert.match(recallText, /safe marker visible claim/, entry);
+      assert.match(recallText, /\[REDACTED\]/, entry);
+      assert.match(recallText, /card_filter_dropped/, entry);
+      assert.equal(responses.deep_memory_forget.result.isError, true, entry);
+      assert.equal(responses.deep_memory_export.result.isError, true, entry);
+
+      const invalid = await session.request('tools/call', {
+        name: 'deep_memory_save', arguments: { memory_type: 'pattern' },
+      });
+      assert.equal(invalid.result.isError, true, entry);
+      assert.match(invalid.result.content[0].text, /invalid_tool_arguments/, entry);
+      assertNoLeaks(invalid, `${entry} validation rejection`);
+
+      const unknown = await session.request('tools/call', {
+        name: `deep_memory_unknown ${LEAK_TEXT}`,
+        arguments: { raw: LEAK_TEXT },
+      });
+      assert.equal(unknown.result.isError, true, entry);
+      assert.match(unknown.result.content[0].text, /unknown_tool/, entry);
+      assertNoLeaks(unknown, `${entry} unknown tool`);
+
+      const nativeUnknown = await session.request('tools/call', {
+        name: `deep_memory_unknown ${NATIVE_DIAGNOSTIC_TEXT}`,
+        arguments: { raw: NATIVE_DIAGNOSTIC_TEXT },
+      });
+      assert.equal(nativeUnknown.result.isError, true, entry);
+      assert.match(nativeUnknown.result.content[0].text, /unknown_tool/, entry);
+      assertNoLeaks(nativeUnknown, `${entry} native diagnostic unknown tool`);
+      assert.deepEqual(session.protocolErrors, [], entry);
+    } finally {
+      await session.close();
     }
-    const recallText = responses.deep_memory_recall.result.content.map(({ text }) => text).join('\n');
-    assert.match(recallText, /safe marker visible claim/, entry);
-    assert.match(recallText, /\[REDACTED\]/, entry);
-    assert.match(recallText, /card_filter_dropped/, entry);
-    assert.equal(responses.deep_memory_forget.result.isError, true, entry);
-    assert.equal(responses.deep_memory_export.result.isError, true, entry);
+  }
+});
 
-    const invalid = await session.request('tools/call', {
-      name: 'deep_memory_save', arguments: { memory_type: 'pattern' },
-    });
-    assert.equal(invalid.result.isError, true, entry);
-    assert.match(invalid.result.content[0].text, /invalid_tool_arguments/, entry);
-    assertNoLeaks(invalid, `${entry} validation rejection`);
-
-    const unknown = await session.request('tools/call', {
-      name: `deep_memory_unknown ${LEAK_TEXT}`,
-      arguments: { raw: LEAK_TEXT },
-    });
-    assert.equal(unknown.result.isError, true, entry);
-    assert.match(unknown.result.content[0].text, /unknown_tool/, entry);
-    assertNoLeaks(unknown, `${entry} unknown tool`);
-
-    const nativeUnknown = await session.request('tools/call', {
-      name: `deep_memory_unknown ${NATIVE_DIAGNOSTIC_TEXT}`,
-      arguments: { raw: NATIVE_DIAGNOSTIC_TEXT },
-    });
-    assert.equal(nativeUnknown.result.isError, true, entry);
-    assert.match(nativeUnknown.result.content[0].text, /unknown_tool/, entry);
-    assertNoLeaks(nativeUnknown, `${entry} native diagnostic unknown tool`);
-    assert.deepEqual(session.protocolErrors, [], entry);
-    await session.close();
+test('source and bundle do not let an extended current HOME bypass tool and error redaction', async (t) => {
+  const workspaceRoot = fixture(t, 'dm-tool-current-home-workspace-');
+  const memoryRoot = fixture(t, 'dm-tool-current-home-memory-');
+  const paths = [
+    '//?/C:/Users/runneradmin/private docs/secret.txt',
+    String.raw`\\?/C:/Users/runneradmin/private docs/secret.txt`,
+    String.raw`//?\C:\Users\runneradmin\private docs\secret.txt`,
+  ];
+  for (const entry of ['scripts/mcp-server.cjs', 'dist/mcp-server.cjs']) {
+    const session = await start(t, workspaceRoot, memoryRoot, {
+      HOME: 'C:/Users/runneradmin',
+      USERPROFILE: 'C:\\Users\\runneradmin',
+    }, entry);
+    try {
+      for (const raw of paths) {
+        const response = await session.request('tools/call', {
+          name: `deep_memory_unknown ${raw}`,
+          arguments: { raw },
+        });
+        assert.equal(response.result.isError, true, `${entry}: ${raw}`);
+        const text = allStrings(response).join('\n');
+        assert.equal(text.includes(raw), false, `${entry}: leaked ${raw}`);
+        assert.doesNotMatch(text,
+          /(?:[\\/]{2,}\?[\\/]+~|C:[\\/]Users[\\/]runneradmin)/i,
+          `${entry}: malformed extended HOME token`);
+      }
+      assert.deepEqual(session.protocolErrors, [], entry);
+    } finally {
+      await session.close();
+    }
   }
 });
 
@@ -214,13 +260,17 @@ test('caught native-search diagnostics containing paths and secrets are redacted
   const session = await start(t, workspaceRoot, memoryRoot, {
     NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`.trim(),
   });
-  const response = await session.request('tools/call', {
-    name: 'deep_memory_recall', arguments: { query: 'safe marker', limit: 5 },
-  });
-  assert.equal(response.result.isError, undefined);
-  assert.match(response.result.content[0].text, /fts_stream_error/);
-  assert.match(response.result.content[0].text, /\[REDACTED\]/);
-  assertNoLeaks(response, 'caught native error');
+  try {
+    const response = await session.request('tools/call', {
+      name: 'deep_memory_recall', arguments: { query: 'safe marker', limit: 5 },
+    });
+    assert.equal(response.result.isError, undefined);
+    assert.match(response.result.content[0].text, /fts_stream_error/);
+    assert.match(response.result.content[0].text, /\[REDACTED\]/);
+    assertNoLeaks(response, 'caught native error');
+  } finally {
+    await session.close();
+  }
 });
 
 test('runtime has one CallTool wrapper and no direct tool transport bypass', () => {

@@ -7,7 +7,8 @@ const { v2LexicalIndexPath } = require('./lib/v2-index-paths');
 const { resolveProjectScope } = require('./lib/project-resolver');
 const { createHash } = require('node:crypto');
 const { wrap } = require('./lib/envelope');
-const { redactObject, redactString } = require('./lib/redact');
+const { redactObject, redactString, redactPersistedPath } = require('./lib/redact');
+const { expandHomePath } = require('./lib/path-utils');
 const { dedupeKey } = require('./lib/dedupe');
 const { writeJsonAtomic } = require('./lib/atomic-write');
 const { hashFile } = require('./lib/source-hash');
@@ -444,7 +445,7 @@ function quarantineEmptyClaim({ memoryRoot, runId, sourceMeta, rejected }) {
     // into any deep-memory output file (spec §11.1 privacy invariant).
     source: {
       ...sourceMeta,
-      path: redactString(sourceMeta.path),
+      path: redactPersistedPath(sourceMeta.path),
     },
     rejected_count: rejected.length,
     rejected,
@@ -519,7 +520,7 @@ function buildCardFromDraft(draft, sourceMeta, cwd = null) {
   // envelope.provenance.source_artifacts[].path (spec §11.1 / line 812).
   const redactedSourceArtifacts = source_artifacts.map((sa) => ({
     ...sa,
-    path: redactString(sa.path),
+    path: redactPersistedPath(sa.path),
   }));
   // ITEM-4-r5: thread cwd to wrap so gitStateSafe captures the correct repo's git state
   // when process.cwd() differs from the project directory (SDK-style invocation).
@@ -772,7 +773,7 @@ async function persistWithLockAndLease({ memoryRoot, projectId, cards, sourceMet
         // this redaction (see eventKey() above), so idempotency is not affected.
         source: {
           ...sourceMeta,
-          path: redactString(sourceMeta.path),
+          path: redactPersistedPath(sourceMeta.path),
         },
         run_id: sourceMeta.run_id,
         at: new Date().toISOString(),
@@ -911,7 +912,9 @@ if (require.main === module) {
     }
   }
   const artifactPath = remainingArgs[0] || null;
-  const memoryRoot = (process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory')).replace(/^~/, os.homedir());
+  const memoryRoot = expandHomePath(
+    process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory'),
+  );
   const rebuildFromEvents = args.includes('--rebuild-from-events');
   const skipDistillStepB = args.includes('--skip-distill-step-b');
   if (!rebuildFromEvents && (!artifactPath || !sourceKind)) {

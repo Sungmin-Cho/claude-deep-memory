@@ -213,24 +213,28 @@ test('MCP mutation denial is surfaced and writes a gate-violation audit record',
     env: { ...process.env, PLUGIN_ROOT: repoRoot, PROJECT_CWD: projectRoot, DEEP_MEMORY_ROOT: memoryRoot },
   });
   t.after(() => session.close());
-  await session.request('initialize', {
-    protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'surface-gate', version: '1' },
-  });
-  session.notify('notifications/initialized');
-  const denied = await session.request('tools/call', {
-    name: 'deep_memory_forget', arguments: { memory_id: 'mem_blocked' },
-  });
-  assert.equal(denied.result.isError, true);
-  assert.match(denied.result.content[0].text, /slash_only/);
-  const deadline = Date.now() + 3000;
-  let auditText = '';
-  while (Date.now() < deadline) {
-    const auditDir = path.join(memoryRoot, 'audit-log');
-    if (fs.existsSync(auditDir)) {
-      auditText = fs.readdirSync(auditDir).map((name) => fs.readFileSync(path.join(auditDir, name), 'utf8')).join('\n');
-      if (/gate-violation/.test(auditText)) break;
+  try {
+    await session.request('initialize', {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'surface-gate', version: '1' },
+    });
+    session.notify('notifications/initialized');
+    const denied = await session.request('tools/call', {
+      name: 'deep_memory_forget', arguments: { memory_id: 'mem_blocked' },
+    });
+    assert.equal(denied.result.isError, true);
+    assert.match(denied.result.content[0].text, /slash_only/);
+    const deadline = Date.now() + 3000;
+    let auditText = '';
+    while (Date.now() < deadline) {
+      const auditDir = path.join(memoryRoot, 'audit-log');
+      if (fs.existsSync(auditDir)) {
+        auditText = fs.readdirSync(auditDir).map((name) => fs.readFileSync(path.join(auditDir, name), 'utf8')).join('\n');
+        if (/gate-violation/.test(auditText)) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.match(auditText, /gate-violation/);
+  } finally {
+    await session.close();
   }
-  assert.match(auditText, /gate-violation/);
 });

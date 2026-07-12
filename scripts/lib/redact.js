@@ -1,7 +1,9 @@
 'use strict';
 const os = require('os');
+const path = require('node:path');
+const { NON_RESOLVABLE_PATH } = require('./path-utils');
 
-const REDACT_TAG = '[REDACTED]';
+const REDACT_TAG = NON_RESOLVABLE_PATH;
 
 /**
  * 7 deny-patterns covering common credential, PII, network, and infra exposure:
@@ -28,11 +30,15 @@ const DENY_PATTERNS = [
 ];
 
 // Complete native-Windows absolute path forms. Extended/device prefixes must
-// run before ordinary UNC/drive forms. Drive-relative `C:notes\todo.txt` does
-// not match because the drive rule requires a backslash after the colon.
+// run before ordinary UNC/drive forms. Both native separators are accepted;
+// drive-relative `C:notes/todo.txt` does not match because the drive rule
+// requires an immediate slash or backslash after the colon. Forward-slash UNC
+// starts reject URI-scheme contexts such as `https://` via the lookbehind.
 const WINDOWS_ABSOLUTE_PATH_START_RE =
-  /(?:\\{2,}\?\\+(?:UNC\\+|[A-Za-z]:\\+)|\\{2,}\.\\+|\\{2,}(?![?.])[^\\\s"'<>|]+\\+|(?<![A-Za-z0-9_])[A-Za-z]:\\+)/gi;
+  /(?:(?<![:A-Za-z0-9_])[\\/]{2,}\?[\\/]+(?=[^\\/\s"'<>|])|(?<![:A-Za-z0-9_])[\\/]{2,}\.[\\/]+|(?<![:A-Za-z0-9_])[\\/]{2,}(?![?.])[^\\/\s"'<>|]+[\\/]+|(?<![A-Za-z0-9_])[A-Za-z]:[\\/]+)/gi;
 const WINDOWS_ABSOLUTE_PATH_PATTERNS = [WINDOWS_ABSOLUTE_PATH_START_RE];
+const EXTENDED_DRIVE_PREFIX_RE =
+  /(?<![:A-Za-z0-9_])[\\/]{2,}\?[\\/]+(?=[A-Za-z]:[\\/]+)/gi;
 
 function isSingleQuoteClosureFollower(input, index) {
   if (index >= input.length) return true;
@@ -100,18 +106,92 @@ function redactWindowsAbsolutePaths(input) {
 // are covered to avoid masking unrelated env vars (PATH, etc.).
 const SENSITIVE_VAR_RE = /((?:\$|process\.env\.|\bexport\s+)?(?:AGENTMEMORY|AWS|OPENAI|ANTHROPIC|GOOGLE|STRIPE|GITHUB)_[A-Z_]+)(\s*=\s*['"]?[\w./+\-]+['"]?)?/g;
 
-const HOME_RE = new RegExp(
-  os.homedir().replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'),
-  'g'
-);
+function escapeRegex(value) {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function escapeWindowsPathRegex(value) {
+  let source = '';
+  let inSeparator = false;
+  for (const character of value) {
+    if (character === '\\' || character === '/') {
+      if (!inSeparator) source += '[\\\\/]+';
+      inSeparator = true;
+    } else {
+      source += escapeRegex(character);
+      inSeparator = false;
+    }
+  }
+  return source;
+}
+
+function createHomeRegex(homeDir, platform = process.platform) {
+  return new RegExp(
+    `${platform === 'win32' ? escapeWindowsPathRegex(homeDir) : escapeRegex(homeDir)}(?=$|[\\\\/])`,
+    platform === 'win32' ? 'gi' : 'g',
+  );
+}
+
+const HOME_RE = createHomeRegex(os.homedir());
 
 // PR1-E (R-011) (a) — generic homedir → `~` for ANY user (macOS + Linux).
 // HOME_RE only covers the current runner; this rule covers /Users/alice or
 // /home/runner regardless of who ran the process. Applied BEFORE DENY_PATTERNS.
 function applyGenericHomedir(s) {
   return s
-    .replace(/\/Users\/[a-zA-Z0-9_.-]+/g, '~')      // macOS
-    .replace(/\/home\/[a-zA-Z0-9_.-]+/g, '~');      // Linux
+    .replace(/\/Users\/[a-zA-Z0-9_.-]+(?=$|[\\/])/g, '~')      // macOS
+    .replace(/\/home\/[a-zA-Z0-9_.-]+(?=$|[\\/])/g, '~');      // Linux
+}
+
+function withoutExtendedDrivePrefix(value) {
+  return value.replace(/^[\\/]{2,}\?[\\/]+(?=[A-Za-z]:[\\/]+)/i, '');
+}
+
+function normalizedPath(value, platform) {
+  if (platform === 'win32') return path.win32.normalize(withoutExtendedDrivePrefix(value));
+  return path.posix.normalize(value);
+}
+
+function collapseCurrentHomePath(value, { homeDir, platform }) {
+  const candidate = normalizedPath(value, platform);
+  const home = normalizedPath(homeDir, platform).replace(platform === 'win32' ? /\\+$/ : /\/+$/, '');
+  const fold = (text) => platform === 'win32' ? text.toLowerCase() : text;
+  if (fold(candidate) === fold(home)) return '~';
+  const separator = platform === 'win32' ? '\\' : '/';
+  if (fold(candidate).startsWith(`${fold(home)}${separator}`)) {
+    return `~${candidate.slice(home.length)}`;
+  }
+  return null;
+}
+
+function isGenericUserHomePath(value, platform) {
+  if (platform === 'win32') return /^[A-Za-z]:\\Users\\[^\\/\r\n"'<>|]+(?:\\|$)/i.test(value);
+  return /^\/(?:Users|home)\/[^/]+(?:\/|$)/.test(value);
+}
+
+function containsSensitivePathData(value) {
+  let sanitized = applyEnvVarRedaction(value);
+  for (const re of DENY_PATTERNS) sanitized = sanitized.replace(re, REDACT_TAG);
+  return sanitized !== value;
+}
+
+// Local provenance must remain usable by the audit path on Windows. Collapse
+// user-home prefixes and secret-like values here, but reserve whole absolute
+// Windows-path masking for the final MCP tool/resource boundary.
+function redactPersistedPath(input, {
+  homeDir = os.homedir(),
+  platform = process.platform,
+} = {}) {
+  if (typeof input !== 'string') return input;
+  if (input.includes(REDACT_TAG)) return REDACT_TAG;
+  const effectivePlatform = platform === 'win32'
+    || /^(?:[A-Za-z]:[\\/]|[\\/]{2,})/.test(input) ? 'win32' : platform;
+  const comparable = normalizedPath(input, effectivePlatform);
+  const collapsed = collapseCurrentHomePath(input, { homeDir, platform: effectivePlatform });
+  if (collapsed !== null) return containsSensitivePathData(collapsed) ? REDACT_TAG : collapsed;
+  if (isGenericUserHomePath(comparable, effectivePlatform)) return REDACT_TAG;
+  if (containsSensitivePathData(input)) return REDACT_TAG;
+  return input;
 }
 
 // PR1-E (R-011) (b) — env-var value masking that PRESERVES the variable name.
@@ -128,18 +208,26 @@ function applyEnvVarRedaction(s) {
  *
  * PR1-E pipeline stage order:
  *   1) HOME_RE (current runner homedir → ~)
- *   2) applyGenericHomedir (any /Users/<name>/ or /home/<name>/ → ~)
- *   3) applyEnvVarRedaction (sensitive env-var value → <REDACTED>, name preserved)
- *   4) WINDOWS_ABSOLUTE_PATH_PATTERNS (native absolute paths → REDACT_TAG)
+ *   2) WINDOWS_ABSOLUTE_PATH_PATTERNS (backslash or forward-slash native absolutes → REDACT_TAG)
+ *   3) applyGenericHomedir (remaining POSIX /Users/<name>/ or /home/<name>/ → ~)
+ *   4) applyEnvVarRedaction (sensitive env-var value → <REDACTED>, name preserved)
  *   5) DENY_PATTERNS (credentials, email, db-URI, RFC1918, internal hosts → REDACT_TAG)
  *   6) allowPatterns restoration (existing v0.1.x logic, unchanged)
  */
-function redactString(input, { allowPatterns = [] } = {}) {
+function redactString(input, {
+  allowPatterns = [],
+  homeDir = os.homedir(),
+  platform = process.platform,
+} = {}) {
   if (typeof input !== 'string') return input;
-  let out = input.replace(HOME_RE, '~');     // 1: current homedir
-  out = applyGenericHomedir(out);            // 2: PR1-E (a)
-  out = applyEnvVarRedaction(out);           // 3: PR1-E (b)
-  out = redactWindowsAbsolutePaths(out);       // 4: native Windows paths
+  // Canonicalize every separator-equivalent extended drive prefix before HOME
+  // replacement. Otherwise `//?/C:/<HOME>/...` becomes `//?/~/...`, which no
+  // longer looks like a Windows path at the final MCP boundary.
+  let out = input.replace(EXTENDED_DRIVE_PREFIX_RE, '');
+  out = out.replace(createHomeRegex(homeDir, platform), '~'); // 1: current homedir
+  out = redactWindowsAbsolutePaths(out);      // 2: native Windows paths
+  out = applyGenericHomedir(out);             // 3: PR1-E (a)
+  out = applyEnvVarRedaction(out);            // 4: PR1-E (b)
   for (const re of DENY_PATTERNS) {          // 5: existing patterns
     out = out.replace(re, REDACT_TAG);
   }
@@ -179,5 +267,6 @@ module.exports = {
   DENY_PATTERNS,
   WINDOWS_ABSOLUTE_PATH_PATTERNS,
   redactWindowsAbsolutePaths,
+  redactPersistedPath,
   HOME_RE,
 };

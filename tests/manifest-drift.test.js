@@ -40,7 +40,7 @@ test('manifest-drift: all skill SKILL.md frontmatter — strict YAML + descripti
     const sf = path.join(skillsDir, skill, 'SKILL.md');
     if (!fs.existsSync(sf)) continue;
     const txt = fs.readFileSync(sf, 'utf8');
-    const fmMatch = txt.match(/^---\n([\s\S]+?)\n---/);
+    const fmMatch = txt.match(/^---\r?\n([\s\S]+?)\r?\n---(?:\r?\n|$)/);
     assert.ok(fmMatch, `${skill}: no frontmatter`);
     let fm;
     try { fm = yaml.load(fmMatch[1]); }

@@ -88,7 +88,11 @@ async function pollGateViolation(memoryRoot) {
 
 test('artifact-only bundle reads embedded schemas, honest resources, and gate audit without node_modules', async (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-task2-artifact Ω '));
-  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  let session = null;
+  t.after(async () => {
+    if (session) await session.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
   const pluginRoot = path.join(fixture, 'plugin only Ω');
   const workspaceRoot = path.join(fixture, 'workspace root Ω');
   const memoryRoot = path.join(fixture, 'memory root Ω');
@@ -142,7 +146,7 @@ test('artifact-only bundle reads embedded schemas, honest resources, and gate au
 
   const config = JSON.parse(fs.readFileSync(path.join(pluginRoot, '.mcp.json'), 'utf8'));
   const server = config.mcpServers['deep-memory'];
-  const session = openMcpSession(server.command, server.args, {
+  session = openMcpSession(server.command, server.args, {
     cwd: pluginRoot,
     env: {
       ...process.env,
@@ -152,8 +156,6 @@ test('artifact-only bundle reads embedded schemas, honest resources, and gate au
     },
     timeoutMs: 10000,
   });
-  t.after(() => session.close());
-
   const init = await session.request('initialize', {
     protocolVersion: '2024-11-05',
     capabilities: {},

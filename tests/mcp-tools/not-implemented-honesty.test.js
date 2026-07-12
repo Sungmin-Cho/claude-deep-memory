@@ -7,57 +7,50 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { openMcpSession } = require('../helpers/mcp-session');
 
-function callMcpTool(toolName, args = {}) {
-  return new Promise((resolve, reject) => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mcp-honesty-'));
-    const child = spawn('node', ['scripts/mcp-server.mjs'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot }
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+const ROOT = path.resolve(__dirname, '../..');
 
-    const init = {
-      jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } }
-    };
-    const initNotif = { jsonrpc: '2.0', method: 'notifications/initialized', params: {} };
-    const call = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: toolName, arguments: args } };
-    child.stdin.write(JSON.stringify(init) + '\n');
-    child.stdin.write(JSON.stringify(initNotif) + '\n');
-    child.stdin.write(JSON.stringify(call) + '\n');
+async function closeConfirmed(session) {
+  await session.close();
+  assert.ok(session.child.exitCode !== null || session.child.signalCode !== null,
+    'MCP child close must be confirmed');
+  for (const stream of [session.child.stdin, session.child.stdout, session.child.stderr]) {
+    assert.strictEqual(stream.destroyed, true, 'every MCP protocol stream must be destroyed');
+  }
+}
 
-    setTimeout(() => {
-      child.kill('SIGTERM');
-      const lines = stdout.split('\n').filter(Boolean);
-      let result = null;
-      for (const line of lines) {
-        try { const obj = JSON.parse(line); if (obj.id === 2) { result = obj; break; } } catch {}
-      }
-      // Surface any audit-log entries the server wrote (used to prove save
-      // writes NOTHING now). Entries live at <root>/audit-log/<YYYY-MM>.jsonl.
-      let auditLines = [];
-      const auditDir = path.join(tmpRoot, 'audit-log');
-      if (fs.existsSync(auditDir)) {
-        for (const f of fs.readdirSync(auditDir)) {
-          if (!f.endsWith('.jsonl')) continue;
-          auditLines.push(...fs.readFileSync(path.join(auditDir, f), 'utf8').split('\n').filter(Boolean));
-        }
-      }
-      if (!result) {
-        reject(new Error(`No tools/call response. stdout=${stdout.slice(0, 500)} stderr=${stderr.slice(0, 500)}`));
-        return;
-      }
-      resolve({ result: result.result, auditLines });
-    }, 1500);
+async function callMcpTool(toolName, args = {}) {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mcp-honesty-'));
+  const session = openMcpSession(process.execPath, [path.join(ROOT, 'scripts/mcp-server.mjs')], {
+    cwd: ROOT,
+    env: { ...process.env, DEEP_MEMORY_ROOT: tmpRoot },
   });
+  try {
+    await session.request('initialize', {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' },
+    });
+    session.notify('notifications/initialized');
+    const response = await session.request('tools/call', { name: toolName, arguments: args });
+    // Surface any audit-log entries the server wrote (used to prove save
+    // writes NOTHING now). Entries live at <root>/audit-log/<YYYY-MM>.jsonl.
+    const auditLines = [];
+    const auditDir = path.join(tmpRoot, 'audit-log');
+    if (fs.existsSync(auditDir)) {
+      for (const file of fs.readdirSync(auditDir)) {
+        if (!file.endsWith('.jsonl')) continue;
+        auditLines.push(...fs.readFileSync(path.join(auditDir, file), 'utf8').split('\n').filter(Boolean));
+      }
+    }
+    assert.deepStrictEqual(session.protocolErrors, []);
+    return { result: response.result, auditLines };
+  } finally {
+    try { await closeConfirmed(session); }
+    finally { fs.rmSync(tmpRoot, { recursive: true, force: true }); }
+  }
 }
 
 const NOT_IMPLEMENTED = [

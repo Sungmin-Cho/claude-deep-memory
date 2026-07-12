@@ -129,16 +129,20 @@ test('real cards-stats excludes file/type/scope aliases and external data', asyn
   }
 
   const session = await openServer(t, workspaceRoot, memoryRoot);
-  const result = await readStats(session);
-  assert.equal(result.value.available, true);
-  assert.equal(result.value.total, 3);
-  assert.deepEqual(result.value.by_type, { 'failure-case': 1, pattern: 2 });
-  assert.doesNotMatch(result.raw, /external-card-secret|external-scope-secret|external-type|scope-alias-type/);
-  assert.equal(result.raw.includes(outside), false);
-  for (const warning of result.value.warnings || []) {
-    assert.match(warning, /^(?:card_path|card_json)_[a-z_]+$/);
+  try {
+    const result = await readStats(session);
+    assert.equal(result.value.available, true);
+    assert.equal(result.value.total, 3);
+    assert.deepEqual(result.value.by_type, { 'failure-case': 1, pattern: 2 });
+    assert.doesNotMatch(result.raw, /external-card-secret|external-scope-secret|external-type|scope-alias-type/);
+    assert.equal(result.raw.includes(outside), false);
+    for (const warning of result.value.warnings || []) {
+      assert.match(warning, /^(?:card_path|card_json)_[a-z_]+$/);
+    }
+    assert.ok(result.value.warnings.includes('card_json_invalid'));
+  } finally {
+    await session.close();
   }
-  assert.ok(result.value.warnings.includes('card_json_invalid'));
 });
 
 test('cards component alias is rejected before type enumeration', async (t) => {
@@ -235,10 +239,13 @@ test('retired 1.0.1 profile IDs are global-only and legacy scope paths remain se
       DM_FORBIDDEN_SCOPE_LISTING: typeDir,
       DM_FORBIDDEN_ACCESS_LOG: accessLog,
     });
-    const result = await readStats(session);
-    assert.equal(result.value.total, 1, id);
-    assert.deepEqual(result.value.by_type, { pattern: 1 }, id);
-    assert.equal(fs.existsSync(accessLog) ? fs.readFileSync(accessLog, 'utf8') : '', '', id);
-    await session.close();
+    try {
+      const result = await readStats(session);
+      assert.equal(result.value.total, 1, id);
+      assert.deepEqual(result.value.by_type, { pattern: 1 }, id);
+      assert.equal(fs.existsSync(accessLog) ? fs.readFileSync(accessLog, 'utf8') : '', '', id);
+    } finally {
+      await session.close();
+    }
   }
 });
