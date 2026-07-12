@@ -261,6 +261,8 @@ test('maxFiles bounds callback delivery deterministically', (t) => {
 });
 
 test('caller cannot raise the hard 5000-file invocation cap', () => {
+  const root = path.resolve('/memory');
+  const cardsRoot = path.join(root, 'cards');
   const directoryStat = { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false };
   const fileStat = { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true };
   const files = Array.from({ length: 5001 }, (_, index) => ({
@@ -269,7 +271,7 @@ test('caller cannot raise the hard 5000-file invocation cap', () => {
   const io = {
     lstatSync(value) { return String(value).endsWith('.json') ? fileStat : directoryStat; },
     readdirSync(value) {
-      return path.resolve(value) === '/memory/cards' ? [{ name: 'pattern' }] : files;
+      return path.resolve(value) === cardsRoot ? [{ name: 'pattern' }] : files;
     },
     realpathSync: Object.assign((value) => path.resolve(value), {
       native: (value) => path.resolve(value),
@@ -277,11 +279,11 @@ test('caller cannot raise the hard 5000-file invocation cap', () => {
   };
   let callbacks = 0;
   const result = walkContainedCards({
-    root: '/memory',
+    root,
     currentProjectId: null,
     maxFiles: 9000,
     io,
-    platform: 'linux',
+    platform: process.platform,
     onCard() { callbacks += 1; },
   });
   assert.equal(callbacks, 5000);

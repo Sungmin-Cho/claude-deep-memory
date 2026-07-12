@@ -129,3 +129,23 @@ test('buildSourceMeta exposes content_hash + run_id (consumed by eventKey)', () 
   assert.strictEqual(meta.artifact_kind, 'recurring-findings');
   assert.strictEqual(meta.run_id, '01j_recur_fixture_0001');
 });
+
+test('buildSourceMeta persists the physical source path instead of a lexical Windows alias', () => {
+  const lexicalAlias = path.join(os.tmpdir(), 'dm-source-short-alias-does-not-exist.json');
+  const canonical = fs.realpathSync.native(FIXTURE);
+  const original = fs.realpathSync.native;
+  let observed = null;
+  fs.realpathSync.native = (value) => {
+    observed = path.resolve(value);
+    return canonical;
+  };
+  try {
+    const raw = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
+    const meta = buildSourceMeta(lexicalAlias, raw, 'review-recurring');
+    assert.equal(observed, path.resolve(lexicalAlias));
+    assert.equal(meta.path, canonical);
+    assert.match(meta.content_hash, /^sha256:[a-f0-9]{64}$/);
+  } finally {
+    fs.realpathSync.native = original;
+  }
+});

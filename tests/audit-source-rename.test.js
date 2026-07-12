@@ -13,7 +13,7 @@ function mkRoot() {
   for (const sub of ['cards', 'events', 'indexes', 'projects', '.leases']) {
     fs.mkdirSync(path.join(tmp, sub), { recursive: true });
   }
-  return tmp;
+  return fs.realpathSync.native(tmp);
 }
 
 test('Task 5.5: source file unchanged → no unresolved entries (clean baseline)', async () => {

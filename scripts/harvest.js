@@ -457,7 +457,10 @@ function buildSourceMeta(artifactPath, raw, sourceKind) {
   // ITEM-3-r5: resolve relative paths to absolute so provenance is stable across cwd changes.
   // audit cross-cwd would resolve relative paths against THAT cwd → false-positive missing/drift.
   // After redaction (ITEM-2 r1), the absolute path becomes ~/... which expandTilde in audit handles.
-  const resolvedPath = path.resolve(artifactPath);
+  // Persist the physical spelling so Windows 8.3 aliases (for example the
+  // runner temp directory) cannot evade current-HOME canonicalization and
+  // become an irreversible generic-user redaction token.
+  const resolvedPath = fs.realpathSync.native(path.resolve(artifactPath));
   return {
     id: 'src_0',
     path: resolvedPath,

@@ -6,11 +6,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { redactString, redactPersistedPath, REDACT_TAG } = require('../../scripts/lib/redact');
 const { openMcpSession } = require('../helpers/mcp-session');
+const { foreignWindowsFixture } = require('../helpers/windows-path-fixtures');
 
 const root = path.resolve(__dirname, '../..');
+const GENERIC_WINDOWS_FIXTURE = foreignWindowsFixture();
 const WINDOWS_PATHS = [
   String.raw`C:\Users\O'Neil Smith\private docs\secret.txt`,
-  'C:/Users/runneradmin/current private/secret.txt',
+  GENERIC_WINDOWS_FIXTURE.path,
   'C:/Users/Alice/other private/secret.txt',
   'D:/a/repo/external private/secret.txt',
   '//server/forward shared folder/secret file.txt',
@@ -54,6 +56,21 @@ function pathContexts(value) {
     `before ${value} after`,
   ];
 }
+
+test('generic Windows fixture remains foreign when its first profile candidate is the current HOME', () => {
+  const collisionHome = 'c:\\users\\deepmemoryfixturea\\';
+  const fixture = foreignWindowsFixture(collisionHome);
+  assert.equal(fixture.user, 'DeepMemoryFixtureB');
+  assert.notEqual(
+    path.win32.normalize(fixture.home).toLowerCase(),
+    path.win32.normalize(collisionHome).replace(/\\+$/, '').toLowerCase(),
+  );
+  const redacted = redactString(fixture.path, {
+    homeDir: collisionHome,
+    platform: 'win32',
+  });
+  assert.match(redacted, new RegExp(REDACT_TAG.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
 
 test('redactString removes apostrophe-bearing spaced Windows paths in every structured text context', () => {
   for (const value of WINDOWS_PATHS) {

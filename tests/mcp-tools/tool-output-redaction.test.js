@@ -9,11 +9,13 @@ const { v2LexicalIndexPath } = require('../../scripts/lib/v2-index-paths');
 const { redactMcpPayload } = require('../../scripts/lib/mcp-output-redaction');
 const { openMcpSession } = require('../helpers/mcp-session');
 const { writeValidProjectProfile } = require('../helpers/project-profile-fixtures');
+const { foreignWindowsFixture } = require('../helpers/windows-path-fixtures');
 
 const root = path.resolve(__dirname, '../..');
+const GENERIC_WINDOWS_FIXTURE = foreignWindowsFixture();
 const WINDOWS_PATHS = [
   String.raw`C:\Users\O'Neil Smith\private docs\secret.txt`,
-  'C:/Users/runneradmin/current private/secret.txt',
+  GENERIC_WINDOWS_FIXTURE.path,
   'C:/Users/Alice/other private/secret.txt',
   'D:/a/repo/external private/secret.txt',
   '//server/forward shared folder/secret file.txt',
@@ -258,7 +260,7 @@ test('caught native-search diagnostics containing paths and secrets are redacted
   const preload = path.join(memoryRoot, 'throwing-fs-preload.cjs');
   fs.writeFileSync(preload, `'use strict';\nconst fs = require('node:fs');\nconst original = fs.existsSync;\nfs.existsSync = function (value) {\n  if (String(value).includes('indexes${path.sep}v2${path.sep}lexical.sqlite')) {\n    throw new Error(${JSON.stringify(`native search failed ${NATIVE_DIAGNOSTIC_TEXT}`)});\n  }\n  return original.call(this, value);\n};\n`);
   const session = await start(t, workspaceRoot, memoryRoot, {
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`.trim(),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require="${preload}"`.trim(),
   });
   try {
     const response = await session.request('tools/call', {

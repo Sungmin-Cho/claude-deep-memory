@@ -18,14 +18,18 @@ test('native Windows cmd executes every commandWindows hook through a junction',
   const memoryRoot = path.join(fixture, 'memory root Ω');
   fs.mkdirSync(memoryRoot, { recursive: true });
   fs.writeFileSync(path.join(memoryRoot, 'config.yaml'), 'capture:\r\n  enabled: false\r\n');
+  const inputPath = path.join(fixture, 'hook-input.json');
+  fs.writeFileSync(inputPath, '{"session_id":"windows-smoke"}\r\n');
+  const runnerPath = path.join(fixture, 'run-hook.cmd');
   const hooks = JSON.parse(fs.readFileSync(path.join(root, 'hooks/hooks.json'), 'utf8')).hooks;
   for (const [event, entries] of Object.entries(hooks)) {
     const handler = entries.flatMap((entry) => entry.hooks || [])[0];
     assert.ok(handler.commandWindows, event);
-    const result = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', handler.commandWindows], {
+    fs.writeFileSync(runnerPath,
+      `@echo off\r\n${handler.commandWindows} < "${inputPath}"\r\nexit /b %errorlevel%\r\n`);
+    const result = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', path.basename(runnerPath)], {
       cwd: fixture,
       env: { ...process.env, PLUGIN_ROOT: junction, DEEP_MEMORY_ROOT: memoryRoot, PROJECT_CWD: fixture },
-      input: '{"session_id":"windows-smoke"}\r\n',
       encoding: 'utf8',
       shell: false,
       windowsHide: true,
