@@ -51,9 +51,11 @@ test('validator rejects forbidden Codex hook field and incomplete host surfaces'
   assert.ok(errors.some((error) => error.includes('four supported events')));
   assert.ok(errors.some((error) => error.includes('command')));
 
-  const claudePath = path.join(fixture, '.claude-plugin/plugin.json');
-  const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8'));
-  delete claude.hooks.SessionEnd;
-  fs.writeFileSync(claudePath, JSON.stringify(claude, null, 2));
+  // Claude events live in the pointed-to bootstrap file now — dropping one
+  // there must still trip the six-event contract.
+  const claudeHooksPath = path.join(fixture, 'hooks/hooks.claude.json');
+  const claudeHooks = JSON.parse(fs.readFileSync(claudeHooksPath, 'utf8'));
+  delete claudeHooks.hooks.SessionEnd;
+  fs.writeFileSync(claudeHooksPath, JSON.stringify(claudeHooks, null, 2));
   assert.ok(validatePlugin(fixture).some((error) => error.includes('six events')));
 });

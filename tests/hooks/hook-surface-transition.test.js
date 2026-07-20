@@ -29,8 +29,11 @@ test('Task 1 atomically establishes exact Codex and Claude hook surfaces', () =>
   const claude = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
   const discovered = JSON.parse(fs.readFileSync(path.join(root, 'hooks/hooks.json'), 'utf8'));
   assert.equal(Object.hasOwn(codex, 'hooks'), false);
+  // Claude loads its six events from a dedicated fail-open bootstrap file (E4).
+  assert.equal(claude.hooks, './hooks/hooks.claude.json');
+  const claudeHooks = JSON.parse(fs.readFileSync(path.join(root, 'hooks/hooks.claude.json'), 'utf8')).hooks;
   assert.deepEqual(Object.keys(discovered.hooks).sort(), codexEvents.sort());
-  assert.deepEqual(Object.keys(claude.hooks).sort(), claudeEvents.sort());
+  assert.deepEqual(Object.keys(claudeHooks).sort(), claudeEvents.sort());
 
   for (const event of codexEvents) {
     const handler = onlyHandler(discovered.hooks[event]);
@@ -39,9 +42,11 @@ test('Task 1 atomically establishes exact Codex and Claude hook surfaces', () =>
     assert.equal(handler.commandWindows, `node "%PLUGIN_ROOT%\\scripts\\hooks\\${scripts[event]}"`);
   }
   for (const event of claudeEvents) {
-    const handler = onlyHandler(claude.hooks[event]);
+    const handler = onlyHandler(claudeHooks[event]);
     assert.equal(handler.type, 'command');
-    assert.equal(handler.command, `node "\${CLAUDE_PLUGIN_ROOT}/scripts/hooks/${scripts[event]}"`);
+    assert.match(handler.command, /^node -e "/);
+    assert.doesNotMatch(handler.command, /\$\{/);
+    assert.ok(handler.command.includes(`'scripts','hooks','${scripts[event]}'`), event);
   }
 });
 
