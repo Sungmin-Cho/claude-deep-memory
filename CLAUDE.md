@@ -9,7 +9,7 @@ Current version: `node -e "console.log(require('./.claude-plugin/plugin.json').v
 ## Runtime surfaces
 
 - Node 22 on native Windows, macOS, and Linux.
-- Claude Code manifest and six-event hooks: `.claude-plugin/plugin.json`.
+- Claude Code manifest: `.claude-plugin/plugin.json` (hooks pointer); six-event fail-open hook file: `hooks/hooks.claude.json`.
 - Codex manifest and default hook discovery: `.codex-plugin/plugin.json` and `hooks/hooks.json`.
 - User skills: `skills/deep-memory-*/SKILL.md`.
 - Authoritative read-only distiller contract: `agents/memory-distiller.md`.

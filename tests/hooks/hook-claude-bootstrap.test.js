@@ -114,6 +114,11 @@ test('E4: bootstrap fails OPEN (exit 0) when no plugin root is set', () => {
   const body = bootstrapBody(onlyHandler(readJson('hooks/hooks.claude.json').hooks.SessionStart).command);
   const result = runBootstrap(body, { input: '{"session_id":"s"}' });
   assert.equal(result.status, 0, result.stderr);
+  // Observable fail-open (design review 025): the skip must leave a stderr
+  // breadcrumb — E4 went undiagnosed for months precisely because the failure
+  // was silent. exit 0 keeps it non-blocking (debug-log only, never a UI error).
+  assert.match(result.stderr, /plugin root env unset; capture skipped/,
+    'silent fail-open regression: the empty-root skip must leave a breadcrumb');
 });
 
 test('E4: bootstrap fails OPEN (exit 0) when the capture script is missing', () => {
@@ -121,6 +126,9 @@ test('E4: bootstrap fails OPEN (exit 0) when the capture script is missing', () 
   const fixture = makeFixtureRoot(null); // scripts/hooks exists but no session-start.mjs
   const result = runBootstrap(body, { env: { CLAUDE_PLUGIN_ROOT: fixture }, input: '{"session_id":"s"}' });
   assert.equal(result.status, 0, result.stderr);
+  // Breadcrumb names the missing path so a broken install is diagnosable.
+  assert.match(result.stderr, /missing .*session-start\.mjs; capture skipped/,
+    'silent fail-open regression: the missing-script skip must leave a breadcrumb');
 });
 
 test('E4: bootstrap spawns the resolved script, forwards stdin, and propagates its exit code', () => {

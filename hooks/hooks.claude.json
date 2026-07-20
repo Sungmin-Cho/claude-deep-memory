@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','session-start.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory session-start hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','session-start.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','user-prompt-submit.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory user-prompt-submit hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','user-prompt-submit.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','post-tool-use.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory post-tool-use hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','post-tool-use.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','post-tool-failure.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory post-tool-failure hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','post-tool-failure.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','pre-compact.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory pre-compact hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','pre-compact.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','session-end.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){console.error('deep-memory session-end hook: plugin root env unset; capture skipped');process.exit(0)}const s=join(r,'scripts','hooks','session-end.mjs');if(existsSync(s)===false){console.error('deep-memory hook: missing '+s+'; capture skipped');process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',(e)=>{console.error('deep-memory hook: spawn error '+e.message+'; capture skipped');process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
           }
         ]
       }
