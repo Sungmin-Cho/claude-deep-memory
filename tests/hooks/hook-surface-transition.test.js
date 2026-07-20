@@ -38,8 +38,13 @@ test('Task 1 atomically establishes exact Codex and Claude hook surfaces', () =>
   for (const event of codexEvents) {
     const handler = onlyHandler(discovered.hooks[event]);
     assert.equal(handler.type, 'command');
-    assert.equal(handler.command, `node "\${PLUGIN_ROOT}/scripts/hooks/${scripts[event]}"`);
-    assert.equal(handler.commandWindows, `node "%PLUGIN_ROOT%\\scripts\\hooks\\${scripts[event]}"`);
+    // E5: Claude Code auto-loads this standard file too — the command must be a
+    // claude-host-guarded env-bootstrap, never a ${PLUGIN_ROOT} template.
+    assert.match(handler.command, /^node -e "/);
+    assert.doesNotMatch(handler.command, /\$\{/);
+    assert.ok(handler.command.includes('process.env.CLAUDE_PLUGIN_ROOT'), event);
+    assert.ok(handler.command.includes(`'scripts','hooks','${scripts[event]}'`), event);
+    assert.equal(handler.commandWindows, handler.command);
   }
   for (const event of claudeEvents) {
     const handler = onlyHandler(claudeHooks[event]);

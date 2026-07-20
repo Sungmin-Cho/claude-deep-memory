@@ -97,7 +97,7 @@ test('brief delegates both JSON and Markdown publishing to shared atomic writers
   assert.doesNotMatch(text, /\bfsyncSync\b/);
 });
 
-test('Codex hook manifest keeps the exact supported events and quoted dual-host handlers', () => {
+test('Codex hook manifest keeps the exact supported events and one cross-shell bootstrap per event', () => {
   const hooks = JSON.parse(source('hooks/hooks.json')).hooks;
   assert.deepEqual(Object.keys(hooks).sort(), [
     'PostToolUse',
@@ -108,8 +108,10 @@ test('Codex hook manifest keeps the exact supported events and quoted dual-host 
 
   for (const [event, entries] of Object.entries(hooks)) {
     const handler = onlyHandler(entries);
-    assert.match(handler.command, /^node "\$\{PLUGIN_ROOT\}\//, event);
-    assert.match(handler.commandWindows, /^node "%PLUGIN_ROOT%\\/, event);
+    // E5: one shell-safe env-bootstrap serves bash, PowerShell, and cmd alike.
+    assert.match(handler.command, /^node -e "/, event);
+    assert.doesNotMatch(handler.command, /[%`]/, event);
+    assert.equal(handler.commandWindows, handler.command, event);
   }
 });
 

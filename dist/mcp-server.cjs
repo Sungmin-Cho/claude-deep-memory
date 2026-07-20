@@ -34863,7 +34863,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "deep-memory",
-      version: "1.0.3",
+      version: "1.0.4",
       description: "Cross-project operational memory with Claude Code and Codex skills, host-mediated distillation, scoped retrieval, and bundled MCP.",
       author: {
         name: "Sungmin-Cho"
