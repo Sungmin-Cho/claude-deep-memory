@@ -108,8 +108,11 @@ test('manifest-drift: Codex default hooks contain the exact supported host subse
     assert.ok(hooksManifest.hooks[hookName].length > 0, `${hookName} hooks empty`);
     const handlers = hooksManifest.hooks[hookName].flatMap((entry) => entry.hooks || []);
     assert.strictEqual(handlers.length, 1, `${hookName} must have one handler`);
-    assert.match(handlers[0].command, /^node "\$\{PLUGIN_ROOT\}\//);
-    assert.match(handlers[0].commandWindows, /^node "%PLUGIN_ROOT%\\/);
+    // E5: claude-host-guarded env-bootstrap — Claude Code auto-loads this file.
+    assert.match(handlers[0].command, /^node -e "/);
+    assert.doesNotMatch(handlers[0].command, /\$\{/);
+    assert.match(handlers[0].command, /process\.env\.CLAUDE_PLUGIN_ROOT/);
+    assert.strictEqual(handlers[0].commandWindows, handlers[0].command);
   }
 });
 

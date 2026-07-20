@@ -2,6 +2,12 @@
 
 All notable changes to deep-memory are documented here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] — 2026-07-20
+
+### Fixed
+
+- Claude Code loads the standard `hooks/hooks.json` automatically in addition to the manifest-declared hook file, so the Codex discovery hooks also fired on Claude Code with `${PLUGIN_ROOT}` unset and crashed on every SessionStart, UserPromptSubmit, PostToolUse, and PreCompact ("Failed with non-blocking status code: node:internal/modules/cjs/loader:1478"). The Codex hooks are now the same shell-safe fail-open env-bootstrap as the Claude file and delegate to `hooks/hooks.claude.json` on a Claude host, so each event is captured exactly once per runtime and never surfaces a host error.
+
 ## [1.0.3] — 2026-07-20
 
 ### Fixed

@@ -9,7 +9,7 @@ Current version: `node -e "console.log(require('./.codex-plugin/plugin.json').ve
 ## Runtime surfaces
 
 - Node 22 on native Windows, macOS, and Linux.
-- Codex manifest and default hook discovery: `.codex-plugin/plugin.json` and `hooks/hooks.json`.
+- Codex manifest and default hook discovery: `.codex-plugin/plugin.json` and `hooks/hooks.json`. Claude Code auto-loads the standard `hooks/hooks.json` too, so its commands are claude-host-guarded bootstraps that delegate to `hooks/hooks.claude.json` there.
 - Claude Code manifest: `.claude-plugin/plugin.json`.
 - User skills: `skills/deep-memory-*/SKILL.md`.
 - Authoritative distiller contract: `agents/memory-distiller.md`.

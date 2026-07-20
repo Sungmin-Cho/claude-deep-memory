@@ -2,6 +2,12 @@
 
 deep-memory의 모든 주요 변경 사항을 기록합니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [1.0.4] — 2026-07-20
+
+### Fixed
+
+- Claude Code는 manifest에 선언한 hook 파일 외에 표준 `hooks/hooks.json`도 자동 로드하므로, Codex 발견용 hook이 Claude Code에서도 실행되어 `${PLUGIN_ROOT}` 미설정 상태로 모든 SessionStart, UserPromptSubmit, PostToolUse, PreCompact에서 실패했습니다("Failed with non-blocking status code: node:internal/modules/cjs/loader:1478"). 이제 Codex hook도 Claude 파일과 동일한 shell-safe fail-open env-bootstrap이며 Claude 호스트에서는 `hooks/hooks.claude.json`에 위임하므로, 각 이벤트는 런타임당 정확히 한 번만 capture되고 호스트 에러가 표시되지 않습니다.
+
 ## [1.0.3] — 2026-07-20
 
 ### Fixed

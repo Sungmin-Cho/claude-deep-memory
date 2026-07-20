@@ -47,15 +47,23 @@ function validatePlugin(root = process.cwd()) {
   if (JSON.stringify(codexEventNames) !== JSON.stringify(CODEX_HOOK_EVENTS)) {
     errors.push('Codex hooks must contain exactly the four supported events');
   }
+  // Claude Code auto-loads the standard hooks/hooks.json in addition to the
+  // manifest.hooks file, so the Codex discovery file must be a shell-safe
+  // env-bootstrap that delegates to hooks.claude.json on a Claude host (E5) —
+  // the old `node "${PLUGIN_ROOT}/..."` form crashed there on every event.
   for (const event of CODEX_HOOK_EVENTS) {
     const entries = codexHooks.hooks && codexHooks.hooks[event];
     const handlers = Array.isArray(entries) ? entries.flatMap((entry) => entry.hooks || []) : [];
     const handler = handlers.length === 1 ? handlers[0] : null;
-    const script = HOOK_SCRIPT[event];
+    const command = handler && typeof handler.command === 'string' ? handler.command : '';
     if (!handler || handler.type !== 'command'
-        || handler.command !== `node "\${PLUGIN_ROOT}/scripts/hooks/${script}"`
-        || handler.commandWindows !== `node "%PLUGIN_ROOT%\\scripts\\hooks\\${script}"`) {
-      errors.push(`Codex hook '${event}' must have exact Unix and Windows commands`);
+        || !command.startsWith('node -e "')
+        || command.includes('${')
+        || !command.includes('process.env.CLAUDE_PLUGIN_ROOT')
+        || !command.includes('process.env.PLUGIN_ROOT')
+        || !command.includes(`'scripts','hooks','${HOOK_SCRIPT[event]}'`)
+        || handler.commandWindows !== command) {
+      errors.push(`Codex hook '${event}' command must be a claude-host-guarded fail-open env-bootstrap`);
     }
   }
 

@@ -19,12 +19,12 @@ function headingSequence(text) {
     .map((match) => match[1] ? `release:${match[1]}:${match[2]}` : `category:${match[3]}`);
 }
 
-test('all release version sources and the root lockfile are 1.0.3', () => {
+test('all release version sources and the root lockfile are 1.0.4', () => {
   for (const name of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json']) {
-    assert.equal(json(name).version, '1.0.3', name);
+    assert.equal(json(name).version, '1.0.4', name);
   }
-  assert.equal(json('package-lock.json').version, '1.0.3');
-  assert.equal(json('package-lock.json').packages[''].version, '1.0.3');
+  assert.equal(json('package-lock.json').version, '1.0.4');
+  assert.equal(json('package-lock.json').packages[''].version, '1.0.4');
   assert.doesNotMatch(json('package.json').description, /tests \+ helpers only/i);
 });
 
@@ -114,6 +114,7 @@ test('complete bilingual changelog histories are structurally parallel and proce
   assert.deepEqual(headingSequence(en), headingSequence(ko));
   const releases = headingSequence(en).filter((entry) => entry.startsWith('release:'));
   assert.deepEqual(releases, [
+    'release:1.0.4:2026-07-20',
     'release:1.0.3:2026-07-20',
     'release:1.0.2:2026-07-10', 'release:1.0.1:2026-07-09',
     'release:1.0.0:2026-07-09', 'release:0.4.0:2026-07-07',
