@@ -17,11 +17,17 @@ const { writeValidProjectProfile } = require('../helpers/project-profile-fixture
 const ROOT = path.resolve(__dirname, '../..');
 
 function hookScripts(manifestPath) {
-  const hooks = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).hooks;
+  let hooks = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).hooks;
+  if (typeof hooks === 'string') {
+    // Claude points at a dedicated fail-open bootstrap file (E4); resolve it.
+    hooks = JSON.parse(fs.readFileSync(path.resolve(path.dirname(manifestPath), '..', hooks), 'utf8')).hooks;
+  }
   return Object.fromEntries(Object.entries(hooks).map(([event, entries]) => {
     const handlers = entries.flatMap((entry) => entry.hooks || []);
     assert.strictEqual(handlers.length, 1, `${event}: expected exactly one handler`);
-    const match = handlers[0].command.match(/scripts[\\/]hooks[\\/]([^"']+\.mjs)/);
+    // Codex embeds `scripts/hooks/x.mjs`; the Claude bootstrap joins the same
+    // segments as `'scripts','hooks','x.mjs'` — capture the .mjs filename in both.
+    const match = handlers[0].command.match(/([\w-]+\.mjs)/);
     assert.ok(match, `${event}: command must name a hook script`);
     return [event, match[1]];
   }));

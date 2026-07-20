@@ -1,0 +1,71 @@
+{
+  "description": "Deep Memory capture hooks for Claude Code (fail-open env-bootstrap, non-blocking).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','session-start.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','user-prompt-submit.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','post-tool-use.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','post-tool-failure.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','pre-compact.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{spawn}=require('node:child_process');const{existsSync}=require('node:fs');const{join}=require('node:path');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';if(r===''){process.exit(0)}const s=join(r,'scripts','hooks','session-end.mjs');if(existsSync(s)===false){process.exit(0)}const c=spawn(process.execPath,[s],{stdio:'inherit'});c.on('error',()=>{process.exit(0)});c.on('exit',(code)=>{process.exit(typeof code==='number'?code:0)})\""
+          }
+        ]
+      }
+    ]
+  }
+}

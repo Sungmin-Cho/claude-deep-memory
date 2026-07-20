@@ -2,6 +2,13 @@
 
 deep-memory의 모든 주요 변경 사항을 기록합니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [1.0.3] — 2026-07-20
+
+### Fixed
+
+- Claude Code capture hook이 이제 전용 hook manifest에서 로드되고 런타임에 플러그인 루트를 해석하므로, 호스트가 인라인 manifest hook에서 플러그인 루트 토큰을 확장하지 않아 조용히 실패하던 대신 모든 세션의 SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact, SessionEnd capture가 정상 실행됩니다.
+- capture hook은 계속 non-blocking이며 fail open입니다. 플러그인 루트 부재, capture 스크립트 부재, spawn 오류 시 세션을 방해하지 않고 capture를 건너뜁니다.
+
 ## [1.0.2] — 2026-07-10
 
 ### Changed

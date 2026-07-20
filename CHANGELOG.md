@@ -2,6 +2,13 @@
 
 All notable changes to deep-memory are documented here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] — 2026-07-20
+
+### Fixed
+
+- Claude Code capture hooks now load from a dedicated hook manifest and resolve the plugin root at runtime, so every session's SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact, and SessionEnd capture runs instead of silently failing when the host leaves the plugin-root token unexpanded in an inline manifest hook.
+- Capture hooks stay non-blocking and fail open: a missing plugin root, a missing capture script, or a spawn error skips capture without disrupting the session.
+
 ## [1.0.2] — 2026-07-10
 
 ### Changed

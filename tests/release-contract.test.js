@@ -19,12 +19,12 @@ function headingSequence(text) {
     .map((match) => match[1] ? `release:${match[1]}:${match[2]}` : `category:${match[3]}`);
 }
 
-test('all release version sources and the root lockfile are 1.0.2', () => {
+test('all release version sources and the root lockfile are 1.0.3', () => {
   for (const name of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json']) {
-    assert.equal(json(name).version, '1.0.2', name);
+    assert.equal(json(name).version, '1.0.3', name);
   }
-  assert.equal(json('package-lock.json').version, '1.0.2');
-  assert.equal(json('package-lock.json').packages[''].version, '1.0.2');
+  assert.equal(json('package-lock.json').version, '1.0.3');
+  assert.equal(json('package-lock.json').packages[''].version, '1.0.3');
   assert.doesNotMatch(json('package.json').description, /tests \+ helpers only/i);
 });
 
@@ -107,11 +107,14 @@ test('all four bilingual release documents state loss-averse manual recovery', (
 test('complete bilingual changelog histories are structurally parallel and process-noise free', () => {
   const en = read('CHANGELOG.md');
   const ko = read('CHANGELOG.ko.md');
+  assert.match(en, /^## \[1\.0\.3\] \u2014 2026-07-20$/m);
+  assert.match(ko, /^## \[1\.0\.3\] \u2014 2026-07-20$/m);
   assert.match(en, /^## \[1\.0\.2\] \u2014 2026-07-10$/m);
   assert.match(ko, /^## \[1\.0\.2\] \u2014 2026-07-10$/m);
   assert.deepEqual(headingSequence(en), headingSequence(ko));
   const releases = headingSequence(en).filter((entry) => entry.startsWith('release:'));
   assert.deepEqual(releases, [
+    'release:1.0.3:2026-07-20',
     'release:1.0.2:2026-07-10', 'release:1.0.1:2026-07-09',
     'release:1.0.0:2026-07-09', 'release:0.4.0:2026-07-07',
     'release:0.3.2:2026-05-25', 'release:0.3.1:2026-05-22',

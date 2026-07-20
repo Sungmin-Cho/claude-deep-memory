@@ -59,17 +59,27 @@ function validatePlugin(root = process.cwd()) {
     }
   }
 
-  const claudeEventNames = Object.keys(claude.hooks || {}).sort();
+  // Claude loads its six capture hooks from a dedicated file manifest whose
+  // commands are fail-OPEN env-bootstraps — an INLINE manifest hook does not
+  // expand ${CLAUDE_PLUGIN_ROOT}, which silently broke every capture (E4).
+  if (claude.hooks !== './hooks/hooks.claude.json') {
+    errors.push("Claude manifest hooks must point to './hooks/hooks.claude.json'");
+  }
+  const claudeHooks = readJson(path.join(root, 'hooks/hooks.claude.json'), errors, 'Claude hooks');
+  const claudeEventNames = Object.keys((claudeHooks && claudeHooks.hooks) || {}).sort();
   if (JSON.stringify(claudeEventNames) !== JSON.stringify(CLAUDE_HOOK_EVENTS)) {
     errors.push('Claude hooks must retain exactly all six events');
   }
   for (const event of CLAUDE_HOOK_EVENTS) {
-    const entries = claude.hooks && claude.hooks[event];
+    const entries = claudeHooks && claudeHooks.hooks && claudeHooks.hooks[event];
     const handlers = Array.isArray(entries) ? entries.flatMap((entry) => entry.hooks || []) : [];
     const handler = handlers.length === 1 ? handlers[0] : null;
+    const command = handler && typeof handler.command === 'string' ? handler.command : '';
     if (!handler || handler.type !== 'command'
-        || handler.command !== `node "\${CLAUDE_PLUGIN_ROOT}/scripts/hooks/${HOOK_SCRIPT[event]}"`) {
-      errors.push(`Claude hook '${event}' must retain its exact quoted command`);
+        || !command.startsWith('node -e "')
+        || command.includes('${')
+        || !command.includes(`'scripts','hooks','${HOOK_SCRIPT[event]}'`)) {
+      errors.push(`Claude hook '${event}' must be a fail-open env-bootstrap for its script`);
     }
   }
 

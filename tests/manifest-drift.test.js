@@ -113,13 +113,18 @@ test('manifest-drift: Codex default hooks contain the exact supported host subse
   }
 });
 
-test('manifest-drift: Claude retains its quoted six-event inline hook surface', () => {
+test('manifest-drift: Claude loads its six-event hooks from the fail-open bootstrap file', () => {
+  assert.strictEqual(claudeManifest.hooks, './hooks/hooks.claude.json');
+  const claudeHooks = JSON.parse(
+    fs.readFileSync(path.join(root, 'hooks', 'hooks.claude.json'), 'utf8'),
+  ).hooks;
   const expected = ['PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd', 'SessionStart', 'UserPromptSubmit'];
-  assert.deepStrictEqual(Object.keys(claudeManifest.hooks).sort(), expected);
+  assert.deepStrictEqual(Object.keys(claudeHooks).sort(), expected);
   for (const event of expected) {
-    const handlers = claudeManifest.hooks[event].flatMap((entry) => entry.hooks || []);
+    const handlers = claudeHooks[event].flatMap((entry) => entry.hooks || []);
     assert.strictEqual(handlers.length, 1, event);
-    assert.match(handlers[0].command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\//, event);
+    assert.match(handlers[0].command, /^node -e "/, event);
+    assert.doesNotMatch(handlers[0].command, /\$\{/, event);
   }
 });
 
