@@ -20,13 +20,26 @@ const DELIVERY_PATHS = Object.freeze([
   'scripts',
 ]);
 
+function copyDeliveryPath(source, destination) {
+  const stat = fs.statSync(source);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(destination, { recursive: true });
+    for (const entry of fs.readdirSync(source)) {
+      copyDeliveryPath(path.join(source, entry), path.join(destination, entry));
+    }
+    return;
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+}
+
 function copyDeliveryFixture(t) {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'deep-memory-install Ω '));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   for (const relativePath of DELIVERY_PATHS) {
     const source = path.join(root, relativePath);
     if (!fs.existsSync(source)) continue;
-    fs.cpSync(source, path.join(fixture, relativePath), { recursive: true });
+    copyDeliveryPath(source, path.join(fixture, relativePath));
   }
   assert.equal(fs.existsSync(path.join(fixture, 'node_modules')), false);
   assert.equal(fs.existsSync(path.join(path.dirname(fixture), 'node_modules')), false);
