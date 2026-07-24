@@ -26,5 +26,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run build:mcp
       - run: git diff --exit-code -- dist/mcp-server.cjs
+      - run: npm run build:hooks
+      - run: git diff --exit-code -- dist/hooks
       - run: npm run validate-manifest
       - run: npm test

@@ -22,12 +22,12 @@ const root = path.resolve(__dirname, '../..');
 const readJson = (rel) => JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
 
 const SCRIPTS = Object.freeze({
-  SessionStart: 'session-start.mjs',
-  UserPromptSubmit: 'user-prompt-submit.mjs',
-  PostToolUse: 'post-tool-use.mjs',
-  PostToolUseFailure: 'post-tool-failure.mjs',
-  PreCompact: 'pre-compact.mjs',
-  SessionEnd: 'session-end.mjs',
+  SessionStart: 'session-start',
+  UserPromptSubmit: 'user-prompt-submit',
+  PostToolUse: 'post-tool-use',
+  PostToolUseFailure: 'post-tool-failure',
+  PreCompact: 'pre-compact',
+  SessionEnd: 'session-end',
 });
 const EVENTS = Object.keys(SCRIPTS);
 
@@ -57,10 +57,16 @@ function runBootstrap(body, { env = {}, input = '', cwd = root } = {}) {
 
 function makeFixtureRoot(stubSource) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-claude-bootstrap Ω '));
-  const scripts = path.join(dir, 'scripts', 'hooks');
+  const scripts = path.join(dir, 'scripts');
+  const artifacts = path.join(dir, 'dist', 'hooks');
   fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(artifacts, { recursive: true });
+  fs.copyFileSync(
+    path.join(root, 'scripts', 'hook-bootstrap.cjs'),
+    path.join(scripts, 'hook-bootstrap.cjs'),
+  );
   if (stubSource !== null) {
-    fs.writeFileSync(path.join(scripts, 'session-start.mjs'), stubSource);
+    fs.writeFileSync(path.join(artifacts, 'session-start.cjs'), stubSource);
   }
   return dir;
 }
@@ -97,9 +103,10 @@ test('E4: every command is a shell-safe env-bootstrap referencing its event scri
     // Fail-OPEN: no root and no script both exit 0 (never exit 2 / never throw).
     assert.match(body, /process\.exit\(0\)/, event);
     assert.doesNotMatch(body, /process\.exit\(2\)/, event);
-    // Targets exactly this event's capture script via a path.join, not a literal.
-    assert.ok(body.includes(`'scripts','hooks','${SCRIPTS[event]}'`),
-      `${event}: bootstrap must join scripts/hooks/${SCRIPTS[event]}`);
+    assert.ok(body.includes(`'scripts','hook-bootstrap.cjs'`),
+      `${event}: bootstrap must load the tracked runtime bootstrap`);
+    assert.ok(body.includes(`.run('${SCRIPTS[event]}')`),
+      `${event}: bootstrap must select ${SCRIPTS[event]}.cjs`);
     // Shell-unsafe characters must never appear in the bootstrap body.
     for (const forbidden of ['$', '"', '`', '!', '%']) {
       assert.equal(body.includes(forbidden), false,
@@ -123,21 +130,19 @@ test('E4: bootstrap fails OPEN (exit 0) when no plugin root is set', () => {
 
 test('E4: bootstrap fails OPEN (exit 0) when the capture script is missing', () => {
   const body = bootstrapBody(onlyHandler(readJson('hooks/hooks.claude.json').hooks.SessionStart).command);
-  const fixture = makeFixtureRoot(null); // scripts/hooks exists but no session-start.mjs
+  const fixture = makeFixtureRoot(null); // bootstrap exists but no session-start.cjs
   const result = runBootstrap(body, { env: { CLAUDE_PLUGIN_ROOT: fixture }, input: '{"session_id":"s"}' });
   assert.equal(result.status, 0, result.stderr);
   // Breadcrumb names the missing path so a broken install is diagnosable.
-  assert.match(result.stderr, /missing .*session-start\.mjs; capture skipped/,
+  assert.match(result.stderr, /missing session-start\.cjs; capture skipped/,
     'silent fail-open regression: the missing-script skip must leave a breadcrumb');
 });
 
-test('E4: bootstrap spawns the resolved script, forwards stdin, and propagates its exit code', () => {
+test('E4: bootstrap forwards stdin and swallows a nonzero child exit', () => {
   const body = bootstrapBody(onlyHandler(readJson('hooks/hooks.claude.json').hooks.SessionStart).command);
   const marker = path.join(os.tmpdir(), `dm-bootstrap-marker-${process.pid}-${Date.now()}.json`);
-  // The real capture scripts are .mjs (ES modules); the stub must be ESM too —
-  // this proves the bootstrap spawns the resolved script as a module.
   const stub = [
-    "import { writeFileSync } from 'node:fs';",
+    "const { writeFileSync } = require('node:fs');",
     "let data = '';",
     "process.stdin.on('data', (c) => { data += c; });",
     "process.stdin.on('end', () => {",
@@ -152,9 +157,10 @@ test('E4: bootstrap spawns the resolved script, forwards stdin, and propagates i
       env: { CLAUDE_PLUGIN_ROOT: fixture },
       input: '{"session_id":"passthrough"}',
     });
-    assert.equal(result.status, 7, `child exit code must propagate; stderr=${result.stderr}`);
+    assert.equal(result.status, 0, `child exit must fail open; stderr=${result.stderr}`);
     assert.equal(fs.existsSync(marker), true, 'resolved capture script must actually run');
     assert.match(fs.readFileSync(marker, 'utf8'), /passthrough/, 'event stdin must reach the child');
+    assert.match(result.stderr, /child exit 7; capture skipped/);
   } finally {
     fs.rmSync(marker, { force: true });
     fs.rmSync(fixture, { recursive: true, force: true });

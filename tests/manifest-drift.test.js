@@ -14,6 +14,14 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const codexHooksPath = path.join(root, 'hooks', 'hooks.json');
 const mcpManifest = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
 const initSkill = fs.readFileSync(path.join(root, 'skills', 'deep-memory-init', 'SKILL.md'), 'utf8');
+const hookArtifacts = [
+  'post-tool-failure.cjs',
+  'post-tool-use.cjs',
+  'pre-compact.cjs',
+  'session-end.cjs',
+  'session-start.cjs',
+  'user-prompt-submit.cjs',
+];
 
 test('manifest-drift: version 3중 동기 (claude / codex / package.json)', () => {
   assert.strictEqual(claudeManifest.version, pkg.version, `claude=${claudeManifest.version} pkg=${pkg.version}`);
@@ -112,6 +120,7 @@ test('manifest-drift: Codex default hooks contain the exact supported host subse
     assert.match(handlers[0].command, /^node -e "/);
     assert.doesNotMatch(handlers[0].command, /\$\{/);
     assert.match(handlers[0].command, /process\.env\.CLAUDE_PLUGIN_ROOT/);
+    assert.match(handlers[0].command, /scripts','hook-bootstrap\.cjs/);
     assert.strictEqual(handlers[0].commandWindows, handlers[0].command);
   }
 });
@@ -128,10 +137,11 @@ test('manifest-drift: Claude loads its six-event hooks from the fail-open bootst
     assert.strictEqual(handlers.length, 1, event);
     assert.match(handlers[0].command, /^node -e "/, event);
     assert.doesNotMatch(handlers[0].command, /\$\{/, event);
+    assert.match(handlers[0].command, /scripts','hook-bootstrap\.cjs/, event);
   }
 });
 
-test('manifest-drift: MCP manifests use their host-native bundled entrypoint', () => {
+test('manifest-drift: shipped runtimes use committed self-contained bundles', () => {
   const claudeArgs = ['${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.cjs'];
   assert.deepStrictEqual(
     claudeManifest.mcpServers['deep-memory'].args,
@@ -148,6 +158,14 @@ test('manifest-drift: MCP manifests use their host-native bundled entrypoint', (
     fs.existsSync(path.join(root, 'dist/mcp-server.cjs')),
     'bundled dist/mcp-server.cjs must be committed for node_modules-free installs',
   );
+  assert.deepStrictEqual(
+    fs.readdirSync(path.join(root, 'dist', 'hooks')).sort(),
+    hookArtifacts,
+    'dist/hooks must contain exactly one bundle for every shipped hook entrypoint',
+  );
+  for (const artifact of hookArtifacts) {
+    assert.ok(fs.statSync(path.join(root, 'dist', 'hooks', artifact)).size > 0, artifact);
+  }
 });
 
 test('manifest-drift: init guidance uses native Windows paths and keeps UNC opt-in explicit', () => {

@@ -24,10 +24,10 @@ const root = path.resolve(__dirname, '../..');
 const readJson = (rel) => JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
 
 const SCRIPTS = Object.freeze({
-  SessionStart: 'session-start.mjs',
-  UserPromptSubmit: 'user-prompt-submit.mjs',
-  PostToolUse: 'post-tool-use.mjs',
-  PreCompact: 'pre-compact.mjs',
+  SessionStart: 'session-start',
+  UserPromptSubmit: 'user-prompt-submit',
+  PostToolUse: 'post-tool-use',
+  PreCompact: 'pre-compact',
 });
 const EVENTS = Object.keys(SCRIPTS);
 
@@ -53,19 +53,25 @@ function runBootstrap(body, { env = {}, input = '', cwd = root } = {}) {
   });
 }
 
-function makeFixtureRoot(stubSource, script = 'session-start.mjs') {
+function makeFixtureRoot(stubSource, script = 'session-start.cjs') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-codex-guard Ω '));
-  const scripts = path.join(dir, 'scripts', 'hooks');
+  const scripts = path.join(dir, 'scripts');
+  const artifacts = path.join(dir, 'dist', 'hooks');
   fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(artifacts, { recursive: true });
+  fs.copyFileSync(
+    path.join(root, 'scripts', 'hook-bootstrap.cjs'),
+    path.join(scripts, 'hook-bootstrap.cjs'),
+  );
   if (stubSource !== null) {
-    fs.writeFileSync(path.join(scripts, script), stubSource);
+    fs.writeFileSync(path.join(artifacts, script), stubSource);
   }
   return dir;
 }
 
 function markerStub(marker, exitCode = 7) {
   return [
-    "import { writeFileSync } from 'node:fs';",
+    "const { writeFileSync } = require('node:fs');",
     "let data = '';",
     "process.stdin.on('data', (c) => { data += c; });",
     "process.stdin.on('end', () => {",
@@ -94,8 +100,10 @@ test('E5: hooks.json keeps the four Codex events, one shell-safe bootstrap handl
     assert.match(body, /process\.env\.PLUGIN_ROOT/, event);
     assert.match(body, /process\.exit\(0\)/, event);
     assert.doesNotMatch(body, /process\.exit\(2\)/, event);
-    assert.ok(body.includes(`'scripts','hooks','${SCRIPTS[event]}'`),
-      `${event}: bootstrap must join scripts/hooks/${SCRIPTS[event]}`);
+    assert.ok(body.includes(`'scripts','hook-bootstrap.cjs'`),
+      `${event}: bootstrap must load the tracked runtime bootstrap`);
+    assert.ok(body.includes(`.run('${SCRIPTS[event]}')`),
+      `${event}: bootstrap must select ${SCRIPTS[event]}.cjs`);
     // The one command must be safe under bash, PowerShell, and cmd alike.
     for (const forbidden of ['$', '"', '`', '!', '%']) {
       assert.equal(body.includes(forbidden), false,
@@ -131,7 +139,7 @@ test('E5: on a Claude host the Codex file delegates — exits 0 and never spawns
   }
 });
 
-test('E5: on a Codex host the bootstrap spawns the script, forwards stdin, propagates exit', () => {
+test('E5: on a Codex host the bootstrap forwards stdin and swallows a nonzero child exit', () => {
   const body = bootstrapBody(onlyHandler(readJson('hooks/hooks.json').hooks.SessionStart).command);
   const marker = path.join(os.tmpdir(), `dm-guard-marker-${process.pid}-${Date.now() + 1}.json`);
   const fixture = makeFixtureRoot(markerStub(marker));
@@ -140,9 +148,10 @@ test('E5: on a Codex host the bootstrap spawns the script, forwards stdin, propa
       env: { PLUGIN_ROOT: fixture },
       input: '{"session_id":"passthrough"}',
     });
-    assert.equal(result.status, 7, `child exit code must propagate; stderr=${result.stderr}`);
+    assert.equal(result.status, 0, `child exit must fail open; stderr=${result.stderr}`);
     assert.equal(fs.existsSync(marker), true, 'resolved capture script must actually run');
     assert.match(fs.readFileSync(marker, 'utf8'), /passthrough/, 'event stdin must reach the child');
+    assert.match(result.stderr, /child exit 7; capture skipped/);
   } finally {
     fs.rmSync(marker, { force: true });
     fs.rmSync(fixture, { recursive: true, force: true });
@@ -164,7 +173,7 @@ test('E5: bootstrap fails OPEN (exit 0) with a breadcrumb when the capture scrip
   try {
     const result = runBootstrap(body, { env: { PLUGIN_ROOT: fixture }, input: '{"session_id":"s"}' });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stderr, /missing .*session-start\.mjs; capture skipped/);
+    assert.match(result.stderr, /missing session-start\.cjs; capture skipped/);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }

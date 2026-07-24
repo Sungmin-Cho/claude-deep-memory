@@ -21,11 +21,9 @@ function hookScripts(manifestPath) {
   return Object.fromEntries(Object.entries(hooks).map(([event, entries]) => {
     const handlers = entries.flatMap((entry) => entry.hooks || []);
     assert.strictEqual(handlers.length, 1, `${event}: expected exactly one handler`);
-    // Codex embeds `scripts/hooks/x.mjs`; the Claude bootstrap joins the same
-    // segments as `'scripts','hooks','x.mjs'` — capture the .mjs filename in both.
-    const match = handlers[0].command.match(/([\w-]+\.mjs)/);
+    const match = handlers[0].command.match(/\.run\('([\w-]+)'\)/);
     assert.ok(match, `${event}: command must name a hook script`);
-    return [event, match[1]];
+    return [event, `${match[1]}.mjs`];
   }));
 }
 

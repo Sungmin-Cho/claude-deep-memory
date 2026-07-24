@@ -2,6 +2,12 @@
 
 deep-memory의 모든 주요 변경 사항을 기록합니다. [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 및 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 형식을 따릅니다.
 
+## [1.0.5] — 2026-07-24
+
+### Fixed
+
+- 마켓플레이스에 설치된 capture hook이 이제 `node_modules` 없이 self-contained bundle에서 실행되고 runtime 시작 오류에도 fail open하므로, 활성화된 capture가 계속 동작하면서 Claude Code나 Codex에 hook 실패를 표시하지 않습니다.
+
 ## [1.0.4] — 2026-07-20
 
 ### Fixed

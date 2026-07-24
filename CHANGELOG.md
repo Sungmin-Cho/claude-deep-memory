@@ -2,6 +2,12 @@
 
 All notable changes to deep-memory are documented here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] — 2026-07-24
+
+### Fixed
+
+- Marketplace-installed capture hooks now run from self-contained bundles without `node_modules` and fail open on runtime startup errors, so enabled capture remains functional without surfacing hook failures to Claude Code or Codex.
+
 ## [1.0.4] — 2026-07-20
 
 ### Fixed

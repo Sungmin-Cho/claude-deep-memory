@@ -43,7 +43,8 @@ test('Task 1 atomically establishes exact Codex and Claude hook surfaces', () =>
     assert.match(handler.command, /^node -e "/);
     assert.doesNotMatch(handler.command, /\$\{/);
     assert.ok(handler.command.includes('process.env.CLAUDE_PLUGIN_ROOT'), event);
-    assert.ok(handler.command.includes(`'scripts','hooks','${scripts[event]}'`), event);
+    assert.ok(handler.command.includes(`'scripts','hook-bootstrap.cjs'`), event);
+    assert.ok(handler.command.includes(`.run('${scripts[event].replace('.mjs', '')}')`), event);
     assert.equal(handler.commandWindows, handler.command);
   }
   for (const event of claudeEvents) {
@@ -51,7 +52,8 @@ test('Task 1 atomically establishes exact Codex and Claude hook surfaces', () =>
     assert.equal(handler.type, 'command');
     assert.match(handler.command, /^node -e "/);
     assert.doesNotMatch(handler.command, /\$\{/);
-    assert.ok(handler.command.includes(`'scripts','hooks','${scripts[event]}'`), event);
+    assert.ok(handler.command.includes(`'scripts','hook-bootstrap.cjs'`), event);
+    assert.ok(handler.command.includes(`.run('${scripts[event].replace('.mjs', '')}')`), event);
   }
 });
 
