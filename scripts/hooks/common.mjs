@@ -10,13 +10,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { createRequire } from 'node:module';
+import pkg from '../../package.json' with { type: 'json' };
+import redactModule from '../lib/redact.js';
+import lockModule from '../lib/lock.js';
+import runtimeContextModule from '../lib/runtime-context.js';
+import projectResolverModule from '../lib/project-resolver.js';
 
-const require = createRequire(import.meta.url);
-const pkg = require('../../package.json');
-const { redactString } = require('../lib/redact.js');
-const { acquire, release } = require('../lib/lock.js');
-const { detectHost: detectRuntimeHost } = require('../lib/runtime-context.js');
+const { redactString } = redactModule;
+const { acquire, release } = lockModule;
+const { detectHost: detectRuntimeHost } = runtimeContextModule;
 
 const DEEP_MEMORY_ROOT = process.env.DEEP_MEMORY_ROOT || path.join(os.homedir(), '.deep-memory');
 
@@ -60,7 +62,7 @@ export function isEagerDistillEnabled() {
 
 // ---- project resolution -----------------------------------------------------
 // Every hook invocation computes one full-schema, physical-root-bound scope.
-const { resolveProjectScope } = require('../lib/project-resolver.js');
+const { resolveProjectScope } = projectResolverModule;
 
 // ---- tool input/output summarization (PR1-J + Codex adv MED-2) -------------
 

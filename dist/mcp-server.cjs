@@ -34863,7 +34863,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "deep-memory",
-      version: "1.0.4",
+      version: "1.0.5",
       description: "Cross-project operational memory with Claude Code and Codex skills, host-mediated distillation, scoped retrieval, and bundled MCP.",
       author: {
         name: "Sungmin-Cho"
@@ -34878,6 +34878,7 @@ var require_package = __commonJS({
       ],
       scripts: {
         "build:mcp": "esbuild scripts/mcp-server.cjs --bundle --platform=node --format=cjs --target=node22 --loader:.json=json --external:better-sqlite3 --external:@xenova/transformers --outfile=dist/mcp-server.cjs && node scripts/normalize-generated-bundle.js dist/mcp-server.cjs",
+        "build:hooks": "node scripts/build-hooks.js",
         test: "node --test tests/*.test.js tests/runtime-contract/*.test.js tests/hooks/*.test.js tests/mcp-tools/*.test.js",
         "test:envelope": "node --test tests/envelope-emit.test.js",
         "test:redaction": "node --test tests/redaction.test.js",

@@ -12,12 +12,12 @@ const CLAUDE_HOOK_EVENTS = Object.freeze([
   'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd', 'SessionStart', 'UserPromptSubmit',
 ]);
 const HOOK_SCRIPT = Object.freeze({
-  SessionStart: 'session-start.mjs',
-  UserPromptSubmit: 'user-prompt-submit.mjs',
-  PostToolUse: 'post-tool-use.mjs',
-  PostToolUseFailure: 'post-tool-failure.mjs',
-  PreCompact: 'pre-compact.mjs',
-  SessionEnd: 'session-end.mjs',
+  SessionStart: 'session-start',
+  UserPromptSubmit: 'user-prompt-submit',
+  PostToolUse: 'post-tool-use',
+  PostToolUseFailure: 'post-tool-failure',
+  PreCompact: 'pre-compact',
+  SessionEnd: 'session-end',
 });
 
 function readJson(file, errors, label) {
@@ -61,7 +61,8 @@ function validatePlugin(root = process.cwd()) {
         || command.includes('${')
         || !command.includes('process.env.CLAUDE_PLUGIN_ROOT')
         || !command.includes('process.env.PLUGIN_ROOT')
-        || !command.includes(`'scripts','hooks','${HOOK_SCRIPT[event]}'`)
+        || !command.includes(`'scripts','hook-bootstrap.cjs'`)
+        || !command.includes(`.run('${HOOK_SCRIPT[event]}')`)
         || handler.commandWindows !== command) {
       errors.push(`Codex hook '${event}' command must be a claude-host-guarded fail-open env-bootstrap`);
     }
@@ -86,8 +87,17 @@ function validatePlugin(root = process.cwd()) {
     if (!handler || handler.type !== 'command'
         || !command.startsWith('node -e "')
         || command.includes('${')
-        || !command.includes(`'scripts','hooks','${HOOK_SCRIPT[event]}'`)) {
+        || !command.includes(`'scripts','hook-bootstrap.cjs'`)
+        || !command.includes(`.run('${HOOK_SCRIPT[event]}')`)) {
       errors.push(`Claude hook '${event}' must be a fail-open env-bootstrap for its script`);
+    }
+  }
+  if (!fs.existsSync(path.join(root, 'scripts', 'hook-bootstrap.cjs'))) {
+    errors.push('hook runtime bootstrap is missing');
+  }
+  for (const artifact of new Set(Object.values(HOOK_SCRIPT))) {
+    if (!fs.existsSync(path.join(root, 'dist', 'hooks', `${artifact}.cjs`))) {
+      errors.push(`committed hook bundle '${artifact}.cjs' is missing`);
     }
   }
 
