@@ -570,14 +570,24 @@ test('the always-loaded agent guides are in the scan set', () => {
   }
 });
 
+// One derivation, with `relative` as a seam. It defaults to the host's and turns
+// nothing off; it exists so the Windows spelling — where `path.relative` hands
+// back `skills\x\SKILL.md` and every comparison against a slash literal misses —
+// is decidable from a POSIX CI run instead of only in a Windows job.
+const scanKeys = (relative = path.relative) =>
+  markdownFiles().map((f) => normalizePath(relative(ROOT, f)));
+
 test('every user skill and the distiller agent are in the scan set', () => {
   // The scan set must not silently shrink when a skill is added or renamed.
-  const scanned = markdownFiles().map((f) => path.relative(ROOT, f));
   const skills = fs.readdirSync(path.join(ROOT, 'skills'), { withFileTypes: true })
     .filter((e) => e.isDirectory()).map((e) => `skills/${e.name}/SKILL.md`);
   assert.ok(skills.length >= 7, `expected the shipped skill set, saw ${skills.length}`);
-  for (const rel of [...skills, 'agents/memory-distiller.md']) {
-    assert.ok(scanned.includes(rel), `${rel} must be in the shadow-guard scan set`);
+  const expected = [...skills, 'agents/memory-distiller.md'];
+  for (const [label, keys] of [['host', scanKeys()], ['Windows', scanKeys(path.win32.relative)]]) {
+    for (const rel of expected) {
+      assert.ok(keys.includes(rel),
+        `${rel} must be in the shadow-guard scan set (${label} spelling)`);
+    }
   }
 });
 
