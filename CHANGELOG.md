@@ -19,6 +19,7 @@ All notable changes to deep-memory are documented here. This file follows [Keep 
 - Promotion refreshes the lexical index only; the vector-index refresh it previously claimed never happened.
 - Forget records the deletion request in the audit log but does not remove the card body or its index rows, which the skill now says plainly instead of promising the removal.
 - Export through the autonomous tool surface is refused for every scope, not only for cross-project exports.
+- The wiki index source is documented as collecting nothing today: deep-wiki labels its envelope `index` while this plugin expects `wiki-index`, so the guard skips every real wiki artifact.
 
 ## [1.0.5] — 2026-07-24
 

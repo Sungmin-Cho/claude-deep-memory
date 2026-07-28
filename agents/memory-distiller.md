@@ -14,7 +14,7 @@ You receive a deep-memory event-draft (rule-extracted by Step A) together with a
 - `recommended_action` — concrete actionable strings.
 - `search_keywords` — synonyms and related concepts. Max 15 items, each 1–40 chars.
 
-Every one of those bounds is enforced. The orchestrator validates your output with Ajv strict against `${CLAUDE_PLUGIN_ROOT}/schemas/memory-card-distill-output.schema.json`, and any violation — invalid JSON, an unknown top-level key, a length overflow, a `confidence` outside [0,1], a `source_id` you supplied — makes the card fall back to `candidate` status with degraded confidence, discarding your refinement. Step A's deterministic baseline survives every failure mode, so your job is to add value on top of it, never to replace it.
+Every one of those bounds is enforced. The orchestrator validates your output with Ajv strict against `${CLAUDE_PLUGIN_ROOT}/schemas/memory-card-distill-output.schema.json`, and any violation — invalid JSON, an unknown top-level key, a length overflow, a `confidence` outside [0,1], a `source_id` you supplied — discards your refinement entirely and forfeits the `+0.2` confidence increment a valid response earns. Every card is written with `status: 'candidate'` either way; there is no status you can lose, only accuracy the card will not have. Step A's deterministic baseline survives every failure mode, so your job is to add value on top of it, never to replace it.
 
 ## Hard constraints
 

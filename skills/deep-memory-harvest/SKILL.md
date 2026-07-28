@@ -33,6 +33,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
 
 여러 소스를 도는 스캔은 이 스킬이 담당합니다 — `config.yaml#sources[]` 를 project-root 상대로 glob 평가해 대상을 모으고, artifact 마다 위 CLI 를 한 번씩 호출합니다. lease · lock · redaction · persist 는 호출마다 harvest.js 안에서 완결됩니다.
 
+> **알려진 제약 — `wiki-index` 는 현재 아무것도 수집하지 않습니다.** deep-wiki 는 envelope 을
+> `artifact_kind: 'index'` 로 emit 하는데 (`ALLOWED_ARTIFACT_KINDS` 가 `index` 하나로 고정),
+> deep-memory 의 `SOURCE_CONTRACTS['wiki-index']` 는 `wiki-index` 를 기대합니다. envelope guard 가
+> mapper 앞단에서 positive mismatch 로 판정해 실제 `index.json` 은 전부 skip + warning 처리됩니다.
+> guard 를 통과시키더라도 `mapWikiIndex` 가 읽는 `path` / `frontmatter.adr` /
+> `frontmatter.decision_summary` 는 deep-wiki 의 page 엔트리(`{file, title, tags, aliases}`) 에
+> 존재하지 않아 card 는 0건입니다. 수정 대상은 deep-wiki 가 아니라 deep-memory 쪽 `scripts/` 입니다.
+
 `sourceKind` 와 그 producer / artifact_kind / memory_type / 기본 경로의 정본은 `${CLAUDE_PLUGIN_ROOT}/scripts/lib/default-config.js` 의 `sources[]` 이고, 런타임 값은 사용자의 `~/.deep-memory/config.yaml` 입니다. 등록된 kind 집합은 `harvest.js` 의 `STEP_A_MAPPERS` 키와 정확히 일치해야 하며 테스트가 이를 강제합니다.
 
 ## Steps
@@ -43,7 +51,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
 4. **각 artifact 처리** (per-source loop):
    - producer / artifact_kind / schema_version 헤더 확인 → mis-match 면 skip + warning.
    - **Pass 1 redaction** (raw JSON 입력) → **Step A mapper** (`STEP_A_MAPPERS[sourceKind]`) → event-draft (5 memory_type 중 하나).
-   - **Pass 2 redaction** (Step A 결과) → **llm-bridge.refine()** (`Step B`) → response schema 검증 (`memory-card-distill-output.schema.json`).
+   - **Pass 2 redaction** — 같은 rule 로 두 번 적용됩니다: 서브에이전트에 보낼 payload 발췌와 Step A draft 각각. → **llm-bridge.refine()** (`Step B`) → response schema 검증 (`memory-card-distill-output.schema.json`).
    - **Pass 3 redaction** (Step B 결과) → envelope wrap (`payload.deep_memory_provenance`) → mkdir lock acquire → dedupe (`dedupe_key`) check → card atomic write → events JSONL idempotent append (`event_key`) → FTS5 upsert (같은 lock window 안 commit) → lock release.
 5. **lease 해제** — lease 파일 삭제 (finally guard).
 6. **결과 보고** — `.deep-memory/latest-harvest.json` 에 `{sources_scanned, events_created, cards_created, skipped, warnings, generated_at}` atomic write + 동일 summary 콘솔 출력.
@@ -60,7 +68,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
 
 ## Invariants
 
-- **F1 claim never-empty** — Step A → B 어느 단계든 `claim` 이 공란인 draft 는 quarantine (`~/.deep-memory/.quarantine/`) 으로 분리되며 card 가 되지 않습니다.
+- **F1 never-empty** — `claim` · `title` · `evidence_summary` 중 하나라도 비어 있는 draft 는 `~/.deep-memory/.quarantine/empty-claim/<run_id>.json` 으로 분리되며 card 가 되지 않습니다 (세 필드 모두 필요 — claim 만 보는 게이트가 아닙니다).
 - **3-pass redaction** — 동일한 redact rule 을 Pass 1 / 2 / 3 에서 모두 적용 (multi-stage 누락 방지).
 - **lease + lock** — project lease 는 같은 project 안 동시 harvest 충돌을 막고, `~/.deep-memory/.lock` 은 cards/events/index 의 atomic 일관성을 보장합니다.
 - **idempotent event** — `event_key = sha256(source.path | content_hash | run_id)`. 같은 key 의 event line 이 이미 있으면 skip (concurrent harvest 도 single line 보장).
@@ -85,9 +93,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
 
 - `Another session already harvesting project <id>` — lease 충돌. 다른 셸 종료 또는 30분 후 자동 stale-break.
 - `Unknown sourceKind` — `config.yaml#sources[*].kind` 가 `STEP_A_MAPPERS` 와 불일치. config 확인 안내.
-- Step B 실패 (`llm-bridge.on_failure: candidate`) — Step A 결과만으로 candidate card 생성 (confidence 낮음).
+- Step B 실패 (`llm-bridge.on_failure: candidate`) — Step A 결과만으로 card 를 만듭니다. **모든 card 는 `status: 'candidate'` 로 기록되므로 강등되는 status 는 없고**, Step B 성공 시 붙는 `+0.2` confidence 만 못 받습니다.
 - `better-sqlite3` unavailable → cards/events 는 정상 write, FTS5 upsert 만 skip. `cards.warnings` (non-enumerable) 와 `latest-harvest.json` 의 `warnings[]` 양쪽에 redacted warning 노출.
-- FTS5 런타임 upsert 실패 → lock 안에서 throw. lock + lease 는 finally 가 정리하고 cards 는 이미 disk 에 commit 된 상태. v2 인덱스만 manual non-migrating recovery 하며 sealed legacy index 는 건드리지 않습니다.
+- FTS5 런타임 upsert 실패 → upsert 는 try/catch 로 감싸여 있지 않아 예외가 그대로 전파되지만, `finally` 가 항상 lock 과 lease 를 먼저 정리하므로 둘 다 새지 않습니다. cards 는 이미 disk 에 commit 된 상태입니다. v2 인덱스만 manual non-migrating recovery 하며 sealed legacy index 는 건드리지 않습니다.
 
 ## See also
 
