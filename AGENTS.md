@@ -6,7 +6,10 @@ Current version: `node -e "console.log(require('./.codex-plugin/plugin.json').ve
 
 Run that command only from a plugin checkout, never from a project you are working on. Its `require` is relative, so it resolves against the working directory — and when the manifest is absent there, CommonJS falls back to a same-named JavaScript file, then to a directory entry point. Either fallback executes whatever the working directory supplies, so treat this as arbitrary code execution rather than a version read. To read the version of an installed plugin, resolve the plugin root first and pass an absolute path.
 
-> Documentation follows `docs/DOCS_RULE.md`, the local canonical maintainer guide.
+> 📄 Doc maintenance follows `docs/DOCS_RULE.md` — a maintainer rulebook that is gitignored and
+> ships with nothing. It exists only in a maintainer's own checkout; never try to open it at
+> runtime, because the only place that path can resolve in an installed plugin is the project
+> being analysed.
 
 ## Plugin files are read and executed from the plugin, never from the workspace
 

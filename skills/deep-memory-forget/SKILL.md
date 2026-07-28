@@ -1,6 +1,6 @@
 ---
 name: deep-memory-forget
-description: Delete a memory card by ID with consent + audit-log dual emission. Slash-only. Use when a card is wrong, outdated, or holds sensitive content that must be erased.
+description: Record a memory-card deletion request with consent + audit-log dual emission. Does not yet remove the card body or its index rows. Slash-only. Use when a card is wrong, outdated, or holds content that should be marked for removal.
 allowed-tools: Read, Bash, Write
 user-invocable: true
 ---
@@ -12,7 +12,9 @@ Delete a memory card from the deep-memory store.
 ## Arguments
 
 - `<memory_id>` (required) — the ID of the card to delete (e.g. `mem_abc123`).
-- `--reason "<text>"` (recommended) — short reason, recorded in the audit log.
+- `<reason>` (recommended) — short reason, recorded in the audit log. It is the **second
+  positional argument**, not a flag: `forget.js` reads `argv[3]` directly, so calling it as
+  `--reason "<text>"` records the literal string `--reason` as the reason.
 
 ## What it does
 

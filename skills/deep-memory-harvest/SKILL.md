@@ -1,6 +1,6 @@
 ---
 name: deep-memory-harvest
-description: "Distil deep-suite artifacts into memory cards — Step A rules, Step B sub-agent, 3-pass redaction — and persist under `~/.deep-memory/` with atomic write, project lease, and idempotent event keys. Triggers on `/deep-memory-harvest`, \"harvest deep-suite\", \"메모리 수집\", \"메모리 하베스트\", \"deep-memory harvest\". Args: `<artifact-path>`, `--limit=N`."
+description: "Distil deep-suite artifacts into memory cards — Step A rules, Step B sub-agent, 3-pass redaction — and persist under `~/.deep-memory/` with atomic write, project lease, and idempotent event keys. Triggers on `/deep-memory-harvest`, \"harvest deep-suite\", \"메모리 수집\", \"메모리 하베스트\", \"deep-memory harvest\". Args: `<artifact-path>`; `--limit=N` is enforced by this skill's loop, not by the CLI."
 user-invocable: true
 ---
 
@@ -16,7 +16,7 @@ Harvest deep-suite sibling artifacts, distill them through the two-step pipeline
 |---|---|
 | (없음) | `config.yaml` 의 `sources[]` 전체에 대해 glob 스캔 |
 | `<artifact-path>` | 특정 artifact 만 인제스트 (glob 허용; 절대 또는 project-root 상대) |
-| `--limit=N` | card 생성 상한 (초과분은 다음 harvest 로 deferred) |
+| `--limit=N` | **이 스킬의 루프가 지키는 상한**입니다. `harvest.js` CLI 는 `--limit` 을 파싱하지 않으므로, 누적 card 수가 N 에 닿으면 남은 source 에 대해 CLI 를 더 호출하지 않는 방식으로 적용합니다. 지연 큐 같은 건 없습니다 — 남은 source 는 그냥 이번 실행에서 수집되지 않고, `event_key` 가 멱등이라 다음 실행이 이어서 처리합니다. |
 
 ## Prerequisites
 
@@ -65,7 +65,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
    - **Pass 2 redaction** — 같은 rule 로 두 번 적용됩니다: 서브에이전트에 보낼 payload 발췌와 Step A draft 각각. → **llm-bridge.refine()** (`Step B`) → response schema 검증 (`memory-card-distill-output.schema.json`).
    - **Pass 3 redaction** (Step B 결과) → envelope wrap (`payload.deep_memory_provenance`) → mkdir lock acquire → dedupe (`dedupe_key`) check → card atomic write → events JSONL idempotent append (`event_key`) → FTS5 upsert (같은 lock window 안 commit) → lock release.
 5. **lease 해제** — lease 파일 삭제 (finally guard).
-6. **결과 보고** — `.deep-memory/latest-harvest.json` 에 `{sources_scanned, events_created, cards_created, skipped, warnings, generated_at}` atomic write + 동일 summary 콘솔 출력.
+6. **결과 보고** — CLI 호출 **한 번마다** `.deep-memory/latest-harvest.json` 을 atomic write 합니다. 실제 스키마는
+   `{generated_at, artifactPath, sourceKind, projectId, cards_count, memory_ids, skipped, warnings}` 이며 (`harvest.js:973-985`),
+   **run 단위 집계가 아닙니다.** 여러 source 를 도는 스캔에서는 매 호출이 이 파일을 덮어쓰므로 마지막 artifact 의 결과만 디스크에 남습니다.
+   run 전체 합계가 필요하면 이 스킬이 각 호출의 `cards_count` / `warnings` 를 누적해 사용자에게 직접 보고하십시오 — 파일에서 읽지 마십시오.
 
 ### Step B host dispatch
 

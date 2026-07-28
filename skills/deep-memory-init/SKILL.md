@@ -36,7 +36,10 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
    - memory_root 를 `mkdir -p` 로 만든 뒤 realpath 로 정규화 (부모 디렉토리는 검사가 아니라 생성 대상입니다)
    - 정규화된 경로에 임시 파일을 쓰고 fsync 후 지우는 **쓰기 probe**. 실패해도 abort 하지 않고 `readOnly` warning ("brief-only mode") 만 남깁니다 — 이 단계는 게이트가 아닙니다.
    - 네트워크 루트 차단 — POSIX 는 `/Volumes/` · `/mnt/` · `/net/` prefix, Windows 는 UNC (`\\server\share`, `\\?\UNC\...`) 를 **경로 패턴으로** 판정합니다. 파일시스템 타입을 조회하지 않으므로 그 prefix 밖에 마운트된 NFS 는 걸리지 않습니다.
-   - init 을 실제로 중단시키는 것은 이 네트워크 루트 거부뿐입니다 (`preflight failed: ...` 로 throw).
+   - **preflight 가** `ok: false` 를 내는 경우는 이 네트워크 루트 거부뿐입니다 (`preflight failed: ...` 로 throw).
+     다만 init 전체가 거기서만 멈추는 것은 아닙니다 — preflight 이후의 필수 쓰기(`init.js:55-57` 의 하위 디렉토리 생성,
+     `:93-96` 의 project-profile 2회 atomic write)는 쓰기 불가 루트에서 그대로 throw 합니다. 즉 read-only 루트는
+     preflight 에서는 warning 으로 통과하고 그 다음 단계에서 다른 에러로 실패합니다.
    - native FTS5 adapter 가용성은 여기서 판단하지 않고 harvest/retrieve 시 별도로 결정합니다.
 3. **memory_root 하위 디렉토리 보장**: `cards/`, `events/`, `indexes/`, `projects/`, `.leases/`.
 4. **`config.yaml` 작성** — 없으면 default config 작성 후 schema 검증 (versions / paths / privacy block 필수). default 는 `capture: {enabled: false, eager_distill: false}` 를 포함합니다.
@@ -63,7 +66,8 @@ project-profile 의 `privacy.scope` 기본값은 `local` 이며, cards 의 `priv
 
 ## Error handling
 
-- `preflight failed: <reason>` — network root 거부. 현재 preflight 가 `ok: false` 를 내는 경우는 이것뿐이며, 쓰기 probe 실패는 warning 으로 남고 init 은 계속 진행합니다.
+- `preflight failed: <reason>` — network root 거부. preflight 가 `ok: false` 를 내는 경우는 이것뿐입니다. 쓰기 probe 실패는
+  warning 으로 남지만, 그 뒤의 디렉토리 생성과 project-profile write 가 실패하므로 init 자체는 결국 다른 에러로 중단됩니다.
 - `config.yaml schema invalid` — 손으로 고친 config 가 schema 와 어긋날 때. 변경 직전 위치 + 예상 타입 안내.
 - network-mount 경고는 `--allow-network-root` 로 우회할 수 있지만 default behavior 는 바뀌지 않도록 explicit opt-in 을 유지합니다.
 

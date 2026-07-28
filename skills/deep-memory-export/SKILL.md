@@ -18,7 +18,10 @@ Export memory cards to a JSON file.
 
 1. Validates `<path>` is writable.
 2. Writes the `mutation-consent` audit-log entry.
-3. Reads cards from `cards/<type>/<project>/` (`scope=current-project`) or `cards/<type>/*/` (`scope=all`).
+3. Reads cards from the memory root — `<memory_root>/cards/<type>/<project>/`
+   (`scope=current-project`) or `<memory_root>/cards/<type>/*/` (`scope=all`), where
+   `<memory_root>` is `$DEEP_MEMORY_ROOT` or `~/.deep-memory`. These are never resolved
+   relative to the working directory.
 4. Writes a single JSON file holding the card array.
 5. Writes the `cross-project-export` audit-log entry. Its payload is schema-fixed: `{scope, exported_count, target_path}`.
 

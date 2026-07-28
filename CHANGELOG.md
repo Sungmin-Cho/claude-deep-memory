@@ -7,6 +7,8 @@ All notable changes to deep-memory are documented here. This file follows [Keep 
 ### Security
 
 - Every plugin path a skill or agent instruction opens or runs is now anchored to the plugin root, so a file of the same name in the project being worked on can no longer be read as plugin instructions or executed in their place.
+- The path guard now reads a backslash the same way as a forward slash, closing a bypass in which the identical unanchored reference was caught when written `scripts/x.js` and invisible when written `scripts\x.js` — Windows is a supported host, so one character defeated the whole check.
+- The maintainer rulebook path is declared as something the plugin never ships, with an explicit instruction never to open it at runtime, because that path can only resolve inside the project being analysed.
 
 ### Changed
 
@@ -19,6 +21,7 @@ All notable changes to deep-memory are documented here. This file follows [Keep 
 - Promotion refreshes the lexical index only; the vector-index refresh it previously claimed never happened.
 - Forget records the deletion request in the audit log but does not remove the card body or its index rows, which the skill now says plainly instead of promising the removal.
 - Export through the autonomous tool surface is refused for every scope, not only for cross-project exports.
+- Deletion, harvest limits, and the harvest summary file now describe what the code does: deletion records a request without removing the card, the card limit is applied by the skill rather than the command line, and the summary file holds one artifact's result rather than a run total.
 - The wiki index source is documented as collecting nothing today: deep-wiki labels its envelope `index` while this plugin expects `wiki-index`, so the guard skips every real wiki artifact — and even past that guard the pages it looks for carry none of the fields it reads, so restoring the source needs a design decision rather than a one-line fix. The test fixture for this source was built to the expectation rather than to what deep-wiki emits, so a passing wiki test does not indicate a working integration.
 
 ## [1.0.5] — 2026-07-24
