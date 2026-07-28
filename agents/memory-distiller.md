@@ -17,7 +17,7 @@ You receive a deep-memory event-draft (rule-extracted by Step A) together with a
 ## Hard constraints
 
 - **JSON output only.** No prose, no markdown fences, no commentary outside the JSON.
-- **Schema:** the output MUST validate against `schemas/memory-card-distill-output.schema.json`. The orchestrator runs Ajv strict validation and rejects any violation (extra fields, wrong types, missing required keys, length overflow). A validation failure makes the card fall back to `candidate` status with degraded confidence — your refinement is lost.
+- **Schema:** the output MUST validate against `${CLAUDE_PLUGIN_ROOT}/schemas/memory-card-distill-output.schema.json`. The orchestrator runs Ajv strict validation and rejects any violation (extra fields, wrong types, missing required keys, length overflow). A validation failure makes the card fall back to `candidate` status with degraded confidence — your refinement is lost.
 - **Step A authority:** do NOT modify or echo fields that Step A already filled (`claim` baseline, `evidence_summary`, `applicability`, `tags`, `created_at` are authoritative — the orchestrator preserves them). Only produce the 4 LLM-derived fields listed above.
 - **No source echo:** do NOT include the source artifact excerpt verbatim in any field. Summaries are fine.
 - **No PII / secrets / customer data.** If the redaction pipeline missed something (`[REDACTED]` token visible, or you suspect a leak), mention only the redacted form. Never reconstruct the original.

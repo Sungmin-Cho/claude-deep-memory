@@ -35,9 +35,9 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
 ## Steps
 
 1. **memory_root 결정**: arg > 환경변수 `DEEP_MEMORY_ROOT` > `~/.deep-memory`. `~`-prefix 는 `os.homedir()` 로 치환.
-   - Windows 예: `node scripts/init.js "C:\Users\me\.deep-memory"`
-   - UNC 예: `node scripts/init.js "\\server\share\deep-memory" --allow-network-root` (명시적 opt-in 필수)
-2. **preflight 호출** — `scripts/lib/preflight.js` 의 `preflight(memoryRoot, { allowNetworkRoot })` 가 다음을 검증:
+   - Windows 예: `node "${CLAUDE_PLUGIN_ROOT}/scripts/init.js" "C:\Users\me\.deep-memory"`
+   - UNC 예: `node "${CLAUDE_PLUGIN_ROOT}/scripts/init.js" "\\server\share\deep-memory" --allow-network-root` (명시적 opt-in 필수)
+2. **preflight 호출** — `${CLAUDE_PLUGIN_ROOT}/scripts/lib/preflight.js` 의 `preflight(memoryRoot, { allowNetworkRoot })` 가 다음을 검증:
    - realpath / 쓰기 가능 / 부모 디렉토리 존재
    - NFS · 네트워크 마운트 차단 (`--allow-network-root` 없으면)
    - memory root 자체의 쓰기 가능성 probe (native FTS5 adapter 가용성은 harvest/retrieve 시 별도 판단)
@@ -48,10 +48,10 @@ Set up the deep-memory plugin for first use — preflight the memory_root, write
    - canonical physical root 문자열만을 해시하는 root-only `proj_<sha256(canonical_root)[:12]>` 형식의 `project_id` 계산
    - `.deep-memory/project-profile.json` (project-local) + `~/.deep-memory/projects/<project_id>.json` (global mirror) 양쪽에 atomic write
    - languages / runtimes / suite plugins 등 signature 필드는 shallow scan 으로 채움
-6. **capture 토글** (`--enable-capture` / `--disable-capture` 지정 시) — `scripts/lib/capture-toggle.js` 의 `setCaptureEnabled` 가 `config.yaml#capture.enabled` 를 in-place 편집 (기존 config 도 덮어쓰지 않고 해당 줄만 수정). 실제 상태 전이(true↔false)가 일어날 때만 `audit-log/YYYY-MM.jsonl` 에 `{kind:'capture-toggle', by:'cli-flag', payload:{from,to,method:'cli-flag'}}` 1건 기록 (멱등 — 이미 같은 상태면 무변경·무기록).
+6. **capture 토글** (`--enable-capture` / `--disable-capture` 지정 시) — `${CLAUDE_PLUGIN_ROOT}/scripts/lib/capture-toggle.js` 의 `setCaptureEnabled` 가 `config.yaml#capture.enabled` 를 in-place 편집 (기존 config 도 덮어쓰지 않고 해당 줄만 수정). 실제 상태 전이(true↔false)가 일어날 때만 `audit-log/YYYY-MM.jsonl` 에 `{kind:'capture-toggle', by:'cli-flag', payload:{from,to,method:'cli-flag'}}` 1건 기록 (멱등 — 이미 같은 상태면 무변경·무기록).
 7. **결과 보고** — `{ memoryRoot, projectId, warnings }` (+ 토글 시 `capture: {from, to, changed}`) JSON 출력.
 
-위 단계 전체는 `scripts/init.js` 의 `run(opts)` 함수가 단일 진입점으로 수행합니다.
+위 단계 전체는 `${CLAUDE_PLUGIN_ROOT}/scripts/init.js` 의 `run(opts)` 함수가 단일 진입점으로 수행합니다.
 
 ## Outputs
 

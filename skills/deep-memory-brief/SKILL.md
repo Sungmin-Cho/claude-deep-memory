@@ -33,7 +33,7 @@ Generate a structured brief of the most relevant memory cards for the user's sta
 ## Steps
 
 1. **profile 로드** — `.deep-memory/project-profile.json` 읽기. missing/invalid 이면 warning 을 남기고 global-only retrieval 로 계속.
-2. **retrieve pipeline 실행** — `scripts/retrieve.js` 의 `runRetrieve({ task, projectProfile, memoryRoot })`:
+2. **retrieve pipeline 실행** — `${CLAUDE_PLUGIN_ROOT}/scripts/retrieve.js` 의 `runRetrieve({ task, projectProfile, memoryRoot })`:
    - **Stage 0** — native FTS5 사용 시 `fts-index.search(task, { projectId, topN: N×3 })` (BM25 overfetch + SQL privacy scope filter). Native adapter 를 사용할 수 없으면 bounded privacy-scoped card scan 이 global/current-project 물리 scope 만 탐색.
    - **Stage 1** — hard filter: `status !== 'deprecated'`
    - **Stage 2** — `bm25MinMax` 정규화 (P13 — 작은 BM25 = 좋은 매치 → invert)
@@ -43,14 +43,14 @@ Generate a structured brief of the most relevant memory cards for the user's sta
    - **Stage 6** — `applicability guard`: task tokens ∩ `non_applicability.value` Jaccard ≥ 0.5 → drop
    - **Stage 7** — `diversity`: 같은 `dedupe_key` 클러스터 1개만, per `memory_type` 최대 `diversity_per_type` (기본 2)
    - **Stage 8** — `review_after` 경과를 stale penalty `p` 로 변환하고 `score = w_project_sim·s + w_task_sim·t + w_evidence·e − w_stale_penalty·p`, sort desc, take `top_n`. Stale 카드는 hard drop 하지 않고 순위만 낮춤.
-3. **brief render** — `scripts/lib/brief-format.js` 의 `renderJson(task, cards)` + `renderMarkdown(...)`:
+3. **brief render** — `${CLAUDE_PLUGIN_ROOT}/scripts/lib/brief-format.js` 의 `renderJson(task, cards)` + `renderMarkdown(...)`:
    - `avoid_when ← non_applicability[].value` (mapping, F2 fallback to "(none specified)")
    - `recommended_action ← card.payload.recommended_action` (fallback to "(none — refer to evidence)")
    - `why_relevant ← '(retrieved by lexical match)'` (fallback)
 4. **atomic write** — `.deep-memory/latest-brief.json` + `.deep-memory/latest-brief.md` via `writeJsonAtomic` + `writeTextAtomic`
 5. **stdout summary** — 사용자에게 N개의 brief 요약 출력
 
-전체 절차는 `scripts/brief.js` 가 단일 진입점으로 수행합니다.
+전체 절차는 `${CLAUDE_PLUGIN_ROOT}/scripts/brief.js` 가 단일 진입점으로 수행합니다.
 
 ## Privacy invariant
 
