@@ -8,6 +8,7 @@ All notable changes to deep-memory are documented here. This file follows [Keep 
 
 - Every plugin path a skill or agent instruction opens or runs is now anchored to the plugin root, so a file of the same name in the project being worked on can no longer be read as plugin instructions or executed in their place.
 - The path guard now reads a backslash the same way as a forward slash, closing a bypass in which the identical unanchored reference was caught when written `scripts/x.js` and invisible when written `scripts\x.js` — Windows is a supported host, so one character defeated the whole check.
+- The same guard now also reads repeated separators, closing a narrower case in which a doubled backslash still drew an objection but stopped the check that proves the instruction would actually reach a planted file.
 - The maintainer rulebook path is declared as something the plugin never ships, with an explicit instruction never to open it at runtime, because that path can only resolve inside the project being analysed.
 
 ### Changed

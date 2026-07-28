@@ -213,7 +213,22 @@ const ROOT_METADATA = new Set(['package.json', 'plugin.json', 'config.yaml',
   'AGENTS.md', 'CLAUDE.md', 'README.md', 'CHANGELOG.md', 'SKILL.md', 'hooks.json']);
 
 // Path-shaped tokens: multi-segment paths, plus dotted single segments.
-const PATH_TOKEN = /[A-Za-z0-9_.@${}<>-]+(?:[\\/][A-Za-z0-9_.@{}|*-]+)+|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,6}\b/g;
+// The inter-segment class takes a RUN of separators, not one. `normalizePath`
+// already collapses runs, but that happens *after* tokenization — and a
+// tokenizer that accepts only a single separator never produces the token to
+// normalise. On `scripts\\\\harvest.js` the multi-segment alternative fails at the
+// second backslash, the regex falls through to the bare-basename alternative,
+// and yields `harvest.js`, which is not a repo-relative path and so matches
+// nothing in PLUGIN_FILES.
+//
+// The consequence was silent and specific: FORMS still flagged the line, because
+// PATH_BODY consumes backslashes, so the classifier objected. But the
+// malicious-workspace fixture — the only layer that proves an instruction
+// actually lands on a planted file — plants from these tokens, so it saw
+// nothing and passed. One layer complaining while the layer that proves
+// reachability goes blind is the worst shape a guard can have, because the
+// failure count still looks right.
+const PATH_TOKEN = /[A-Za-z0-9_.@${}<>-]+(?:[\\/]+[A-Za-z0-9_.@{}|*-]+)+|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,6}\b/g;
 
 function resolvesInPlugin(token, sourceFile) {
   const clean = normalizePath(token).replace(/^\.\//, '');
@@ -1027,12 +1042,55 @@ test('a backslash separator does not hide a path from the guard', () => {
   }
 });
 
-test('the malicious-workspace fixture resolves backslash tokens too', () => {
-  // The fixture consumes scopedTokens, so normalising there is what makes it
-  // see a backslash instruction at all. Asserted directly rather than trusted.
-  const seen = [...scopedTokens('Run `node scripts\\harvest.js` now.')];
-  assert.ok(seen.includes('scripts/harvest.js'),
-    `scopedTokens must normalise the separator; got ${JSON.stringify(seen)}`);
+// Which LAYER sees a line, by name. The guard has two independent layers and
+// they fail differently: the classifier objects, and the malicious-workspace
+// fixture proves the instruction actually lands on a planted file. A separator
+// run once left the classifier firing while the fixture went blind, and the
+// review that first looked at it read the failure COUNT and called the bypass
+// caught. Counting is what hid it, so this returns names.
+function layersFiring(line) {
+  const firing = [];
+  if (shadowableTokens(line, path.join(ROOT, 'AGENTS.md'), '').length > 0) firing.push('classifier');
+  // The fixture plants from scopedTokens and lands on anything unanchored that
+  // names a real plugin file — so this is exactly its reachability condition.
+  for (const token of scopedTokens(line)) {
+    if (ANCHORED_TOKEN.test(token)) continue;
+    const clean = token.replace(/^\.\//, '');
+    if (PLUGIN_FILES.has(clean)) { firing.push('fixture'); break; }
+  }
+  return firing;
+}
+
+test('both guard layers see a path however its separators are written', () => {
+  // Every shape names the same real file. A shape that reaches only one layer
+  // is a shape where the reachability proof is gone.
+  const shapes = [
+    ['forward slash', 'Run `node scripts/harvest.js` now.'],
+    ['single backslash', 'Run `node scripts\\harvest.js` now.'],
+    ['double backslash run', 'Run `node scripts\\\\harvest.js` now.'],
+    ['triple backslash run', 'Run `node scripts\\\\\\harvest.js` now.'],
+    ['mixed run', 'Run `node scripts\\\\/harvest.js` now.'],
+    ['doubled forward slash', 'Run `node scripts//harvest.js` now.'],
+  ];
+  const wrong = [];
+  for (const [label, line] of shapes) {
+    const firing = layersFiring(line);
+    if (!(firing.includes('classifier') && firing.includes('fixture'))) {
+      wrong.push(`${label}: only [${firing.join(', ') || 'none'}] fired`);
+    }
+  }
+  assert.deepEqual(wrong, [],
+    `a separator shape reached fewer than both layers — the missing layer is named:\n  ${wrong.join('\n  ')}`);
+});
+
+test('the layer probe is non-vacuous', () => {
+  // If layersFiring could never return a partial answer, the test above would
+  // pass on a guard with one layer deleted. An anchored path must reach
+  // neither layer, and prose must reach neither.
+  assert.deepEqual(layersFiring('Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js"` now.'), [],
+    'an anchored path must reach neither layer');
+  assert.deepEqual(layersFiring('Nothing path-shaped here at all.'), [],
+    'prose must reach neither layer');
 });
 
 test('mixed lines fail on the bare token', () => {
