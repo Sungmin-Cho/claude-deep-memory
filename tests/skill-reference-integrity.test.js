@@ -131,7 +131,10 @@ const FORMS = [
 // another form list. Anything that does not resolve is prose and passes.
 const PLUGIN_FILES = (() => {
   const rel = new Set();
-  const skip = new Set(['node_modules', '.git', '.claude', '.github', 'docs',
+  // docs/ and tests/ are not runtime-loaded plugin assets (same rationale as the
+  // reference guard). The `.deep-*` entries are workspace outputs this plugin
+  // writes into a project, never things it loads.
+  const skip = new Set(['node_modules', '.git', '.claude', 'docs',
     'tests', '.deep-review', '.deep-memory', '.deep-docs', '.deep-suite-cache']);
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -240,6 +243,13 @@ function denyByDefaultHits(line, sourceFile, body) {
 // repo-relative path, so the rule above cannot see it — yet it is the weakest
 // form of all, resolving straight against cwd. Only basenames that name a real
 // plugin document are flagged, so ordinary prose is untouched.
+//
+// KNOWN GAP (shared with the reference guard): this form covers `.md` only, and
+// `PATH_TOKEN` does not reliably extract a dotted single-segment basename, so a
+// bare `Read(`x.schema.json`)` would slip through both. Exposure today is zero —
+// the two `.json` basenames in the corpus (harvest §Steps, audit §Sub-commands)
+// are descriptive prose, not load instructions. Widen the extension class here
+// before turning either into an instruction.
 const BARE_BASENAME = /\b(?:Read|Follow|read|follow)\s*\(?\s*["'`]([A-Za-z0-9][A-Za-z0-9._-]*\.md)(?:#[^`"']*)?["'`]/g;
 
 function bareBasenameHits(line) {
@@ -323,11 +333,14 @@ function nonExpandingAnchors(line) {
   JS_SPECIFIER.lastIndex = 0;
   let m;
   while ((m = JS_SPECIFIER.exec(line))) {
+    // Report the anchor the line actually used. Hardcoding one name makes the
+    // diagnostic point at a variable the file never mentions.
+    const named = /\$\{CLAUDE_PLUGIN_ROOT\}/.test(m[2]) ? '${CLAUDE_PLUGIN_ROOT}' : '${PLUGIN_ROOT}';
     if (m[1] === "`") {
-      flag('${CLAUDE_PLUGIN_ROOT}', "JS template literal — interpolates a local variable of that name, not the "
+      flag(named, "JS template literal — interpolates a local variable of that name, not the "
         + "environment; undefined is a ReferenceError and a defined one is attacker-influenced");
     } else {
-      flag('${CLAUDE_PLUGIN_ROOT}', `JS ${m[1] === '"' ? 'double' : 'single'}-quoted specifier — not interpolated, `
+      flag(named, `JS ${m[1] === '"' ? 'double' : 'single'}-quoted specifier — not interpolated, `
         + 'so Node resolves it as a bare package name under the workspace node_modules');
     }
   }
