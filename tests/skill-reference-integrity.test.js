@@ -1165,8 +1165,20 @@ test('the non-shipped directory list is derived from .gitignore, not guessed', (
 
 test('no undeclared path under a non-shipped directory is named', () => {
   // The generalisation. Lexical over raw lines, never consulting the resolver,
-  // so it is immune to the skip-set blind spot that created the gap.
-  const re = new RegExp(String.raw`(?<![A-Za-z0-9._/-])((?:${MAINTAINER_ONLY_DIRS.map((d) => d.replace(/[.]/g, '\\.')).join('|')})/[A-Za-z0-9._/-]+)`, 'g');
+  // so it is immune to the skip-set blind spot that created the gap — and, for
+  // the same reason, `normalizePath` never reaches it. Being lexical is why both
+  // separators have to be spelled out here: with `/` alone, `docs\backlog.md`
+  // named an undeclared path and nothing objected, while the slash spelling was
+  // rejected.
+  const re = new RegExp(String.raw`(?<![A-Za-z0-9._\\/-])((?:${MAINTAINER_ONLY_DIRS.map((d) => d.replace(/[.]/g, '\\.')).join('|')})[\\/][A-Za-z0-9._\\/-]+)`, 'g');
+  // Both spellings, on the axis: with `/` alone `docs\\backlog.md` named an
+  // undeclared path and nothing objected.
+  for (const spelling of ['docs/backlog.md', 'docs\\backlog.md']) {
+    re.lastIndex = 0;
+    assert.ok(re.exec(`See \`${spelling}\` for the rest.`),
+      `undeclared-path check must see both spellings: ${spelling}`);
+  }
+
   const violations = [];
   for (const file of markdownFiles()) {
     fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
@@ -1183,14 +1195,30 @@ test('no undeclared path under a non-shipped directory is named', () => {
 });
 
 test('every referenced skill path resolves', () => {
+  // Either separator, everywhere. This resolver reads the raw body on purpose, so
+  // `normalizePath` cannot reach it and each pattern has to accept `\` itself.
+  // Slash-only made the backslash spelling *weaker* than the slash one: an
+  // anchored `.json` escaping the root matched no FORM, was waved through by
+  // deny-by-default as anchored, and matched nothing here either — invisible to
+  // every layer, while the slash spelling was caught. Captures are normalised
+  // before resolution so `path.join` sees one shape.
   const patterns = [
     // Trailing boundary, same reason as the guard: without it `.js` matches the
     // prefix of `.json` and the resolver reports files that never existed.
-    [/\$\{(?:CLAUDE_)?PLUGIN_ROOT\}\/([A-Za-z0-9._/-]+\.(?:md|js|cjs|mjs|sh|json|yaml)(?![A-Za-z0-9]))/g, false],
-    [/`(\.\.\/[A-Za-z0-9._/-]+\.md)(?:#[a-z0-9-]+)?`/g, true],
-    [/\]\((\.\.?\/[A-Za-z0-9._/-]+\.md)\)/g, true],
-    [/Read\("(\.\.\/[A-Za-z0-9._/-]+\.md)(?:#[a-z0-9-]+)?"\)/g, true],
+    [/\$\{(?:CLAUDE_)?PLUGIN_ROOT\}[\\/]([A-Za-z0-9._\\/-]+\.(?:md|js|cjs|mjs|sh|json|yaml)(?![A-Za-z0-9]))/g, false],
+    [/`(\.\.[\\/][A-Za-z0-9._\\/-]+\.md)(?:#[a-z0-9-]+)?`/g, true],
+    [/\]\((\.\.?[\\/][A-Za-z0-9._\\/-]+\.md)\)/g, true],
+    [/Read\("(\.\.[\\/][A-Za-z0-9._\\/-]+\.md)(?:#[a-z0-9-]+)?"\)/g, true],
   ];
+  // Pin the separator symmetry before walking real files, so this fails on the
+  // axis rather than on whatever happens to be in the tree. Slash-only here made
+  // an out-of-root backslash reference invisible to every layer.
+  for (const spelling of ['${CLAUDE_PLUGIN_ROOT}/../workspace/evil.json',
+    '${CLAUDE_PLUGIN_ROOT}\\..\\workspace\\evil.json']) {
+    patterns[0][0].lastIndex = 0;
+    assert.ok(patterns[0][0].exec(spelling), `resolver must see both spellings: ${spelling}`);
+  }
+
   const broken = [];
   let resolved = 0;
   const realRoot = fs.realpathSync(ROOT);
@@ -1201,8 +1229,8 @@ test('every referenced skill path resolves', () => {
       let m;
       while ((m = re.exec(body))) {
         const target = isRelative
-          ? path.resolve(path.dirname(file), m[1])
-          : path.join(ROOT, m[1]);
+          ? path.resolve(path.dirname(file), normalizePath(m[1]))
+          : path.join(ROOT, normalizePath(m[1]));
         if (!fs.existsSync(target)) {
           broken.push(`${path.relative(ROOT, file)} -> ${m[1]} (missing)`);
           continue;
