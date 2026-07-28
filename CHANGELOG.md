@@ -2,6 +2,24 @@
 
 All notable changes to deep-memory are documented here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] — 2026-07-28
+
+### Security
+
+- Every plugin path a skill or agent instruction opens or runs is now anchored to the plugin root, so a file of the same name in the project being worked on can no longer be read as plugin instructions or executed in their place.
+
+### Changed
+
+- Skill and agent descriptions are roughly 45% shorter, with every trigger phrase unchanged.
+
+### Fixed
+
+- The audit reports six sub-checks rather than seven, and states that the read-only checks run before the lock is taken so a stale lock still appears in the report.
+- Initialization no longer claims that an unwritable memory root stops setup; only a network-root rejection does, and the network check is a path-pattern test rather than a filesystem-type probe.
+- Promotion refreshes the lexical index only; the vector-index refresh it previously claimed never happened.
+- Forget records the deletion request in the audit log but does not remove the card body or its index rows, which the skill now says plainly instead of promising the removal.
+- Export through the autonomous tool surface is refused for every scope, not only for cross-project exports.
+
 ## [1.0.5] — 2026-07-24
 
 ### Fixed
