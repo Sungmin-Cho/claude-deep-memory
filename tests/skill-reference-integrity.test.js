@@ -1228,6 +1228,10 @@ test('every referenced skill path resolves', () => {
       re.lastIndex = 0;
       let m;
       while ((m = re.exec(body))) {
+        // Normalising the capture is load-bearing but NOT pinned: removing it
+        // breaks no test, because no shipped document uses the backslash
+        // spelling yet. The failure would first appear as a false `missing` on
+        // a file that exists. Recorded, not claimed.
         const target = isRelative
           ? path.resolve(path.dirname(file), normalizePath(m[1]))
           : path.join(ROOT, normalizePath(m[1]));
