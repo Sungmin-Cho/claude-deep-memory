@@ -33,13 +33,24 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js" <artifact-path> --kind <sourceKi
 
 여러 소스를 도는 스캔은 이 스킬이 담당합니다 — `config.yaml#sources[]` 를 project-root 상대로 glob 평가해 대상을 모으고, artifact 마다 위 CLI 를 한 번씩 호출합니다. lease · lock · redaction · persist 는 호출마다 harvest.js 안에서 완결됩니다.
 
-> **알려진 제약 — `wiki-index` 는 현재 아무것도 수집하지 않습니다.** deep-wiki 는 envelope 을
-> `artifact_kind: 'index'` 로 emit 하는데 (`ALLOWED_ARTIFACT_KINDS` 가 `index` 하나로 고정),
-> deep-memory 의 `SOURCE_CONTRACTS['wiki-index']` 는 `wiki-index` 를 기대합니다. envelope guard 가
-> mapper 앞단에서 positive mismatch 로 판정해 실제 `index.json` 은 전부 skip + warning 처리됩니다.
-> guard 를 통과시키더라도 `mapWikiIndex` 가 읽는 `path` / `frontmatter.adr` /
-> `frontmatter.decision_summary` 는 deep-wiki 의 page 엔트리(`{file, title, tags, aliases}`) 에
-> 존재하지 않아 card 는 0건입니다. 수정 대상은 deep-wiki 가 아니라 deep-memory 쪽 `scripts/` 입니다.
+> **알려진 제약 — `wiki-index` 는 현재 아무것도 수집하지 않습니다.**
+>
+> 1. **Envelope 불일치.** deep-wiki 는 `artifact_kind: 'index'` 로 emit 하는데
+>    (`ALLOWED_ARTIFACT_KINDS` 가 `index` 하나로 고정) `SOURCE_CONTRACTS['wiki-index']` 는
+>    `wiki-index` 를 기대합니다. envelope guard 가 mapper 앞단에서 positive mismatch 로 판정해
+>    실제 `index.json` 은 전부 skip + warning 처리됩니다.
+> 2. **Payload 불일치 — 키 rename 으로 끝나지 않습니다.** `mapWikiIndex` 가 읽는 `path` /
+>    `frontmatter.adr` / `frontmatter.decision_summary` 는 deep-wiki 에 없습니다. `adr` 와
+>    `decision_summary` 는 deep-wiki 전체에서 히트 0건이고, index 는 frontmatter 를 passthrough
+>    하지 않고 `{file, title, tags, aliases}` 네 키만 만듭니다 — rename 할 대상 자체가 없습니다.
+>    복구하려면 설계 결정이 필요합니다: deep-wiki 가 ADR 마커를 emit 하거나, deep-memory 가
+>    실제 존재하는 신호(예: `tags`)에서 추출하도록 바꾸거나.
+> 3. **테스트를 믿지 마십시오.** `tests/fixtures/sample-wiki-index.json` 은 생산자와 세 축
+>    (`artifact_kind`, `producer_version` 1.4.0 vs deep-wiki 1.9.2, page 엔트리 형태) 모두에서
+>    어긋나 있고, `tests/harvest-golden.test.js` 는 그 픽스처로 card 2건을 단언하며 오늘도
+>    green 입니다. 그 테스트는 deep-wiki 의 출력이 아니라 deep-memory 의 가정을 검증합니다.
+>
+> 수정 대상은 deep-wiki 가 아니라 deep-memory 의 `scripts/` 와 `tests/` 입니다.
 
 `sourceKind` 와 그 producer / artifact_kind / memory_type / 기본 경로의 정본은 `${CLAUDE_PLUGIN_ROOT}/scripts/lib/default-config.js` 의 `sources[]` 이고, 런타임 값은 사용자의 `~/.deep-memory/config.yaml` 입니다. 등록된 kind 집합은 `harvest.js` 의 `STEP_A_MAPPERS` 키와 정확히 일치해야 하며 테스트가 이를 강제합니다.
 
