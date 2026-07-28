@@ -1,6 +1,6 @@
 ---
 name: deep-memory-forget
-description: Delete a memory card by ID with mandatory consent + audit-log dual emission. Slash-only entry point (spec §6.3.1 Gate 2 — autonomous MCP calls return slash_only_in_v030). Use when a memory card is wrong, outdated, or contains sensitive content that must be erased. Writes mutation-consent + forget audit-log entries (R4-K dual emission).
+description: Delete a memory card by ID with consent + audit-log dual emission. Slash-only. Use when a card is wrong, outdated, or holds sensitive content that must be erased.
 allowed-tools: Read, Bash, Write
 user-invocable: true
 ---
@@ -11,27 +11,22 @@ Delete a memory card from the deep-memory store.
 
 ## Arguments
 
-- `<memory_id>` (required) — the ID of the card to delete (e.g., `mem_abc123`).
-- `--reason "<text>"` (recommended) — short reason for the deletion, recorded in audit log.
+- `<memory_id>` (required) — the ID of the card to delete (e.g. `mem_abc123`).
+- `--reason "<text>"` (recommended) — short reason, recorded in the audit log.
 
 ## What it does
 
-1. Validates `<memory_id>` exists under `cards/<type>/<project>/`.
-2. Writes an audit-log `mutation-consent` entry (R4-K dual emission).
-3. Deletes the card file + removes from FTS5 + vector indices.
-4. Writes an audit-log `forget` entry with `memory_id` + `reason`.
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/forget.js" <memory_id> [reason]` emits the audit pair and prints `{status: 'audit_logged', consent_id, forget_id}`.
+
+It does not remove the card body or its index rows. The script says so in its own output note, and the containment-checked `unlinkContainedCard` helper is wired only into the promote path. So the audit entry is the durable record of the request; if you also remove the body, go through a containment-checked path rather than a bare `rm` under `~/.deep-memory/`, which would bypass the scope and symlink checks and can desynchronise the FTS5 index from `cards/`.
 
 ## Why slash-only
 
-Mutation is permanent — even though we keep the audit-log entry, the
-card body is gone. Per spec §6.3.1 Gate 2 (v0.3.0 R3-B option-a), the
-autonomous MCP `deep_memory_forget` tool returns `slash_only_in_v030`,
-forcing all deletions through this explicit user-driven path.
+Deletion is designed as a permanent mutation, so it is never autonomous: the MCP `deep_memory_forget` tool returns `slash_only_in_v030`, forcing every deletion through this explicit user-driven path.
 
 ## Audit log
 
-Every invocation produces exactly 2 audit-log lines per R4-K:
-1. `{kind: 'mutation-consent', payload: {tool: 'forget', args: {...}}}`
-2. `{kind: 'forget',           payload: {memory_id, reason}}`
+Exactly two lines per invocation, sharing one `at` timestamp — `writeMutationPair` computes it once and passes it to both:
 
-The two `at` timestamps are within 1ms.
+1. `{kind: 'mutation-consent', payload: {tool: 'forget', args: {...}}}`
+2. `{kind: 'forget', payload: {memory_id, reason}}`
