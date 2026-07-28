@@ -340,6 +340,15 @@ function denyByDefaultHits(line, sourceFile, body) {
 // before turning either into an instruction.
 const BARE_BASENAME = /\b(?:Read|Follow|read|follow)\s*\(?\s*["'`]([A-Za-z0-9][A-Za-z0-9._-]*\.md)(?:#[^`"']*)?["'`]/g;
 
+// The executable twin. A read verb on a `.md` was covered; an interpreter on a
+// runnable file was not, and that shape is strictly more dangerous: `node
+// prep-scout.js` resolves against cwd — the analysed workspace — and running a
+// planted file there is arbitrary code execution with the caller's permissions.
+// Membership in the shipped set is still required, so prose that merely names a
+// script is untouched; it is the interpreter that makes it an instruction.
+const BARE_EXEC_BASENAME =
+  /\b(?:node|python3?|deno|bun|bash|sh|zsh)\s+["'`]?([A-Za-z0-9][A-Za-z0-9._-]*\.(?:js|cjs|mjs|py|sh))["'`]?/g;
+
 function bareBasenameHits(line) {
   const out = [];
   BARE_BASENAME.lastIndex = 0;
@@ -347,6 +356,14 @@ function bareBasenameHits(line) {
   while ((m = BARE_BASENAME.exec(line))) {
     if (PLUGIN_DOCS.has(m[1])) {
       out.push({ form: 'bare-basename', token: m[1], why: 'unanchored' });
+    }
+  }
+  const shippedBasenames = new Set([...PLUGIN_FILES].map((f) => f.split('/').pop()));
+  BARE_EXEC_BASENAME.lastIndex = 0;
+  let em;
+  while ((em = BARE_EXEC_BASENAME.exec(line))) {
+    if (shippedBasenames.has(em[1])) {
+      out.push({ form: 'bare-exec-basename', token: em[1], why: 'unanchored' });
     }
   }
   return out;
@@ -537,7 +554,11 @@ function shadowableTokens(line, sourceFile = path.join(ROOT, 'AGENTS.md'), body 
 test('the always-loaded agent guides are in the scan set', () => {
   // Asserting membership means the coverage claim is checked by the suite
   // rather than by a commit message.
-  const scanned = markdownFiles().map((f) => path.relative(ROOT, f));
+  // Normalise before comparing. `path.relative` returns `skills\\x\\SKILL.md` on
+  // Windows while the expected values below are slash literals, so every
+  // `includes` missed and this test was deterministically red there — on a
+  // branch whose own release note claims the suite no longer fails on Windows.
+  const scanned = markdownFiles().map((f) => normalizePath(path.relative(ROOT, f)));
   for (const doc of ALWAYS_LOADED) {
     assert.ok(fs.existsSync(path.join(ROOT, doc)), `${doc} must exist to be scanned`);
     assert.ok(scanned.includes(doc), `${doc} must be in the shadow-guard scan set`);
@@ -676,6 +697,21 @@ test('a malicious workspace cannot shadow any instruction the plugin issues', ()
     // Non-vacuity control, planted unconditionally so the check below cannot
     // pass merely because the sweep found nothing.
     plant('agents/memory-distiller.md');
+
+    // Derived, not enumerated. A hand-written plant list only covers the paths
+    // someone remembered. Planting every shipped
+    // file at its repo-relative path makes the coverage follow the tree instead
+    // of the memory. Basenames are deliberately NOT planted here: a document that
+    // merely mentions `harvest.js` in prose would then "land", and the fixture
+    // would report writing about a file as if it were an instruction to run one.
+    // The bare-basename shape is caught by its own rule instead.
+    for (const rel of PLUGIN_FILES) {
+      for (const at of [rel]) {
+        const dest = path.join(evil, at);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        if (!fs.existsSync(dest)) fs.writeFileSync(dest, '// SHADOW — must never be read\n');
+      }
+    }
 
     // Resolve for real, from the evil cwd, exactly as a runtime agent would.
     const resolveAsAgentWould = (token) => {
