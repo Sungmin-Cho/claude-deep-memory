@@ -153,7 +153,11 @@ const FORMS = [
 // anchored, whatever the verb, extension or sentence around it — which covers
 // .json, .yaml, extensionless scripts and assets that do not exist yet, without
 // another form list. Anything that does not resolve is prose and passes.
-const PLUGIN_FILES = (() => {
+// Injectable so the Windows key shape can be pinned in CI rather than only
+// verified once by hand: `toKey` is the single place a platform separator
+// enters the key set, and both sides of every later comparison go through
+// the same normalisation.
+function buildPluginFiles({ toKey = (p) => path.relative(ROOT, p) } = {}) {
   const rel = new Set();
   // docs/ and tests/ are not runtime-loaded plugin assets (same rationale as the
   // reference guard). The `.deep-*` entries are workspace outputs this plugin
@@ -165,12 +169,20 @@ const PLUGIN_FILES = (() => {
       if (skip.has(e.name)) continue;
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else rel.add(path.relative(ROOT, p));
+      // Normalise the KEY as well as the lookup. `path.relative()` returns
+      // backslashes on Windows, so a raw key set and a normalised lookup are two
+      // different spellings and every `has()` misses. Here that breaks the
+      // Windows CI leg loudly (the fixture plants nothing); in a sibling it made
+      // the guard pass while a violation was present. `ci.yml` runs
+      // windows-latest.
+      else rel.add(normalizePath(toKey(p)));
     }
   };
   walk(ROOT);
   return rel;
-})();
+}
+
+const PLUGIN_FILES = buildPluginFiles();
 
 // The only permitted exceptions, each with the reason it is safe.
 const ALLOWLIST = new Map();
@@ -230,12 +242,14 @@ const ROOT_METADATA = new Set(['package.json', 'plugin.json', 'config.yaml',
 // failure count still looks right.
 const PATH_TOKEN = /[A-Za-z0-9_.@${}<>-]+(?:[\\/]+[A-Za-z0-9_.@{}|*-]+)+|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,6}\b/g;
 
-function resolvesInPlugin(token, sourceFile) {
+// `files` is injectable for the same reason `toKey` is: the Windows key shape
+// has to be pinnable in CI, not merely checked once by hand.
+function resolvesInPlugin(token, sourceFile, files = PLUGIN_FILES) {
   const clean = normalizePath(token).replace(/^\.\//, '');
-  if (PLUGIN_FILES.has(clean)) return true;
+  if (files.has(clean)) return true;
   try {
-    const fromSource = path.relative(ROOT, path.resolve(path.dirname(sourceFile), normalizePath(token)));
-    if (PLUGIN_FILES.has(fromSource)) return true;
+    const fromSource = normalizePath(path.relative(ROOT, path.resolve(path.dirname(sourceFile), normalizePath(token))));
+    if (files.has(fromSource)) return true;
   } catch { /* unresolvable token — prose */ }
   return false;
 }
@@ -1254,4 +1268,31 @@ test('every referenced skill path resolves', () => {
   }
   assert.deepEqual(broken, [], `unresolvable or out-of-root reference:\n  ${broken.join('\n  ')}`);
   assert.ok(resolved > 0, 'sweep matched no references at all — the patterns have rotted');
+});
+
+test('normalisation is applied to both sides of every comparison (Windows emulation)', () => {
+  // On Windows the key builder returns backslash-joined keys. Patching only the
+  // key side reproduces that. A guard that normalises the lookup but not the key
+  // compares two different spellings and every `has()` misses — deny-by-default
+  // then reports nothing and the suite passes **while a violation is present**.
+  // Silently green is the worst state a guard can be in, and `ci.yml` runs
+  // windows-latest, so this is pinned here rather than verified once by hand.
+  const winKeys = buildPluginFiles({
+    toKey: (f) => path.relative(ROOT, f).split('/').join('\\'),
+  });
+  assert.ok(winKeys.has('scripts/lib/llm-bridge.js'),
+    'key generation must normalise, not store what the platform produced');
+  // Nested source on purpose: from a root-level document `dirname` is ROOT, so
+  // the source-relative branch reproduces the direct branch and would rescue an
+  // un-normalised token side, hiding what this test claims to pin.
+  const nested = path.join(ROOT, 'skills/deep-memory-harvest/SKILL.md');
+  for (const spelling of ['scripts/lib/llm-bridge.js', 'scripts/lib/llm-bridge.js'.split('/').join('\\')]) {
+    assert.equal(resolvesInPlugin(spelling, nested, winKeys), true,
+      `lookup must resolve against Windows-shaped keys: ${spelling}`);
+  }
+  // Non-vacuity: the same lookups against a deliberately un-normalised key set
+  // must fail, or this test would pass however the keys were built.
+  const rawKeys = new Set([...winKeys].map((k) => k.split('/').join('\\')));
+  assert.equal(resolvesInPlugin('scripts/lib/llm-bridge.js', nested, rawKeys), false,
+    'the pair is vacuous unless one-sided normalisation really breaks the lookup');
 });
