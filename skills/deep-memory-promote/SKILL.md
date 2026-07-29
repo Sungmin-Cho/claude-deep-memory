@@ -1,15 +1,13 @@
 ---
 name: deep-memory-promote
-description: Promote a memory card from privacy=local to privacy=global. The only path that exposes a card across projects. Slash-only entry point (spec §6.3.1 Gate 2 — autonomous MCP returns slash_only_in_v030). Use when a card has cross-project value confirmed through repeated retrieval. Writes mutation-consent + promote audit-log entries (R4-K).
+description: "Promote a memory card from `privacy_level: local` to `global` — the only path that exposes a card to other projects. Slash-only. Use when repeated retrieval has confirmed cross-project value."
 allowed-tools: Read, Bash, Write
 user-invocable: true
 ---
 
 # /deep-memory-promote
 
-Promote a card from local→global privacy. Global cards surface in
-retrieval across all projects (not just the project where they were
-born), so this is the ONLY path that exposes a card across projects.
+Promote a card from `local` to `global`. Global cards surface in retrieval across all projects, not just the one they were born in, so this is the only path that exposes a card across projects.
 
 ## Arguments
 
@@ -17,14 +15,17 @@ born), so this is the ONLY path that exposes a card across projects.
 
 ## What it does
 
-1. Validates `<memory_id>` exists with current `privacy: local`.
-2. Writes `mutation-consent` audit-log entry.
-3. Updates the card file: `privacy: local → global`.
-4. Re-emits to FTS5 + vector indices with new privacy_level.
-5. Writes `promote` audit-log entry `{memory_id, from_privacy: 'local', to_privacy: 'global'}`.
+One implementation backs both entry points: `promoteCard()` in `${CLAUDE_PLUGIN_ROOT}/scripts/audit.js`, reachable as `--promote <memory_id> [--project <project_id>]`. The `deep-memory-audit` skill documents the procedure; this skill is the direct entry to it.
+
+What you must know before invoking:
+
+- It requires a validated current-project scope and refuses without one (`PROJECT_SCOPE_REQUIRED`). `--project` must match the trusted profile.
+- It runs inside the global `<memory_root>/.lock`, so it serialises against harvest rather than racing it. A held lock surfaces as `LOCK_HELD` — retry.
+- A card that is already global raises `ALREADY_GLOBAL`; an unknown id raises `NOT_FOUND`.
+- Only the lexical FTS5 row is re-emitted, with `project_id: ''`. There is no vector-index write in this path, and when `better-sqlite3` is unavailable the card still moves while the index step is skipped.
+
+Emit the `mutation-consent` + `promote` audit-log pair for the invocation.
 
 ## Why slash-only
 
-Per spec §6.3.1 Gate 2 + Gate 3 — privacy promotion is irreversible
-(the global card surfaces in OTHER projects' retrieval immediately).
-Requires explicit user judgment that the card has cross-project value.
+Promotion is irreversible in practice — the global card appears in other projects' retrieval immediately — so it needs explicit user judgement that the card has cross-project value.

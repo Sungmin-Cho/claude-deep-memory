@@ -2,6 +2,29 @@
 
 All notable changes to deep-memory are documented here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] — 2026-07-28
+
+### Security
+
+- Every plugin path a skill or agent instruction opens or runs is now anchored to the plugin root, so a file of the same name in the project being worked on can no longer be read as plugin instructions or executed in their place.
+- The path guard now reads a backslash the same way as a forward slash, closing a bypass in which the identical unanchored reference was caught when written `scripts/x.js` and invisible when written `scripts\x.js` — Windows is a supported host, so one character defeated the whole check.
+- The same guard now also reads repeated separators, closing a narrower case in which a doubled backslash still drew an objection but stopped the check that proves the instruction would actually reach a planted file.
+- The maintainer rulebook path is declared as something the plugin never ships, with an explicit instruction never to open it at runtime, because that path can only resolve inside the project being analysed.
+
+### Changed
+
+- Skill and agent descriptions are roughly 45% shorter, with every trigger phrase unchanged.
+
+### Fixed
+
+- The audit reports six sub-checks rather than seven, and states that the read-only checks run before the lock is taken so a stale lock still appears in the report.
+- Initialization no longer claims that an unwritable memory root stops setup; only a network-root rejection does, and the network check is a path-pattern test rather than a filesystem-type probe.
+- Promotion refreshes the lexical index only; the vector-index refresh it previously claimed never happened.
+- Forget records the deletion request in the audit log but does not remove the card body or its index rows, which the skill now says plainly instead of promising the removal.
+- Export through the autonomous tool surface is refused for every scope, not only for cross-project exports.
+- Deletion, harvest limits, and the harvest summary file now describe what the code does: deletion records a request without removing the card, the card limit is applied by the skill rather than the command line, and the summary file holds one artifact's result rather than a run total.
+- The wiki index source is documented as collecting nothing today: deep-wiki labels its envelope `index` while this plugin expects `wiki-index`, so the guard skips every real wiki artifact — and even past that guard the pages it looks for carry none of the fields it reads, so restoring the source needs a design decision rather than a one-line fix. The test fixture for this source was built to the expectation rather than to what deep-wiki emits, so a passing wiki test does not indicate a working integration.
+
 ## [1.0.5] — 2026-07-24
 
 ### Fixed

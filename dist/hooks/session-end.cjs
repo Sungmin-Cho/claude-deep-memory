@@ -8304,7 +8304,7 @@ var import_node_crypto = __toESM(require("node:crypto"), 1);
 // package.json
 var package_default = {
   name: "deep-memory",
-  version: "1.0.5",
+  version: "1.0.6",
   description: "Cross-project operational memory with Claude Code and Codex skills, host-mediated distillation, scoped retrieval, and bundled MCP.",
   author: {
     name: "Sungmin-Cho"
