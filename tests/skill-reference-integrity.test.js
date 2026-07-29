@@ -390,22 +390,18 @@ function expansionState(line, index) {
   let state = 'normal';
   for (let k = 0; k < index; k += 1) {
     const c = line[k];
-    if (line[k - 1] === '\\') continue;
-    // An apostrophe flanked by word characters — `don't`, `it's`, `the plugin's` —
-    // is English, not a shell quote. This mattered only once every fenced block
-    // became a command context: outside a fence the verb list kept prose out, and
-    // inside one there is no such gate, so `# the plugin's root is ${ANCHOR}/x` in
-    // a ```yaml or ```markdown block read as single-quoted and was flagged.
+    // POSIX sh does not treat a backslash as an escape inside single quotes:
+    // `'C:\tmp\'` is the literal `C:\tmp\` and the quote closes. Honouring it
+    // there flips the parity, so a line ending a Windows path in `\` before an
+    // anchor reported `normal` and the non-expanding anchor went unflagged.
     //
-    // Safe for real shell too. A quote that actually opens a single-quoted string
-    // is preceded by whitespace or an operator and followed by the content, so it
-    // is never flanked on both sides; and where bash really would treat `don't` as
-    // an opener, everything after it is quoted anyway, so a following anchor is
-    // literal either way and stays flagged. The narrow reading only ever turns a
-    // false positive into a pass — never the reverse.
-    const wordFlanked = c === "'"
-      && /\w/.test(line[k - 1] || '') && /\w/.test(line[k + 1] || '');
-    if (wordFlanked) continue;
+    // Consume the escaped character rather than looking back at the previous one.
+    // Looking back fails on `"C:\tmp\\"`: the second backslash of the pair is
+    // itself treated as escaped, so the closing quote also looks escaped and the
+    // double-quote state never ends. Both spellings are pinned in the siblings
+    // because each defeats a different implementation; this repo kept the
+    // look-back form after they were fixed, and measured MISS on both.
+    if (state !== 'single' && c === '\\') { k += 1; continue; }
     if (state === 'normal') {
       if (c === "'") state = 'single';
       else if (c === '"') state = 'double';
@@ -498,6 +494,27 @@ function nonExpandingAnchors(line, inFence = false) {
   const out = [];
   const flag = (token, why) => out.push({ form: 'non-expanding-anchor', token, why });
 
+  // A line whose single quotes never close is not a command at all — bash refuses
+  // to parse it — so the shell clause has nothing to say about it. Checked against
+  // a real shell before being pinned:
+  //
+  //   cp '${A}/x.js'                       literal   → flag
+  //   a'b ${A}/a'                          literal   → flag
+  //   the plugin's root is ${A}/x          SYNTAX ERROR
+  //   don't touch the plugin's ${A}/x      expands   → clean
+  //
+  // This replaced a narrower rule that skipped an apostrophe flanked by word
+  // characters. That rule removed the prose false positives but also silenced
+  // `a'b ${A}/a'`, which really does open a quote and really does leave the anchor
+  // literal — its justification, that a genuine opening quote is never flanked on
+  // both sides, was simply false. Asking whether the line parses is both correct
+  // and narrower: prose with an odd number of apostrophes is a syntax error, and
+  // prose with an even number closes its own quote and expands.
+  //
+  // Known limit, unchanged from before: a quoted string continued across fenced
+  // lines leaves each line individually unterminated, so an anchor on the second
+  // line is not flagged. It was not flagged by the previous verb-list gate either.
+  const parsesAsCommand = expansionState(line, line.length) !== 'single';
   // 1. shell — single quotes and quoted heredocs leave it literal
   for (const name of ['${CLAUDE_PLUGIN_ROOT}', '${PLUGIN_ROOT}']) {
     let i = line.indexOf(name);
@@ -510,7 +527,7 @@ function nonExpandingAnchors(line, inFence = false) {
       // finding it literal is enough.
       const __literalInSpan = !!__span
         && expansionState(line.slice(__span[0], __span[1]), i - __span[0]) === 'single';
-      const __literalOnLine = (inFence || SHELL_COMMAND.test(line))
+      const __literalOnLine = parsesAsCommand && (inFence || SHELL_COMMAND.test(line))
         && expansionState(line, i) === 'single';
       if (__literalInSpan || __literalOnLine) {
         flag(name, 'single-quoted shell — literal, so the path resolves against the workspace');
@@ -841,27 +858,34 @@ test('a fenced code block is a command context, whatever the verb', () => {
   assert.equal(nonExpandingAnchors(`cp "${ANCHOR}/x.js" /tmp/staged.js`, true).length, 0,
     'a double-quoted anchor expands; a fence must not turn that into a violation');
 
-  // Prose inside a fence must stay clean. Once every fenced block became a command
-  // context there was no verb list keeping English out, and `expansionState` reads
-  // an apostrophe as a shell quote — so `# the plugin's root is ${ANCHOR}/x` in a
-  // ```yaml or ```markdown block reported single-quoted. The exposure was
-  // fence-only: outside one the same lines were clean, because the verb list
-  // filtered them. Direction was fail-closed, but "no over-flagging" was a
-  // property of today's corpus, not of the rule.
-  for (const prose of [
-    `# the plugin's root is ${ANCHOR}/x`,
-    `# don't use ${ANCHOR}/x directly`,
-    `The plugin's root is ${ANCHOR}/x.`,
-    `it's at ${ANCHOR}/x`,
+  // Prose inside a fence must stay clean, and a real quoted command inside one must
+  // not. Both halves are decided by whether the LINE PARSES: bash refuses a line
+  // whose single quotes never close, so it can never be an instruction that runs.
+  // Every row was checked against a real shell before being pinned here.
+  //
+  //   cp '${A}/x.js' /tmp/y              literal        → flag
+  //   cp "${A}/x.js" /tmp/y              expands        → clean
+  //   echo a'b ${A}/a'                   literal        → flag
+  //   # the plugin's root is ${A}/x      SYNTAX ERROR   → clean
+  //   # don't touch the plugin's ${A}/x  expands        → clean
+  //   don't a it's b plugin's ${A}/x     SYNTAX ERROR   → clean
+  //
+  // Row 3 is why this is not the narrower rule it replaced. Skipping an apostrophe
+  // flanked by word characters removed the prose false positives, but it also
+  // silenced `a'b …/a'` — which genuinely opens a quote and genuinely leaves the
+  // anchor literal. The claim that a real opening quote is never flanked on both
+  // sides is false, and bash says so directly.
+  for (const [line, mustFlag] of [
+    [`cp '${ANCHOR}/x.js' /tmp/y`, true],
+    [`cp "${ANCHOR}/x.js" /tmp/y`, false],
+    [`echo a'b ${ANCHOR}/a'`, true],
+    [`# the plugin's root is ${ANCHOR}/x`, false],
+    [`# don't touch the plugin's ${ANCHOR}/x`, false],
+    [`don't a it's b plugin's ${ANCHOR}/x`, false],
   ]) {
-    assert.equal(nonExpandingAnchors(prose, true).length, 0,
-      `an English apostrophe is not a shell quote: ${prose}`);
+    assert.equal(nonExpandingAnchors(line, true).length > 0, mustFlag,
+      `${mustFlag ? 'must flag' : 'must stay clean'} inside a fence: ${line}`);
   }
-  // And the real quoting cases are untouched — the narrow reading only ever turns
-  // a false positive into a pass, because a quote that genuinely opens a string is
-  // never flanked by word characters on both sides.
-  assert.ok(nonExpandingAnchors(`cp '${ANCHOR}/x.js' /tmp/y`, true).length > 0,
-    'a genuinely single-quoted anchor must still be flagged inside a fence');
 
   // No language is exempt by info string, and that is deliberate. An earlier
   // version exempted `python`, `js`, `diff`, `markdown` and more — the same
@@ -906,6 +930,16 @@ test('an anchor the shell will not expand counts as unanchored', () => {
     ['const { m } = require(\`\${CLAUDE_PLUGIN_ROOT}/scripts/lib/llm-bridge.js\`);', /template literal/],
     ['const x = require("\${CLAUDE_PLUGIN_ROOT}/scripts/lib/redact.js");', /bare package name/],
     ['import x from \'\${CLAUDE_PLUGIN_ROOT}/scripts/lib/lock.js\';', /bare package name/],
+    // Both escape spellings, because each defeats a different implementation, and
+    // this repo had NEITHER pinned — which is why the consume fix landed in the two
+    // siblings and never here. Looking back at the previous character reads the
+    // first as `normal` (the trailing backslash of `'C:\tmp\'` looks like an
+    // escape, though POSIX sh does not escape inside single quotes) and the second
+    // as `double` (the pair's second backslash makes the closing quote look
+    // escaped, so the state never ends). Consuming the escaped character reads both
+    // as `single`, which is what bash does.
+    [`node 'C:\\tmp\\' '\${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js'`, /single-quoted shell/],
+    [`node "C:\\tmp\\\\" '\${CLAUDE_PLUGIN_ROOT}/scripts/harvest.js'`, /single-quoted shell/],
   ];
   for (const [line, reason] of mustFlag) {
     const hits = nonExpandingAnchors(line);
