@@ -2,11 +2,11 @@
 
 # deep-memory
 
-![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/claude-deep-memory?label=version)
-![license](https://img.shields.io/github/license/Sungmin-Cho/claude-deep-memory)
-[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/claude-deep-suite)
+![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/deep-memory?label=version)
+![license](https://img.shields.io/github/license/Sungmin-Cho/deep-memory)
+[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/deep-suite)
 
-> Cross-project semantic operational memory for the [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
+> Cross-project semantic operational memory for the [deep-suite](https://github.com/Sungmin-Cho/deep-suite).
 
 deep-memory harvests sibling-plugin artifacts, distills reusable memory cards, and supplies task-specific briefs to later work. It supports Claude Code and Codex natively while keeping capture opt-in and project-scoped. See the [CHANGELOG](CHANGELOG.md) for release history.
 
@@ -90,7 +90,7 @@ Run Node 22 on native Windows 11, macOS, or Linux. If a host mediator is unavail
 
 - [Release history](CHANGELOG.md)
 - [Contribution guide](CONTRIBUTING.md)
-- [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)
+- [deep-suite](https://github.com/Sungmin-Cho/deep-suite)
 
 ## License
 

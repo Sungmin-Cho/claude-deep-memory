@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-event.schema.json",
+  "$id": "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-event.schema.json",
   "title": "Memory Event",
   "type": "object",
   "required": ["schema_version", "envelope", "payload"],

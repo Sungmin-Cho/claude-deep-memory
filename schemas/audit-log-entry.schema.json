@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/audit-log-entry.schema.json",
+  "$id": "https://github.com/Sungmin-Cho/deep-memory/schemas/audit-log-entry.schema.json",
   "title": "Audit Log Entry",
   "type": "object",
   "required": ["at", "id", "kind", "by", "host", "payload"],

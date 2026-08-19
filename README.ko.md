@@ -2,11 +2,11 @@
 
 # deep-memory
 
-![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/claude-deep-memory?label=version)
-![license](https://img.shields.io/github/license/Sungmin-Cho/claude-deep-memory)
-[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/claude-deep-suite)
+![version](https://img.shields.io/github/package-json/v/Sungmin-Cho/deep-memory?label=version)
+![license](https://img.shields.io/github/license/Sungmin-Cho/deep-memory)
+[![part of deep-suite](https://img.shields.io/badge/part%20of-deep--suite-5b8def)](https://github.com/Sungmin-Cho/deep-suite)
 
-> [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)를 위한 크로스 프로젝트 시맨틱 운영 메모리.
+> [deep-suite](https://github.com/Sungmin-Cho/deep-suite)를 위한 크로스 프로젝트 시맨틱 운영 메모리.
 
 deep-memory는 형제 플러그인 산출물을 하베스트하여 재사용 가능한 메모리 카드로 증류하고, 이후 작업에 작업별 브리프를 제공합니다. Claude Code와 Codex를 네이티브로 지원하며 capture는 명시적 옵트인과 프로젝트 범위를 유지합니다. 릴리스 이력은 [CHANGELOG](CHANGELOG.ko.md)에서 확인할 수 있습니다.
 
@@ -90,7 +90,7 @@ $deep-memory:deep-memory-audit
 
 - [릴리스 이력](CHANGELOG.ko.md)
 - [기여 가이드](CONTRIBUTING.md)
-- [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite)
+- [deep-suite](https://github.com/Sungmin-Cho/deep-suite)
 
 ## 라이선스
 

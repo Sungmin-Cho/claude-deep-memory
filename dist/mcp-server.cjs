@@ -35780,7 +35780,7 @@ var require_project_profile_schema = __commonJS({
   "schemas/project-profile.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/project-profile.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/project-profile.schema.json",
       title: "Project Profile",
       type: "object",
       required: ["project_id", "repo", "signature", "suite", "privacy", "generated_at"],
@@ -37528,7 +37528,7 @@ var require_audit_log_entry_schema = __commonJS({
   "schemas/audit-log-entry.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/audit-log-entry.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/audit-log-entry.schema.json",
       title: "Audit Log Entry",
       type: "object",
       required: ["at", "id", "kind", "by", "host", "payload"],
@@ -37723,7 +37723,7 @@ var require_memory_card_schema = __commonJS({
   "schemas/memory-card.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-card.schema.json",
       title: "Memory Card",
       type: "object",
       required: ["schema_version", "envelope", "payload"],
@@ -37925,7 +37925,7 @@ var require_memory_card_distill_output_schema = __commonJS({
   "schemas/memory-card-distill-output.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card-distill-output.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-card-distill-output.schema.json",
       title: "Memory Card Distill Output (Step B sub-agent response)",
       description: "Step B sub-agent output (LLM-derived fields only). The orchestrator (harvest.js Step C) maps non_applicability items into the full memory-card.schema shape by back-filling source_id from the originating source artifact's deep_memory_provenance.id. Do not add source_id at this stage.",
       type: "object",
@@ -37964,7 +37964,7 @@ var require_memory_event_schema = __commonJS({
   "schemas/memory-event.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-event.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-event.schema.json",
       title: "Memory Event",
       type: "object",
       required: ["schema_version", "envelope", "payload"],
@@ -38053,7 +38053,7 @@ var require_memory_hook_event_schema = __commonJS({
   "schemas/memory-hook-event.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-hook-event.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-hook-event.schema.json",
       title: "Memory Hook Event",
       type: "object",
       required: ["schema_version", "envelope", "payload"],

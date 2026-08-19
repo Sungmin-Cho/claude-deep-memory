@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/memory-card-distill-output.schema.json",
+  "$id": "https://github.com/Sungmin-Cho/deep-memory/schemas/memory-card-distill-output.schema.json",
   "title": "Memory Card Distill Output (Step B sub-agent response)",
   "description": "Step B sub-agent output (LLM-derived fields only). The orchestrator (harvest.js Step C) maps non_applicability items into the full memory-card.schema shape by back-filling source_id from the originating source artifact's deep_memory_provenance.id. Do not add source_id at this stage.",
   "type": "object",
