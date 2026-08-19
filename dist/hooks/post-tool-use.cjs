@@ -8153,7 +8153,7 @@ var require_project_profile_schema = __commonJS({
   "schemas/project-profile.schema.json"(exports2, module2) {
     module2.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
-      $id: "https://github.com/Sungmin-Cho/claude-deep-memory/schemas/project-profile.schema.json",
+      $id: "https://github.com/Sungmin-Cho/deep-memory/schemas/project-profile.schema.json",
       title: "Project Profile",
       type: "object",
       required: ["project_id", "repo", "signature", "suite", "privacy", "generated_at"],

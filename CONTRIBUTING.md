@@ -1,12 +1,12 @@
 # Contributing to deep-memory
 
-Thanks for improving **deep-memory**, the cross-project operational-memory plugin in [claude-deep-suite](https://github.com/Sungmin-Cho/claude-deep-suite).
+Thanks for improving **deep-memory**, the cross-project operational-memory plugin in [deep-suite](https://github.com/Sungmin-Cho/deep-suite).
 
 ## Development setup
 
 ```text
-git clone https://github.com/Sungmin-Cho/claude-deep-memory.git
-cd claude-deep-memory
+git clone https://github.com/Sungmin-Cho/deep-memory.git
+cd deep-memory
 npm install
 ```
 
